@@ -1,4 +1,4 @@
-import { supabase } from '@/lib/supabase';
+import supabase from '../lib/supabase';
 import { VisitorSession, AnalyticsResponse } from '../types';
 
 export const analyticsService = {

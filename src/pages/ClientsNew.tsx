@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, CheckCircle2, Activity, Camera } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import supabase from '../lib/supabase';
 
 // Componente Toggle
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
@@ -55,6 +56,29 @@ export function Clients() {
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
   const [expandedStore, setExpandedStore] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'details' | 'permissions' | 'api' | 'stores'>('details');
+  const [loading, setLoading] = useState(false);
+  const [clients, setClients] = useState<Client[]>([]);
+
+  // Form States
+  const [formData, setFormData] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    company: '',
+    status: 'active' as 'active' | 'inactive' | 'pending',
+    plan: 'basic' as 'enterprise' | 'pro' | 'basic',
+    notes: ''
+  });
+
+  const [apiConfig, setApiConfig] = useState({
+    environment: 'production',
+    authMethod: 'token',
+    endpoint: '',
+    token: '',
+    customHeaderKey: '',
+    customHeaderValue: '',
+    docUrl: ''
+  });
 
   // State for managing stores in the modal
   const [editingStores, setEditingStores] = useState<Store[]>([]);
@@ -62,7 +86,50 @@ export function Clients() {
   const [newStoreCity, setNewStoreCity] = useState('');
 
   // Data for client stores
-  const getClientStores = (_: string): Store[] => [];
+  const getClientStores = (clientId: string): Store[] => {
+    const client = clients.find(c => c.id === clientId);
+    return client?.stores || [];
+  };
+
+  const fetchClients = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase
+        .from('clients')
+        .select(`
+          *,
+          stores (
+            id,
+            name,
+            city,
+            devices (*)
+          )
+        `);
+      
+      if (error) throw error;
+
+      if (data) {
+        const formattedClients: Client[] = data.map(client => ({
+          ...client,
+          initials: client.name.substring(0, 1).toUpperCase(),
+          color: 'bg-indigo-600',
+          stores: client.stores?.map((s: any) => ({
+            ...s,
+            devices: s.devices || []
+          })) || []
+        }));
+        setClients(formattedClients);
+      }
+    } catch (error) {
+      console.error('Error fetching clients:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchClients();
+  }, []);
 
   // Estado de permissões (mock)
   const [perms, setPerms] = useState({
@@ -86,13 +153,99 @@ export function Clients() {
     }, 1500);
   };
 
-  const handleEdit = (client: Client, initialTab: 'details' | 'permissions' | 'api' | 'stores' = 'details') => {
+  const handleEdit = async (client: Client, initialTab: 'details' | 'permissions' | 'api' | 'stores' = 'details') => {
     setSelectedClient(client);
+    setFormData({
+      name: client.name,
+      email: client.email,
+      phone: client.phone,
+      company: client.company,
+      status: client.status,
+      plan: client.plan,
+      notes: '' 
+    });
+
+    // Fetch permissions
+    const { data: permData } = await supabase
+      .from('client_permissions')
+      .select('*')
+      .eq('client_id', client.id)
+      .single();
+    
+    if (permData) {
+      setPerms({
+        view_dashboard: permData.view_dashboard,
+        view_reports: permData.view_reports,
+        view_analytics: permData.view_analytics,
+        export_data: permData.export_data,
+        manage_settings: permData.manage_settings
+      });
+    }
+
+    // Fetch API Config
+    const { data: apiData } = await supabase
+      .from('client_api_configs')
+      .select('*')
+      .eq('client_id', client.id)
+      .single();
+
+    if (apiData) {
+      setApiConfig({
+        environment: apiData.environment || 'production',
+        authMethod: apiData.auth_method || 'token',
+        endpoint: apiData.api_endpoint || '',
+        token: apiData.api_key || '',
+        customHeaderKey: apiData.custom_header_key || '',
+        customHeaderValue: apiData.custom_header_value || '',
+        docUrl: apiData.documentation_url || ''
+      });
+    } else {
+       setApiConfig({
+        environment: 'production',
+        authMethod: 'token',
+        endpoint: '',
+        token: '',
+        customHeaderKey: '',
+        customHeaderValue: '',
+        docUrl: ''
+      });
+    }
+
     setActiveTab(initialTab);
-    // Load existing stores for this client (mock)
-    setEditingStores(getClientStores(client.id));
+    setEditingStores(client.stores || []);
     setIsEditModalOpen(true);
     setActiveMenu(null);
+  };
+
+  const handleNewClient = () => {
+    setSelectedClient(null);
+    setFormData({
+      name: '',
+      email: '',
+      phone: '',
+      company: '',
+      status: 'active',
+      plan: 'basic',
+      notes: ''
+    });
+    setPerms({
+      view_dashboard: true,
+      view_reports: false,
+      view_analytics: false,
+      export_data: false,
+      manage_settings: false
+    });
+    setApiConfig({
+      environment: 'production',
+      authMethod: 'token',
+      endpoint: '',
+      token: '',
+      customHeaderKey: '',
+      customHeaderValue: '',
+      docUrl: ''
+    });
+    setEditingStores([]);
+    setIsEditModalOpen(true);
   };
 
   const handleAddStore = () => {
@@ -108,7 +261,21 @@ export function Clients() {
     setNewStoreCity('');
   };
 
-  const handleRemoveStore = (storeId: string) => {
+  const handleRemoveStore = async (storeId: string) => {
+    if (!storeId.startsWith('new-store')) {
+       // Delete from DB immediately or wait for save?
+       // For better UX/Consistency with "Save" button, we should probably mark for deletion or delete on Save.
+       // But the current logic for other items is "Save" button.
+       // However, to keep it simple and effective:
+       try {
+         const { error } = await supabase.from('stores').delete().eq('id', storeId);
+         if (error) throw error;
+       } catch (e) {
+         console.error('Error deleting store:', e);
+         alert('Erro ao excluir loja.');
+         return;
+       }
+    }
     setEditingStores(editingStores.filter(s => s.id !== storeId));
   };
 
@@ -136,6 +303,85 @@ export function Clients() {
     }));
   };
 
+  const handleSave = async () => {
+    try {
+      // 1. Save Client
+      const { data: clientData, error: clientError } = await supabase
+        .from('clients')
+        .upsert({
+          id: selectedClient?.id,
+          name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          company: formData.company,
+          status: formData.status,
+          plan: formData.plan,
+          notes: formData.notes
+        })
+        .select()
+        .single();
+
+      if (clientError) throw clientError;
+      const clientId = clientData.id;
+
+      // 2. Save Permissions
+      const { error: permError } = await supabase.from('client_permissions').upsert({
+        client_id: clientId,
+        ...perms
+      }, { onConflict: 'client_id' });
+      if (permError) throw permError;
+
+      // 3. Save API Config
+      const { error: apiError } = await supabase.from('client_api_configs').upsert({
+        client_id: clientId,
+        environment: apiConfig.environment,
+        auth_method: apiConfig.authMethod,
+        api_endpoint: apiConfig.endpoint,
+        api_key: apiConfig.token,
+        custom_header_key: apiConfig.customHeaderKey,
+        custom_header_value: apiConfig.customHeaderValue,
+        documentation_url: apiConfig.docUrl
+      }, { onConflict: 'client_id' });
+      if (apiError) throw apiError;
+
+      // 4. Save Stores & Devices
+      for (const store of editingStores) {
+        const { data: storeData, error: storeError } = await supabase
+          .from('stores')
+          .upsert({
+             id: store.id.startsWith('new-store') ? undefined : store.id,
+             client_id: clientId,
+             name: store.name,
+             city: store.city
+          })
+          .select()
+          .single();
+          
+        if (storeError) throw storeError;
+        
+        // Delete existing devices to sync
+        await supabase.from('devices').delete().eq('store_id', storeData.id);
+        
+        if (store.devices.length > 0) {
+            const devicesToInsert = store.devices.map(d => ({
+                store_id: storeData.id,
+                name: d.name,
+                type: d.type,
+                mac_address: d.macAddress,
+                status: d.status
+            }));
+            await supabase.from('devices').insert(devicesToInsert);
+        }
+      }
+
+      setIsEditModalOpen(false);
+      fetchClients();
+    } catch (error) {
+      console.error('Error saving client:', error);
+      alert('Erro ao salvar cliente. Verifique o console.');
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -156,7 +402,7 @@ export function Clients() {
             />
           </div>
           <button 
-            onClick={() => { setSelectedClient(null); setIsEditModalOpen(true); }}
+            onClick={handleNewClient}
             className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-lg shadow-emerald-900/20"
           >
             <Plus size={18} />
@@ -167,7 +413,7 @@ export function Clients() {
 
       {/* Client List */}
       <div className="space-y-4">
-        {MOCK_CLIENTS.length === 0 ? (
+        {clients.length === 0 ? (
           <div className="text-center py-12 bg-gray-900/50 rounded-xl border border-gray-800 border-dashed">
             <div className="w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-4 text-gray-500">
               <Building size={32} />
@@ -177,7 +423,7 @@ export function Clients() {
               Comece adicionando seu primeiro cliente para gerenciar lojas e câmeras.
             </p>
             <button 
-              onClick={() => { setSelectedClient(null); setIsEditModalOpen(true); }}
+              onClick={handleNewClient}
               className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg inline-flex items-center gap-2 transition-colors"
             >
               <Plus size={18} />
@@ -185,7 +431,7 @@ export function Clients() {
             </button>
           </div>
         ) : (
-          MOCK_CLIENTS.map((client) => (
+          clients.map((client) => (
           <div key={client.id} className="bg-gray-900 border border-gray-800 rounded-xl p-6 hover:border-gray-700 transition-all group relative flex flex-col gap-4">
             
             <div className="w-full flex items-center justify-between">
@@ -435,7 +681,8 @@ export function Clients() {
                       <label className="text-sm font-medium text-gray-400">Nome *</label>
                       <input 
                         type="text" 
-                        defaultValue={selectedClient?.name}
+                        value={formData.name}
+                        onChange={(e) => setFormData({...formData, name: e.target.value})}
                         className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
                       />
                     </div>
@@ -443,7 +690,8 @@ export function Clients() {
                       <label className="text-sm font-medium text-gray-400">Email *</label>
                       <input 
                         type="email" 
-                        defaultValue={selectedClient?.email}
+                        value={formData.email}
+                        onChange={(e) => setFormData({...formData, email: e.target.value})}
                         className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
                       />
                     </div>
@@ -451,7 +699,8 @@ export function Clients() {
                       <label className="text-sm font-medium text-gray-400">Telefone</label>
                       <input 
                         type="text" 
-                        defaultValue={selectedClient?.phone}
+                        value={formData.phone}
+                        onChange={(e) => setFormData({...formData, phone: e.target.value})}
                         className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
                       />
                     </div>
@@ -459,20 +708,29 @@ export function Clients() {
                       <label className="text-sm font-medium text-gray-400">Empresa</label>
                       <input 
                         type="text" 
-                        defaultValue={selectedClient?.company}
+                        value={formData.company}
+                        onChange={(e) => setFormData({...formData, company: e.target.value})}
                         className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
                       />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400">Status</label>
-                      <select className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none">
+                      <select 
+                        value={formData.status}
+                        onChange={(e) => setFormData({...formData, status: e.target.value as any})}
+                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none"
+                      >
                         <option value="active">Ativo</option>
                         <option value="inactive">Inativo</option>
                       </select>
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400">Plano</label>
-                      <select className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none">
+                      <select 
+                        value={formData.plan}
+                        onChange={(e) => setFormData({...formData, plan: e.target.value as any})}
+                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none"
+                      >
                         <option value="enterprise">Enterprise</option>
                         <option value="pro">Pro</option>
                         <option value="basic">Basic</option>
@@ -497,6 +755,8 @@ export function Clients() {
                     <label className="text-sm font-medium text-gray-400">Observações</label>
                     <textarea 
                         rows={3}
+                        value={formData.notes}
+                        onChange={(e) => setFormData({...formData, notes: e.target.value})}
                         placeholder="Notas adicionais sobre o cliente..."
                         className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none resize-none"
                     />
@@ -594,10 +854,38 @@ export function Clients() {
                   <div className="space-y-6">
                     <div className="grid grid-cols-1 gap-4">
                       <div className="space-y-2">
+                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Ambiente</label>
+                        <select 
+                          value={apiConfig.environment}
+                          onChange={(e) => setApiConfig({...apiConfig, environment: e.target.value})}
+                          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
+                        >
+                          <option value="production">Produção</option>
+                          <option value="sandbox">Sandbox / Staging</option>
+                          <option value="development">Desenvolvimento</option>
+                        </select>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Método de Autenticação</label>
+                        <select 
+                          value={apiConfig.authMethod}
+                          onChange={(e) => setApiConfig({...apiConfig, authMethod: e.target.value})}
+                          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
+                        >
+                          <option value="bearer">Bearer Token</option>
+                          <option value="apikey_header">API Key (Header)</option>
+                          <option value="basic">Basic Auth</option>
+                          <option value="oauth2">OAuth 2.0</option>
+                        </select>
+                      </div>
+
+                      <div className="space-y-2">
                         <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Endpoint da API (Base URL)</label>
                         <div className="relative">
                             <input 
                                 type="text" 
+                                value={apiConfig.endpoint}
+                                onChange={(e) => setApiConfig({...apiConfig, endpoint: e.target.value})}
                                 placeholder="https://api.displayforce.ai"
                                 className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
                             />
@@ -610,6 +898,8 @@ export function Clients() {
                         <div className="relative">
                             <input 
                                 type="text" 
+                                value={apiConfig.token}
+                                onChange={(e) => setApiConfig({...apiConfig, token: e.target.value})}
                                 placeholder="Insira seu token aqui"
                                 className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
                             />
@@ -878,7 +1168,10 @@ export function Clients() {
               >
                 Cancelar
               </button>
-              <button className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium shadow-lg shadow-emerald-900/20 transition-colors">
+              <button 
+                onClick={handleSave}
+                className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium shadow-lg shadow-emerald-900/20 transition-colors"
+              >
                 Salvar Alterações
               </button>
             </div>

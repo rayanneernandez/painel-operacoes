@@ -72,3 +72,13 @@ export type AnalyticsResponse = {
   };
   payload: VisitorSession[];
 };
+
+export type UserRole = 'admin' | 'client';
+
+export type AuthUser = {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  clientId?: string; // If role is client
+};

@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import supabase from '../lib/supabase';
 import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText } from 'lucide-react';
 
 // Componente Toggle
@@ -20,10 +21,10 @@ type UserType = {
   id: string;
   name: string;
   email: string;
-  role: 'admin' | 'manager' | 'viewer';
+  role: 'admin' | 'client';
   clients: Client[]; // Array de clientes
   status: 'active' | 'inactive';
-  lastLogin: string;
+  last_login: string;
   permissions: {
     view_dashboard: boolean;
     view_reports: boolean;
@@ -33,11 +34,9 @@ type UserType = {
   };
 };
 
-// Dados fictícios para teste
-const MOCK_USERS: UserType[] = [];
-
 export function Users() {
-  const [users, setUsers] = useState<UserType[]>(MOCK_USERS);
+  const [users, setUsers] = useState<UserType[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
@@ -62,9 +61,26 @@ export function Users() {
   const [formData, setFormData] = useState({
     name: '',
     email: '',
-    role: 'viewer' as 'admin' | 'manager' | 'viewer',
+    role: 'client' as 'admin' | 'client',
     password: ''
   });
+
+  useEffect(() => {
+    fetchUsers();
+  }, []);
+
+  const fetchUsers = async () => {
+    try {
+      setLoading(true);
+      const { data, error } = await supabase.from('users').select('*');
+      if (error) throw error;
+      setUsers(data || []);
+    } catch (error) {
+      console.error('Erro ao buscar usuários:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Estado para seleção múltipla de clientes no modal
   const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
@@ -102,7 +118,7 @@ export function Users() {
       setFormData({
         name: '',
         email: '',
-        role: 'viewer',
+        role: 'client',
         password: ''
       });
       setSelectedClientIds([]);
@@ -119,39 +135,72 @@ export function Users() {
     setActiveMenu(null);
   };
 
-  const handleDeleteUser = (userId: string) => {
+  const handleDeleteUser = async (userId: string) => {
     if (confirm('Tem certeza que deseja excluir este usuário?')) {
-      setUsers(users.filter(u => u.id !== userId));
-      setActiveMenu(null);
+      try {
+        const { error } = await supabase.from('users').delete().eq('id', userId);
+        if (error) throw error;
+        setUsers(users.filter(u => u.id !== userId));
+        setActiveMenu(null);
+      } catch (error) {
+        console.error('Erro ao excluir usuário:', error);
+        alert('Erro ao excluir usuário');
+      }
     }
   };
 
-  const handleSaveUser = () => {
+  const handleSaveUser = async () => {
     const selectedClientsList = availableClients.filter(c => selectedClientIds.includes(c.id));
+    
+    try {
+      if (editingUser) {
+        const updates: any = {
+          name: formData.name,
+          email: formData.email,
+          role: formData.role,
+          clients: selectedClientsList,
+          permissions: perms
+        };
+        
+        if (formData.password) {
+          updates.password = formData.password;
+        }
 
-    if (editingUser) {
-      setUsers(users.map(u => u.id === editingUser.id ? {
-        ...u,
-        name: formData.name,
-        email: formData.email,
-        role: formData.role,
-        clients: selectedClientsList,
-        permissions: perms
-      } : u));
-    } else {
-      const newUser: UserType = {
-        id: Math.random().toString(36).substr(2, 9),
-        name: formData.name,
-        email: formData.email,
-        role: formData.role,
-        clients: selectedClientsList,
-        status: 'active',
-        lastLogin: 'Nunca',
-        permissions: perms
-      };
-      setUsers([...users, newUser]);
+        const { error } = await supabase
+          .from('users')
+          .update(updates)
+          .eq('id', editingUser.id);
+
+        if (error) throw error;
+        
+        await fetchUsers();
+      } else {
+        if (!formData.password) {
+          alert('Senha é obrigatória para novos usuários');
+          return;
+        }
+
+        const newUser = {
+          name: formData.name,
+          email: formData.email,
+          role: formData.role,
+          password: formData.password,
+          clients: selectedClientsList,
+          status: 'active',
+          last_login: new Date().toISOString(),
+          permissions: perms
+        };
+
+        const { error } = await supabase.from('users').insert([newUser]);
+        if (error) throw error;
+        
+        await fetchUsers();
+      }
+      setIsModalOpen(false);
+    } catch (error) {
+      console.error('Erro ao salvar usuário:', error);
+      alert('Erro ao salvar usuário');
     }
-    setIsModalOpen(false);
   };
 
   const toggleClientSelection = (clientId: string) => {
@@ -201,7 +250,7 @@ export function Users() {
           <thead>
             <tr className="bg-gray-950 border-b border-gray-800 text-gray-400 text-sm uppercase tracking-wider">
               <th className="p-4 font-medium first:rounded-tl-xl">Usuário</th>
-              <th className="p-4 font-medium">Função</th>
+              <th className="p-4 font-medium">Perfil</th>
               <th className="p-4 font-medium">Cliente Vinculado</th>
               <th className="p-4 font-medium">Status</th>
               <th className="p-4 font-medium">Último Acesso</th>
@@ -209,7 +258,16 @@ export function Users() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
-            {users.length === 0 ? (
+            {loading ? (
+              <tr>
+                <td colSpan={6} className="p-8 text-center text-gray-500">
+                  <div className="flex justify-center items-center gap-2">
+                    <div className="w-5 h-5 border-2 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+                    Carregando usuários...
+                  </div>
+                </td>
+              </tr>
+            ) : users.length === 0 ? (
                 <tr>
                     <td colSpan={6} className="p-8 text-center text-gray-500">
                         Nenhum usuário encontrado. Adicione um novo usuário para começar.
@@ -232,14 +290,13 @@ export function Users() {
                 <td className="p-4">
                   <span className={`px-2 py-1 rounded-md text-xs font-medium border ${
                     user.role === 'admin' ? 'bg-purple-500/10 text-purple-400 border-purple-500/20' :
-                    user.role === 'manager' ? 'bg-blue-500/10 text-blue-400 border-blue-500/20' :
-                    'bg-gray-800 text-gray-400 border-gray-700'
+                    'bg-blue-500/10 text-blue-400 border-blue-500/20'
                   }`}>
-                    {user.role === 'admin' ? 'Administrador' : user.role === 'manager' ? 'Gerente' : 'Visualizador'}
+                    {user.role === 'admin' ? 'Administrador' : 'Cliente'}
                   </span>
                 </td>
                 <td className="p-4">
-                  {user.clients.length > 0 ? (
+                  {user.clients?.length > 0 ? (
                     <div className="flex flex-col gap-1">
                       {user.clients.slice(0, 2).map(client => (
                         <div key={client.id} className="flex items-center gap-2 text-gray-300">
@@ -263,7 +320,7 @@ export function Users() {
                     {user.status === 'active' ? 'Ativo' : 'Inativo'}
                   </span>
                 </td>
-                <td className="p-4 text-sm text-gray-500">{user.lastLogin}</td>
+                <td className="p-4 text-sm text-gray-500">{user.last_login ? new Date(user.last_login).toLocaleString() : 'Nunca'}</td>
                 <td className="p-4 text-right relative">
                   <button 
                     onClick={() => setActiveMenu(activeMenu === user.id ? null : user.id)}
@@ -444,7 +501,7 @@ export function Users() {
 
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400 flex items-center gap-2">
-                        <Shield size={14} /> Função no Sistema
+                        <Shield size={14} /> Perfil
                       </label>
                       <div className="relative">
                         <select 
@@ -452,8 +509,7 @@ export function Users() {
                           onChange={(e) => setFormData({...formData, role: e.target.value as any})}
                           className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-3 text-white outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all appearance-none cursor-pointer"
                         >
-                          <option value="viewer">Visualizador</option>
-                          <option value="manager">Gerente</option>
+                          <option value="client">Cliente</option>
                           <option value="admin">Administrador</option>
                         </select>
                         <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
