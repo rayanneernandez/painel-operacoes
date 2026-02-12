@@ -6,21 +6,10 @@ export function Logs() {
   const [selectedStore, setSelectedStore] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
-  const stores = [
-    { id: '1', name: 'Tech Solutions Ltda' },
-    { id: '2', name: 'Kibon Alphaville' },
-    { id: '3', name: 'Global IA Matriz' },
-  ];
+  const stores: { id: string; name: string }[] = [];
 
   // Mock data for logs
-  const allLogs = [
-    { id: 1, user: 'Admin Global', action: 'Login', status: 'success', time: 'Hoje, 10:23', ip: '192.168.1.1', store: 'Global IA Matriz', scope: 'network' },
-    { id: 2, user: 'Roberto Silva', action: 'Login', status: 'success', time: 'Hoje, 09:45', ip: '192.168.1.15', store: 'Tech Solutions Ltda', scope: 'store' },
-    { id: 3, user: 'Julia Costa', action: 'Tentativa de Login', status: 'failed', time: 'Hoje, 09:30', ip: '201.55.33.22', store: 'Kibon Alphaville', scope: 'store' },
-    { id: 4, user: 'Carlos Santos', action: 'Logout', status: 'success', time: 'Hoje, 08:15', ip: '192.168.1.4', store: 'Tech Solutions Ltda', scope: 'store' },
-    { id: 5, user: 'Admin Global', action: 'Alteração de Permissões', status: 'success', time: 'Ontem, 16:20', ip: '192.168.1.1', store: 'Global IA Matriz', scope: 'network' },
-    { id: 6, user: 'Roberto Silva', action: 'Login', status: 'success', time: 'Ontem, 14:00', ip: '192.168.1.15', store: 'Tech Solutions Ltda', scope: 'store' },
-  ];
+  const allLogs: any[] = [];
 
   // Filter logs based on scope and selected store
   const filteredLogs = allLogs.filter(log => {

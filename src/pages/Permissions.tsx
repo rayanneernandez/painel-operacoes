@@ -47,8 +47,7 @@ export function Permissions() {
                       onChange={(e) => setSelectedClient(e.target.value)}
                    >
                       <option value="" disabled>Selecione um cliente</option>
-                      <option value="1">Global IA</option>
-                      <option value="2">Tech Solutions</option>
+                      {/* Clientes serão carregados via API */}
                    </select>
                    <ChevronDown className="absolute right-4 top-3.5 text-gray-500 pointer-events-none" size={18} />
                 </div>

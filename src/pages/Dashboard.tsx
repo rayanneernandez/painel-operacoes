@@ -1,16 +1,16 @@
-import { Users, Globe, Activity, ArrowUp, ArrowDown, Server, CheckCircle2, AlertTriangle, Clock, ShieldCheck, Wallet, Zap, Cpu } from 'lucide-react';
+import { Users, Globe, Activity, ArrowUp, ArrowDown, Server, Clock, ShieldCheck, Wallet, Zap, Cpu } from 'lucide-react';
 
 export function Dashboard() {
   const stats = [
-    { label: 'Total de Clientes', value: '24', trend: '+2', trendUp: true, icon: Users, color: 'text-blue-400', bg: 'bg-blue-500/10' },
-    { label: 'Receita Mensal', value: 'R$ 142.5k', trend: '+12%', trendUp: true, icon: Wallet, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
-    { label: 'APIs Conectadas', value: '142', trend: '+15%', trendUp: true, icon: Globe, color: 'text-purple-400', bg: 'bg-purple-500/10' },
-    { label: 'Usuários Ativos', value: '89', trend: '+5', trendUp: true, icon: ShieldCheck, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
+    { label: 'Total de Clientes', value: '0', trend: '0', trendUp: true, icon: Users, color: 'text-blue-400', bg: 'bg-blue-500/10' },
+    { label: 'Receita Mensal', value: 'R$ 0,00', trend: '0%', trendUp: true, icon: Wallet, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+    { label: 'APIs Conectadas', value: '0', trend: '0%', trendUp: true, icon: Globe, color: 'text-purple-400', bg: 'bg-purple-500/10' },
+    { label: 'Usuários Ativos', value: '0', trend: '0', trendUp: true, icon: ShieldCheck, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
   ];
 
   
   // Dados simulados para o gráfico de barras (CSS)
-  const chartData = [40, 65, 45, 80, 55, 90, 70, 85, 60, 75, 50, 95];
+  const chartData = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
@@ -123,7 +123,7 @@ export function Dashboard() {
                   <div className="flex gap-3">
                      <div className="mt-1"><div className="w-1.5 h-1.5 rounded-full bg-blue-500"></div></div>
                      <div>
-                        <p className="text-xs text-gray-300">Novo cliente <span className="text-white">TechLabs</span> registrado.</p>
+                        <p className="text-xs text-gray-300">Novo cliente <span className="text-white">Assai</span> registrado.</p>
                         <p className="text-[10px] text-gray-600 flex items-center gap-1 mt-0.5"><Clock size={10} /> 12 min atrás</p>
                      </div>
                   </div>

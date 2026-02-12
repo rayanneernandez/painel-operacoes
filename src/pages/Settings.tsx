@@ -4,14 +4,9 @@ import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 
 // Mock Clients for selection
-const MOCK_CLIENTS = [
-  { id: '1', name: 'Tech Solutions Ltda' },
-  { id: '2', name: 'Kibon Alphaville' },
-];
+const MOCK_CLIENTS: { id: string; name: string }[] = [];
 
 export function Settings() {
-  const [activeTab, setActiveTab] = useState<'notifications' | 'dashboard'>('dashboard');
-
   // Dashboard Config State
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
   const [availableWidgets, setAvailableWidgets] = useState<WidgetType[]>([]);
@@ -140,8 +135,7 @@ export function Settings() {
         </div>
         
         <div className="flex items-center gap-3">
-           {activeTab === 'dashboard' && (
-             <div className="flex items-center gap-2 bg-gray-950 px-4 py-2 rounded-xl border border-gray-800">
+           <div className="flex items-center gap-2 bg-gray-950 px-4 py-2 rounded-xl border border-gray-800">
                 <Building2 size={16} className="text-emerald-500" />
                 <span className="text-sm text-gray-400">Editando:</span>
                 <select 
@@ -155,11 +149,9 @@ export function Settings() {
                   ))}
                 </select>
              </div>
-           )}
            
            <button 
             onClick={handleSave}
-            disabled={activeTab !== 'dashboard'} 
             className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
           >
             {saveStatus === 'saved' ? <CheckCircle2 size={18} /> : <Save size={18} />}
@@ -168,30 +160,11 @@ export function Settings() {
         </div>
       </div>
 
-      {/* Main Navigation Tabs */}
-      <div className="flex border-b border-gray-800 px-4 gap-8">
-        <button 
-          onClick={() => setActiveTab('dashboard')}
-          className={`pb-4 text-sm font-bold uppercase tracking-wider flex items-center gap-2 transition-colors relative ${activeTab === 'dashboard' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`}
-        >
-          <LayoutDashboard size={16} /> Dashboard Padrão
-          {activeTab === 'dashboard' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-emerald-500" />}
-        </button>
-        <button 
-          onClick={() => setActiveTab('notifications')}
-          className={`pb-4 text-sm font-bold uppercase tracking-wider flex items-center gap-2 transition-colors relative ${activeTab === 'notifications' ? 'text-white' : 'text-gray-500 hover:text-gray-300'}`}
-        >
-          <Bell size={16} /> Notificações
-          {activeTab === 'notifications' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-amber-500" />}
-        </button>
-      </div>
-
       {/* Content Area */}
       <div className="min-h-[500px]">
           
-        {/* DASHBOARD TAB */}
-        {activeTab === 'dashboard' && (
-          <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+        {/* DASHBOARD CONFIGURATION */}
+        <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
             
             {/* Dashboard Sub-Tabs */}
             <div className="flex gap-2 bg-gray-900/50 p-1 rounded-lg w-fit border border-gray-800">
@@ -338,18 +311,7 @@ export function Settings() {
                 </div>
               </div>
             )}
-          </div>
-        )}
-
-        {/* NOTIFICATIONS TAB */}
-        {activeTab === 'notifications' && (
-            <div className="text-center py-20 text-gray-500 bg-gray-900 border border-gray-800 rounded-2xl animate-in slide-in-from-left-4 duration-300">
-              <Bell size={48} className="mx-auto mb-4 opacity-20" />
-              <p className="text-lg font-medium text-gray-400">Notificações</p>
-              <p className="text-sm">Configurações de alerta e contato em breve.</p>
-            </div>
-        )}
-        
+        </div>
       </div>
     </div>
   );

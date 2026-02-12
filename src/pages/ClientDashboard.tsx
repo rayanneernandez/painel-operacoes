@@ -3,7 +3,6 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { 
   Globe, 
   Activity, 
-  ArrowLeft, 
   Clock, 
   Shield, 
   Building2, 
@@ -11,16 +10,14 @@ import {
   ChevronRight, 
   ChevronDown,
   MapPin, 
-  AlertCircle,
-  CheckCircle2,
-  MoreVertical,
   LayoutGrid,
   Users,
   BarChart2,
   Image,
   Upload,
   Calendar,
-  Settings
+  Settings,
+  AlertCircle
 } from 'lucide-react';
 import { 
   AVAILABLE_WIDGETS, 
@@ -33,16 +30,7 @@ import {
 import type { WidgetType } from '../components/DashboardWidgets';
 
 // Mock Data para Clientes (Simulando API)
-const CLIENT_DATA: Record<string, { name: string; logo?: string }> = {
-  '1': { 
-    name: 'Tech Solutions Ltda', 
-    logo: undefined // Sem logo para demonstrar o placeholder
-  },
-  '2': { 
-    name: 'Kibon Alphaville', 
-    logo: 'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c9/Kibon_logo.png/640px-Kibon_logo.png' 
-  }
-};
+const CLIENT_DATA: Record<string, { name: string; logo?: string }> = {};
 
 // Tipos para a hierarquia
 type CameraType = {
@@ -64,140 +52,7 @@ type StoreType = {
 };
 
 // Mock Data
-const MOCK_STORES: StoreType[] = [
-  {
-    id: 'store-1',
-    name: 'Loja Matriz - Centro',
-    address: 'Av. Paulista, 1000',
-    city: 'São Paulo, SP',
-    status: 'online',
-    cameras: [
-      { id: 'cam-1', name: 'Entrada Principal', status: 'online', type: 'bullet', resolution: '4k', lastEvent: 'Movimento detectado há 2min' },
-      { id: 'cam-2', name: 'Caixas', status: 'online', type: 'dome', resolution: '1080p' },
-      { id: 'cam-3', name: 'Estoque', status: 'offline', type: 'dome', resolution: '1080p', lastEvent: 'Offline há 1h' },
-    ]
-  },
-  {
-    id: 'store-2',
-    name: 'Filial Shopping Morumbi',
-    address: 'Av. Roque Petroni Jr, 1089',
-    city: 'São Paulo, SP',
-    status: 'online',
-    cameras: [
-      { id: 'cam-4', name: 'Corredor A', status: 'online', type: 'dome', resolution: '1080p' },
-      { id: 'cam-5', name: 'Estacionamento', status: 'online', type: 'ptz', resolution: '4k' },
-    ]
-  },
-  {
-    id: 'store-3',
-    name: 'Filial Campinas',
-    address: 'Rua Barão de Jaguara, 500',
-    city: 'Campinas, SP',
-    status: 'offline',
-    cameras: [
-      { id: 'cam-6', name: 'Entrada', status: 'offline', type: 'bullet', resolution: '1080p' },
-    ]
-  }
-];
-
-const TreeView = ({ 
-  clientName, 
-  stores, 
-  onSelectStore, 
-  onSelectCamera 
-}: { 
-  clientName: string, 
-  stores: StoreType[], 
-  onSelectStore: (s: StoreType) => void, 
-  onSelectCamera: (c: CameraType, s: StoreType) => void 
-}) => {
-  const [expandedStores, setExpandedStores] = useState<string[]>(stores.map(s => s.id));
-
-  const toggleStore = (e: React.MouseEvent, storeId: string) => {
-    e.stopPropagation();
-    setExpandedStores(prev => 
-      prev.includes(storeId) 
-        ? prev.filter(id => id !== storeId) 
-        : [...prev, storeId]
-    );
-  };
-
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-      <div className="p-4 border-b border-gray-800 bg-gray-950/50">
-        <h3 className="font-bold text-white flex items-center gap-2">
-          <Globe size={18} className="text-emerald-500" />
-          {clientName}
-          <span className="text-xs font-normal text-gray-500 ml-2">Rede Corporativa</span>
-        </h3>
-      </div>
-      
-      <div className="p-4">
-        <div className="space-y-2">
-          {stores.map(store => (
-            <div key={store.id} className="border border-gray-800 rounded-lg bg-gray-950/30 overflow-hidden">
-              {/* Store Header */}
-              <div 
-                className="flex items-center gap-3 p-3 hover:bg-gray-900/50 cursor-pointer transition-colors group"
-                onClick={() => onSelectStore(store)}
-              >
-                <button 
-                  onClick={(e) => toggleStore(e, store.id)}
-                  className="p-1 hover:bg-gray-800 rounded text-gray-500 hover:text-white transition-colors"
-                >
-                  {expandedStores.includes(store.id) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                </button>
-                
-                <div className={`p-2 rounded-md ${store.status === 'online' ? 'bg-blue-500/10 text-blue-500' : 'bg-red-500/10 text-red-500'}`}>
-                  <Building2 size={18} />
-                </div>
-                
-                <div className="flex-1">
-                  <div className="text-sm font-medium text-white group-hover:text-emerald-400 transition-colors">
-                    {store.name}
-                  </div>
-                  <div className="flex items-center gap-2 text-xs text-gray-500">
-                    <MapPin size={10} /> {store.city}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3 text-xs text-gray-500">
-                  <span className="hidden sm:inline">{store.cameras.length} Câmeras</span>
-                  <div className={`w-2 h-2 rounded-full ${store.status === 'online' ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                </div>
-              </div>
-
-              {/* Cameras List (Children) */}
-              {expandedStores.includes(store.id) && (
-                <div className="border-t border-gray-800 bg-black/20">
-                  {store.cameras.map((camera, idx) => (
-                    <div 
-                      key={camera.id}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectCamera(camera, store);
-                      }}
-                      className={`
-                        flex items-center gap-3 py-2 px-3 pl-14 cursor-pointer hover:bg-gray-900/50 transition-colors group
-                        ${idx !== store.cameras.length - 1 ? 'border-b border-gray-800/50' : ''}
-                      `}
-                    >
-                      <Video size={14} className={`group-hover:text-white transition-colors ${camera.status === 'online' ? 'text-gray-500' : 'text-red-500'}`} />
-                      <span className="text-sm text-gray-400 group-hover:text-white transition-colors">{camera.name}</span>
-                      <span className={`text-[10px] ml-auto px-1.5 py-0.5 rounded ${camera.status === 'online' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-red-500/10 text-red-500'}`}>
-                        {camera.status}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-};
+const MOCK_STORES: StoreType[] = [];
 
 export function ClientDashboard() {
   const { id } = useParams();
@@ -275,26 +130,21 @@ export function ClientDashboard() {
     setSelectedCamera(null);
   };
 
-  const goToCamera = (camera: CameraType) => {
-    setSelectedCamera(camera);
-    setView('camera');
-  };
-
   // Stats Dinâmicos
   const getStats = () => {
     if (view === 'network') {
       return [
-        { label: 'Total Visitantes', value: '246.171', icon: Users, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
-        { label: 'Média Visitantes Dia', value: '16.411', icon: BarChart2, color: 'text-blue-500', bg: 'bg-blue-500/10' },
-        { label: 'Tempo Médio Visita', value: '03:26', icon: Clock, color: 'text-orange-500', bg: 'bg-orange-500/10' },
-        { label: 'Taxa Conversão', value: '18.7%', icon: Activity, color: 'text-purple-500', bg: 'bg-purple-500/10' },
+        { label: 'Total Visitantes', value: '0', icon: Users, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+        { label: 'Média Visitantes Dia', value: '0', icon: BarChart2, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+        { label: 'Tempo Médio Visita', value: '00:00', icon: Clock, color: 'text-orange-500', bg: 'bg-orange-500/10' },
+        { label: 'Taxa Conversão', value: '0%', icon: Activity, color: 'text-purple-500', bg: 'bg-purple-500/10' },
       ];
     } else if (view === 'store' && selectedStore) {
       return [
-        { label: 'TOTAL VISITANTES', value: '391.186', icon: Users, color: 'text-white', bg: 'bg-blue-600' },
-        { label: 'MÉDIA VISITANTES DIA', value: '15.647', icon: BarChart2, color: 'text-white', bg: 'bg-blue-600' },
-        { label: 'TEMPO MED VISITA', value: '02:07', icon: Clock, color: 'text-white', bg: 'bg-blue-600' },
-        { label: 'TEMPO MED CONTATO', value: '00:10', icon: Activity, color: 'text-white', bg: 'bg-blue-600' },
+        { label: 'TOTAL VISITANTES', value: '0', icon: Users, color: 'text-white', bg: 'bg-blue-600' },
+        { label: 'MÉDIA VISITANTES DIA', value: '0', icon: BarChart2, color: 'text-white', bg: 'bg-blue-600' },
+        { label: 'TEMPO MED VISITA', value: '00:00', icon: Clock, color: 'text-white', bg: 'bg-blue-600' },
+        { label: 'TEMPO MED CONTATO', value: '00:00', icon: Activity, color: 'text-white', bg: 'bg-blue-600' },
       ];
 
     } else if (view === 'camera' && selectedCamera) {
@@ -481,7 +331,7 @@ export function ClientDashboard() {
                    <Activity size={14} className="text-blue-500" />
                    Média Visitantes Dia - Dia da Semana
                  </h3>
-                 <LineChart data={[16893, 16785, 17116, 12753, 17690, 17366, 18107]} color="text-blue-500" height={100} />
+                 <LineChart data={[0, 0, 0, 0, 0, 0, 0]} color="text-blue-500" height={100} />
                  <div className="flex justify-between text-[10px] text-gray-500 mt-2 uppercase">
                     <span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sab</span><span>Dom</span>
                  </div>

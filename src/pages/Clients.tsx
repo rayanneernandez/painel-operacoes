@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Globe, Key, Server, Settings, Shield, Upload, FileText, Lock } from 'lucide-react';
+import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 // Tipo fictício para clientes
 type Client = {
@@ -18,12 +18,12 @@ type Client = {
 
 const MOCK_CLIENTS: Client[] = [
   { 
-    id: '1', name: 'Tech Solutions Ltda', company: 'Tech Solutions', email: 'contato@techsolutions.com', phone: '(11) 99999-1234',
+    id: '1', name: 'Assai', company: 'Assai', email: 'contato@assai.com', phone: '(11) 99999-1234',
     status: 'active', plan: 'enterprise', apisConnected: 5, createdAt: '14/01/2024', 
     initials: 'T', color: 'bg-indigo-600' 
   },
   { 
-    id: '2', name: 'Kibon Alphaville', company: 'Unilever', email: 'kibon@alphaville.com', phone: '(11) 98888-5555',
+    id: '2', name: 'Kibon', company: 'Unilever', email: 'kibon@gmail.com', phone: '(11) 99999-9999',
     status: 'active', plan: 'pro', apisConnected: 3, createdAt: '19/01/2024', 
     initials: 'K', color: 'bg-teal-600' 
   },
@@ -243,7 +243,7 @@ export function Clients() {
                     <div className="relative">
                         <input 
                             type="text" 
-                            defaultValue="https://api.techsolutions.com/v1"
+                            defaultValue="https://api.assai.com/v1"
                             className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
                         />
                         <Server className="absolute right-3 top-2.5 text-gray-600" size={16} />

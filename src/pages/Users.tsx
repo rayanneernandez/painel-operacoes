@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Plus, User, Mail, Shield, Building, MoreVertical, Edit, ArrowDown, X, Lock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText } from 'lucide-react';
+import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText } from 'lucide-react';
 
 // Componente Toggle
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
@@ -34,38 +34,7 @@ type UserType = {
 };
 
 // Dados fictícios para teste
-const MOCK_USERS: UserType[] = [
-  { 
-    id: '1', 
-    name: 'Admin Global', 
-    email: 'admin@globalai.com', 
-    role: 'admin', 
-    clients: [], 
-    status: 'active', 
-    lastLogin: 'Hoje, 10:23',
-    permissions: { view_dashboard: true, view_reports: true, view_analytics: true, export_data: true, manage_settings: true }
-  },
-  { 
-    id: '2', 
-    name: 'Roberto Silva', 
-    email: 'roberto@techsolutions.com', 
-    role: 'manager', 
-    clients: [{ id: '1', name: 'Tech Solutions Ltda' }], 
-    status: 'active', 
-    lastLogin: 'Ontem, 15:40',
-    permissions: { view_dashboard: true, view_reports: true, view_analytics: false, export_data: false, manage_settings: false }
-  },
-  { 
-    id: '3', 
-    name: 'Julia Costa', 
-    email: 'julia@kibon.com', 
-    role: 'viewer', 
-    clients: [{ id: '2', name: 'Kibon Alphaville' }], 
-    status: 'active', 
-    lastLogin: '2 dias atrás',
-    permissions: { view_dashboard: true, view_reports: false, view_analytics: false, export_data: false, manage_settings: false }
-  },
-];
+const MOCK_USERS: UserType[] = [];
 
 export function Users() {
   const [users, setUsers] = useState<UserType[]>(MOCK_USERS);
@@ -101,11 +70,7 @@ export function Users() {
   const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
   const [isClientDropdownOpen, setIsClientDropdownOpen] = useState(false);
 
-  const availableClients = [
-    { id: '1', name: 'Tech Solutions Ltda' },
-    { id: '2', name: 'Kibon Alphaville' },
-    { id: '3', name: 'Global IA' },
-  ];
+  const availableClients: { id: string; name: string }[] = [];
 
   const handleOpenModal = (user?: UserType, mode: 'create' | 'edit' = 'create', initialTab: 'details' | 'permissions' | 'clients' = 'details') => {
     setModalMode(mode);
@@ -244,7 +209,14 @@ export function Users() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-800">
-            {users.map((user) => (
+            {users.length === 0 ? (
+                <tr>
+                    <td colSpan={6} className="p-8 text-center text-gray-500">
+                        Nenhum usuário encontrado. Adicione um novo usuário para começar.
+                    </td>
+                </tr>
+            ) : (
+                users.map((user) => (
               <tr key={user.id} className="hover:bg-gray-800/50 transition-colors group">
                 <td className="p-4">
                   <div className="flex items-center gap-3">
@@ -336,7 +308,7 @@ export function Users() {
                   )}
                 </td>
               </tr>
-            ))}
+            )))}
           </tbody>
         </table>
         

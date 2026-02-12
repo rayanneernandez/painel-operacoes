@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Clock, Users, BarChart2 } from 'lucide-react';
+import { Activity, Clock, Users } from 'lucide-react';
 
 // --- CHART COMPONENTS ---
 
@@ -82,15 +82,15 @@ export const HorizontalBarChart = ({ data, color }: { data: { label: string, val
 
 export const AgePyramid = () => {
   const data = [
-    { age: '65+', m: 5, f: 8 },
-    { age: '55-64', m: 12, f: 15 },
-    { age: '45-54', m: 20, f: 22 },
-    { age: '35-44', m: 35, f: 30 },
-    { age: '25-34', m: 45, f: 50 },
-    { age: '18-24', m: 25, f: 20 },
-    { age: '18-', m: 10, f: 5 },
+    { age: '65+', m: 0, f: 0 },
+    { age: '55-64', m: 0, f: 0 },
+    { age: '45-54', m: 0, f: 0 },
+    { age: '35-44', m: 0, f: 0 },
+    { age: '25-34', m: 0, f: 0 },
+    { age: '18-24', m: 0, f: 0 },
+    { age: '18-', m: 0, f: 0 },
   ];
-  const maxVal = 60;
+  const maxVal = 1;
 
   return (
     <div className="w-full flex flex-col gap-1">
@@ -201,7 +201,7 @@ export const WidgetFlowTrend = ({ view }: { view: string }) => (
        <Activity size={14} className="text-blue-500" />
        Média Visitantes Dia - {view === 'network' ? 'Rede' : 'Dia da Semana'}
      </h3>
-     <LineChart data={view === 'network' ? [45893, 42785, 48116, 39753, 52690, 55366, 49107] : [16893, 16785, 17116, 12753, 17690, 17366, 18107]} color="text-blue-500" height={100} />
+     <LineChart data={[0, 0, 0, 0, 0, 0, 0]} color="text-blue-500" height={100} />
      <div className="flex justify-between text-[10px] text-gray-500 mt-2 uppercase">
         <span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sab</span><span>Dom</span>
      </div>
@@ -212,11 +212,9 @@ export const WidgetHourlyFlow = ({ view }: { view: string }) => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
      <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider">
        <Clock size={14} className="text-emerald-500" />
-       Média Visitantes por Hora
+       Média Visitantes por Hora {view === 'network' ? '(Rede)' : ''}
      </h3>
-     <LineChart data={view === 'network' 
-        ? [50, 120, 350, 800, 1500, 2800, 3200, 3400, 3300, 2100, 1500, 800, 400, 100] 
-        : [10, 20, 50, 100, 300, 800, 1200, 1400, 1300, 1100, 900, 600, 300, 100]} 
+     <LineChart data={[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]} 
         color="text-emerald-500" height={100} 
      />
      <div className="flex justify-between text-[10px] text-gray-500 mt-2">
@@ -242,12 +240,12 @@ export const WidgetGenderDist = ({ view }: { view: string }) => (
        Gênero {view === 'network' ? '(Consolidado)' : ''}
      </h3>
      <DonutChart 
-        data={[{ label: 'Masculino', value: 164923 }, { label: 'Feminino', value: 79109 }]} 
+        data={[{ label: 'Masculino', value: 0 }, { label: 'Feminino', value: 0 }]} 
         colors={['#1e40af', '#db2777']}
      />
      <div className="flex justify-center gap-4 mt-4 text-xs">
-        <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-blue-800 rounded-full" /> Masculino (67%)</span>
-        <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-pink-600 rounded-full" /> Feminino (32%)</span>
+        <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-blue-800 rounded-full" /> Masculino (0%)</span>
+        <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-pink-600 rounded-full" /> Feminino (0%)</span>
      </div>
    </div>
 );
@@ -260,10 +258,10 @@ export const WidgetAttributes = ({ view }: { view: string }) => (
      </h3>
      <HorizontalBarChart 
         data={[
-          { label: 'Óculos', value: 35 },
-          { label: 'Barba', value: 28 },
-          { label: 'Máscara', value: 5 },
-          { label: 'Chapéu/Boné', value: 12 }
+          { label: 'Óculos', value: 0 },
+          { label: 'Barba', value: 0 },
+          { label: 'Máscara', value: 0 },
+          { label: 'Chapéu/Boné', value: 0 }
         ]}
         color="bg-orange-500"
      />
@@ -288,21 +286,7 @@ export const WidgetCampaigns = ({ view }: { view: string }) => (
            </tr>
          </thead>
          <tbody className="divide-y divide-gray-200 dark:divide-gray-800">
-           {[
-             { name: 'Promoção Verão', start: '06/01/2026', vis: 1492, time: '18m', att: '15s' },
-             { name: 'Oferta Relâmpago', start: '01/01/2026', vis: 3205, time: '04m', att: '15s' },
-             { name: 'Lançamento X', start: '10/01/2026', vis: 1591, time: '22m', att: '15s' },
-             { name: 'Queima de Estoque', start: '11/01/2026', vis: 1538, time: '23m', att: '16s' },
-             { name: 'Fidelidade', start: '01/01/2026', vis: 1604, time: '24m', att: '15s' },
-           ].map((row, i) => (
-             <tr key={i} className="group hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
-               <td className="py-2 text-gray-900 dark:text-white font-medium">{row.name}</td>
-               <td className="py-2">{row.start}</td>
-               <td className="py-2 text-emerald-600 dark:text-emerald-400">{row.vis}</td>
-               <td className="py-2">{row.time}</td>
-               <td className="py-2 text-orange-600 dark:text-orange-400">{row.att}</td>
-             </tr>
-           ))}
+           {/* Tabela vazia */}
          </tbody>
        </table>
      </div>
@@ -311,10 +295,10 @@ export const WidgetCampaigns = ({ view }: { view: string }) => (
 
 export const WidgetKPIFlowStats = () => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex items-center justify-between gap-4 overflow-x-auto shadow-sm dark:shadow-none">
-     <KPIStat label="Total Visitantes" value="391.186" color="text-gray-900 dark:text-white" />
-     <KPIStat label="Média Visitantes Dia" value="15.647" color="text-blue-500" />
-     <KPIStat label="Tempo Médio Visita" value="02:07" color="text-emerald-500" />
-     <KPIStat label="Tempo Médio Contato" value="00:10" color="text-amber-500" />
+     <KPIStat label="Total Visitantes" value="0" color="text-gray-900 dark:text-white" />
+     <KPIStat label="Média Visitantes Dia" value="0" color="text-blue-500" />
+     <KPIStat label="Tempo Médio Visita" value="00:00" color="text-emerald-500" />
+     <KPIStat label="Tempo Médio Contato" value="00:00" color="text-amber-500" />
   </div>
 );
 
@@ -322,9 +306,9 @@ export const WidgetKPIStoreQuarter = () => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex flex-col justify-between shadow-sm dark:shadow-none">
     <h3 className="font-bold text-red-500 mb-2 uppercase text-xs tracking-wider">Loja Último Trimestre</h3>
     <div className="flex gap-2">
-       <KPIStat label="Visitantes" value="131.733" />
-       <KPIStat label="Vendas" value="74.504" />
-       <KPIStat label="Conversão" value="56,56%" color="text-emerald-500" />
+       <KPIStat label="Visitantes" value="0" />
+       <KPIStat label="Vendas" value="0" />
+       <KPIStat label="Conversão" value="0%" color="text-emerald-500" />
     </div>
   </div>
 );
@@ -333,9 +317,9 @@ export const WidgetKPIStorePeriod = () => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex flex-col justify-between shadow-sm dark:shadow-none">
     <h3 className="font-bold text-red-500 mb-2 uppercase text-xs tracking-wider">Loja Período</h3>
     <div className="flex gap-2">
-       <KPIStat label="Visitantes" value="17.956" />
-       <KPIStat label="Vendas" value="12.073" />
-       <KPIStat label="Conversão" value="67,24%" color="text-emerald-500" />
+       <KPIStat label="Visitantes" value="0" />
+       <KPIStat label="Vendas" value="0" />
+       <KPIStat label="Conversão" value="0%" color="text-emerald-500" />
     </div>
   </div>
 );
@@ -345,9 +329,9 @@ export const WidgetSalesQuarter = () => (
      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas Último Trimestre</h3>
      <VerticalBarChart 
        data={[
-         { label: 'OUT', values: [80, 45] },
-         { label: 'NOV', values: [65, 30] },
-         { label: 'DEZ', values: [90, 60] }
+         { label: 'OUT', values: [0, 0] },
+         { label: 'NOV', values: [0, 0] },
+         { label: 'DEZ', values: [0, 0] }
        ]} 
        colors={['bg-blue-500', 'bg-blue-900']} 
        height={120}
@@ -362,7 +346,7 @@ export const WidgetSalesQuarter = () => (
 export const WidgetSalesDaily = () => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas por Dia</h3>
-     <LineChart data={[30, 45, 35, 50, 40, 60, 55, 70, 65, 50, 45, 30, 40, 55]} color="text-blue-500" height={100} />
+     <LineChart data={[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]} color="text-blue-500" height={100} />
      <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
         <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-500 rounded-full"/> Visitantes</span>
      </div>
@@ -374,10 +358,10 @@ export const WidgetSalesPeriodBar = () => (
      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas por Período</h3>
      <VerticalBarChart 
        data={[
-         { label: 'Sem 1', values: [40, 20] },
-         { label: 'Sem 2', values: [70, 45] },
-         { label: 'Sem 3', values: [60, 35] },
-         { label: 'Sem 4', values: [80, 50] }
+         { label: 'Sem 1', values: [0, 0] },
+         { label: 'Sem 2', values: [0, 0] },
+         { label: 'Sem 3', values: [0, 0] },
+         { label: 'Sem 4', values: [0, 0] }
        ]} 
        colors={['bg-blue-500', 'bg-blue-900']} 
        height={120}

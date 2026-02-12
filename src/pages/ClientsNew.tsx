@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, ArrowRight } from 'lucide-react';
+import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, CheckCircle2, Activity, Camera } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 // Componente Toggle
@@ -25,20 +25,27 @@ type Client = {
   createdAt: string;
   initials: string;
   color: string;
+  stores?: Store[];
 };
 
-const MOCK_CLIENTS: Client[] = [
-  { 
-    id: '1', name: 'Tech Solutions Ltda', company: 'Tech Solutions', email: 'contato@techsolutions.com', phone: '(11) 99999-1234',
-    status: 'active', plan: 'enterprise', apisConnected: 5, createdAt: '14/01/2024', 
-    initials: 'T', color: 'bg-indigo-600' 
-  },
-  { 
-    id: '2', name: 'Kibon Alphaville', company: 'Unilever', email: 'kibon@alphaville.com', phone: '(11) 98888-5555',
-    status: 'active', plan: 'pro', apisConnected: 3, createdAt: '19/01/2024', 
-    initials: 'K', color: 'bg-teal-600' 
-  },
-];
+type Device = {
+  id: string;
+  name: string;
+  type: 'camera' | 'sensor' | 'gateway';
+  macAddress: string;
+  status: 'online' | 'offline';
+};
+
+type Store = {
+  id: string;
+  name: string;
+  city: string;
+  devices: Device[];
+};
+
+const MOCK_API_DEVICES: Device[] = [];
+
+const MOCK_CLIENTS: Client[] = [];
 
 export function Clients() {
   const navigate = useNavigate();
@@ -46,14 +53,16 @@ export function Clients() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'details' | 'permissions' | 'api'>('details');
+  const [expandedStore, setExpandedStore] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<'details' | 'permissions' | 'api' | 'stores'>('details');
 
-  // Mock data for client stores
-  const getClientStores = (clientId: string) => [
-    { id: 'store-1', name: 'Loja Matriz - Centro', city: 'São Paulo, SP' },
-    { id: 'store-2', name: 'Filial Shopping Morumbi', city: 'São Paulo, SP' },
-    { id: 'store-3', name: 'Filial Campinas', city: 'Campinas, SP' },
-  ];
+  // State for managing stores in the modal
+  const [editingStores, setEditingStores] = useState<Store[]>([]);
+  const [newStoreName, setNewStoreName] = useState('');
+  const [newStoreCity, setNewStoreCity] = useState('');
+
+  // Data for client stores
+  const getClientStores = (_: string): Store[] => [];
 
   // Estado de permissões (mock)
   const [perms, setPerms] = useState({
@@ -68,11 +77,63 @@ export function Clients() {
     setPerms(p => ({ ...p, [key]: !p[key] }));
   };
 
-  const handleEdit = (client: Client, initialTab: 'details' | 'permissions' | 'api' = 'details') => {
+  const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
+
+  const handleTestConnection = () => {
+    setApiStatus('testing');
+    setTimeout(() => {
+      setApiStatus('success');
+    }, 1500);
+  };
+
+  const handleEdit = (client: Client, initialTab: 'details' | 'permissions' | 'api' | 'stores' = 'details') => {
     setSelectedClient(client);
     setActiveTab(initialTab);
+    // Load existing stores for this client (mock)
+    setEditingStores(getClientStores(client.id));
     setIsEditModalOpen(true);
     setActiveMenu(null);
+  };
+
+  const handleAddStore = () => {
+    if (!newStoreName || !newStoreCity) return;
+    const newStore: Store = {
+      id: `new-store-${Date.now()}`,
+      name: newStoreName,
+      city: newStoreCity,
+      devices: []
+    };
+    setEditingStores([...editingStores, newStore]);
+    setNewStoreName('');
+    setNewStoreCity('');
+  };
+
+  const handleRemoveStore = (storeId: string) => {
+    setEditingStores(editingStores.filter(s => s.id !== storeId));
+  };
+
+  const handleAddDeviceToStore = (storeId: string, deviceId: string) => {
+    if (!deviceId) return;
+    const device = MOCK_API_DEVICES.find(d => d.id === deviceId);
+    if (!device) return;
+
+    setEditingStores(editingStores.map(store => {
+      if (store.id === storeId) {
+        // Avoid duplicates
+        if (store.devices.find(d => d.id === deviceId)) return store;
+        return { ...store, devices: [...store.devices, device] };
+      }
+      return store;
+    }));
+  };
+
+  const handleRemoveDeviceFromStore = (storeId: string, deviceId: string) => {
+    setEditingStores(editingStores.map(store => {
+      if (store.id === storeId) {
+        return { ...store, devices: store.devices.filter(d => d.id !== deviceId) };
+      }
+      return store;
+    }));
   };
 
   return (
@@ -106,7 +167,25 @@ export function Clients() {
 
       {/* Client List */}
       <div className="space-y-4">
-        {MOCK_CLIENTS.map((client) => (
+        {MOCK_CLIENTS.length === 0 ? (
+          <div className="text-center py-12 bg-gray-900/50 rounded-xl border border-gray-800 border-dashed">
+            <div className="w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-4 text-gray-500">
+              <Building size={32} />
+            </div>
+            <h3 className="text-lg font-medium text-white mb-2">Nenhum cliente encontrado</h3>
+            <p className="text-gray-500 max-w-sm mx-auto mb-6">
+              Comece adicionando seu primeiro cliente para gerenciar lojas e câmeras.
+            </p>
+            <button 
+              onClick={() => { setSelectedClient(null); setIsEditModalOpen(true); }}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg inline-flex items-center gap-2 transition-colors"
+            >
+              <Plus size={18} />
+              Adicionar Primeiro Cliente
+            </button>
+          </div>
+        ) : (
+          MOCK_CLIENTS.map((client) => (
           <div key={client.id} className="bg-gray-900 border border-gray-800 rounded-xl p-6 hover:border-gray-700 transition-all group relative flex flex-col gap-4">
             
             <div className="w-full flex items-center justify-between">
@@ -198,30 +277,91 @@ export function Clients() {
                 </h4>
                 <div className="flex flex-col gap-2">
                   {getClientStores(client.id).map(store => (
-                    <button 
+                    <div 
                       key={store.id}
-                      onClick={() => navigate(`/clientes/${client.id}/dashboard`, { state: { initialView: 'store', storeId: store.id } })}
-                      className="flex items-center justify-between p-3 bg-gray-950 rounded-lg border border-gray-800 hover:border-emerald-500/50 hover:bg-gray-900 transition-all group text-left w-full"
+                      className="bg-gray-950 rounded-lg border border-gray-800 overflow-hidden transition-all"
                     >
-                      <div className="flex items-center gap-4">
-                         <div className="w-8 h-8 rounded-lg bg-gray-900 flex items-center justify-center text-gray-500 group-hover:text-emerald-500 transition-colors">
-                           <Building2 size={16} />
-                         </div>
-                         <div>
-                          <p className="text-sm font-medium text-white group-hover:text-emerald-400">{store.name}</p>
-                          <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
-                            <MapPin size={10} /> {store.city}
-                          </p>
-                         </div>
+                      <div 
+                        className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-900 transition-colors"
+                        onClick={() => setExpandedStore(expandedStore === store.id ? null : store.id)}
+                      >
+                        <div className="flex items-center gap-4">
+                           <div className="w-8 h-8 rounded-lg bg-gray-900 flex items-center justify-center text-gray-500 group-hover:text-emerald-500 transition-colors">
+                             <Building2 size={16} />
+                           </div>
+                           <div>
+                            <p className="text-sm font-medium text-white group-hover:text-emerald-400">{store.name}</p>
+                            <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
+                              <MapPin size={10} /> {store.city}
+                            </p>
+                           </div>
+                        </div>
+                        
+                        <div className="flex items-center gap-3">
+                          <button 
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              navigate(`/clientes/${client.id}/dashboard`, { state: { initialView: 'store', storeId: store.id } });
+                            }}
+                            className="p-1.5 text-gray-500 hover:text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-colors"
+                            title="Ir para Dashboard"
+                          >
+                            <LayoutDashboard size={16} />
+                          </button>
+                          {expandedStore === store.id ? <ChevronUp size={16} className="text-gray-500" /> : <ChevronDown size={16} className="text-gray-500" />}
+                        </div>
                       </div>
-                      <ArrowRight size={14} className="text-gray-600 group-hover:text-emerald-500 opacity-0 group-hover:opacity-100 transition-all transform group-hover:translate-x-1" />
-                    </button>
+
+                      {/* Store Devices Expansion */}
+                      {expandedStore === store.id && (
+                        <div className="bg-gray-900/50 border-t border-gray-800 p-3 animate-in slide-in-from-top-2 duration-200">
+                          <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-2 px-1">
+                            <Camera size={12} /> Câmeras Conectadas (Recebendo Dados)
+                          </h5>
+                          
+                          {store.devices.length > 0 ? (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                              {store.devices.map(device => (
+                                <div key={device.id} className="flex items-center justify-between bg-gray-950 p-2 rounded border border-gray-800 group/device hover:border-gray-700 transition-all">
+                                  <div className="flex items-center gap-2">
+                                    <div className={`w-2 h-2 rounded-full ${device.status === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
+                                    <div>
+                                      <p className="text-xs font-medium text-gray-300 group-hover/device:text-emerald-400 transition-colors">{device.name}</p>
+                                      <p className="text-[10px] text-gray-600 font-mono">{device.macAddress}</p>
+                                    </div>
+                                  </div>
+                                  
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-[10px] bg-gray-900 text-gray-500 px-1.5 py-0.5 rounded border border-gray-800 uppercase">
+                                        {device.status === 'online' ? 'Capturando' : 'Offline'}
+                                    </span>
+                                    <button 
+                                        onClick={(e) => {
+                                        e.stopPropagation();
+                                        navigate(`/clientes/${client.id}/dashboard`, { state: { initialView: 'device', storeId: store.id, deviceId: device.id } });
+                                        }}
+                                        className="p-1.5 text-gray-500 hover:text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-colors opacity-0 group-hover/device:opacity-100"
+                                        title="Dashboard da Câmera"
+                                    >
+                                        <LayoutDashboard size={14} />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="text-xs text-gray-600 italic px-1">Nenhuma câmera vinculada a esta loja.</p>
+                          )}
+                        </div>
+                      )}
+                    </div>
                   ))}
                 </div>
               </div>
             )}
           </div>
-        ))}
+          ))
+        )}
       </div>
 
       {/* MODAL DE EDIÇÃO */}
@@ -272,6 +412,16 @@ export function Clients() {
                   }`}
                 >
                   Configuração API
+                </button>
+                <button 
+                  onClick={() => setActiveTab('stores')}
+                  className={`pb-3 text-sm font-medium transition-colors relative ${
+                    activeTab === 'stores' 
+                      ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' 
+                      : 'text-gray-400 hover:text-gray-300'
+                  }`}
+                >
+                  Lojas e Dispositivos
                 </button>
               </div>
             </div>
@@ -435,78 +585,286 @@ export function Clients() {
               {/* API Config Section */}
               {activeTab === 'api' && (
                 <div className="border border-gray-800 rounded-xl p-5 bg-gray-950/50">
-                  <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-2 mb-4">
-                    <Key size={16} /> Configuração da API
-                  </h3>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-2">
+                      <Key size={16} /> Configuração da API (DisplayForce.ai)
+                    </h3>
+                  </div>
                   
+                  <div className="space-y-6">
+                    <div className="grid grid-cols-1 gap-4">
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Endpoint da API (Base URL)</label>
+                        <div className="relative">
+                            <input 
+                                type="text" 
+                                placeholder="https://api.displayforce.ai"
+                                className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
+                            />
+                            <Server className="absolute right-3 top-2.5 text-gray-600" size={16} />
+                        </div>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">X-API-Token</label>
+                        <div className="relative">
+                            <input 
+                                type="text" 
+                                placeholder="Insira seu token aqui"
+                                className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
+                            />
+                            <Lock className="absolute right-3 top-2.5 text-gray-600" size={16} />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="border-t border-gray-800 pt-4">
+                        <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 flex items-center gap-2">
+                            <FileText size={14} /> Parâmetros do Body (Coleta de Dados)
+                        </h4>
+                        
+                        <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                            {/* Date Range */}
+                            <div className="col-span-2 grid grid-cols-2 gap-4 mb-2">
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-gray-500 uppercase">Início (Start)</label>
+                                    <input type="text" placeholder="YYYY-MM-DDTHH:mm:ssZ" className="w-full bg-gray-900 border border-gray-800 rounded px-3 py-1.5 text-xs text-gray-400 font-mono" />
+                                </div>
+                                <div className="space-y-1">
+                                    <label className="text-[10px] text-gray-500 uppercase">Fim (End)</label>
+                                    <input type="text" placeholder="YYYY-MM-DDTHH:mm:ssZ" className="w-full bg-gray-900 border border-gray-800 rounded px-3 py-1.5 text-xs text-gray-400 font-mono" />
+                                </div>
+                            </div>
+
+                            {/* Booleans */}
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-300">Rastreamento (Tracks)</span>
+                                    <Toggle checked={true} onChange={() => {}} />
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-300">Qualidade Facial</span>
+                                    <Toggle checked={true} onChange={() => {}} />
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-300">Óculos</span>
+                                    <Toggle checked={true} onChange={() => {}} />
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-300">Barba/Bigode</span>
+                                    <Toggle checked={true} onChange={() => {}} />
+                                </div>
+                            </div>
+
+                            <div className="space-y-3">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-300">Cor do Cabelo</span>
+                                    <Toggle checked={true} onChange={() => {}} />
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-300">Tipo de Cabelo</span>
+                                    <Toggle checked={true} onChange={() => {}} />
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-gray-300">Chapéu/Boné</span>
+                                    <Toggle checked={true} onChange={() => {}} />
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Additional Attributes */}
+                        <div className="mt-4">
+                            <label className="text-[10px] text-gray-500 uppercase mb-2 block">Atributos Adicionais</label>
+                            <div className="flex flex-wrap gap-2">
+                                {['smile', 'pitch', 'yaw', 'x', 'y', 'height'].map(attr => (
+                                    <span key={attr} className="px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono">
+                                        {attr}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="pt-2">
+                      <button 
+                        onClick={handleTestConnection}
+                        disabled={apiStatus === 'testing'}
+                        className={`w-full py-3 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-all ${
+                          apiStatus === 'success' 
+                            ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
+                            : 'bg-gray-800 hover:bg-gray-700 text-white'
+                        }`}
+                      >
+                        {apiStatus === 'testing' ? (
+                          <>
+                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                            Conectando à DisplayForce.ai...
+                          </>
+                        ) : apiStatus === 'success' ? (
+                          <>
+                            <CheckCircle2 size={18} />
+                            Conexão Estabelecida • {MOCK_API_DEVICES.length} Câmeras Encontradas
+                          </>
+                        ) : (
+                          <>
+                            <Activity size={18} />
+                            Testar Conexão e Buscar Câmeras
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Stores & Devices Tab */}
+              {activeTab === 'stores' && (
+                <div className="space-y-6">
+                  {/* Add New Store Section */}
+                  <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-xl p-4 flex gap-3 items-start">
+                    <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-500 mt-0.5">
+                      <Camera size={18} />
+                    </div>
+                    <div>
+                      <h4 className="text-sm font-bold text-emerald-400">Fluxo de Dados</h4>
+                      <p className="text-xs text-gray-400 mt-1 leading-relaxed">
+                        Ao vincular uma <strong>Câmera</strong> a uma <strong>Loja</strong>, as imagens e dados analíticos capturados
+                        serão automaticamente direcionados para o dashboard dessa loja específica.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="bg-gray-950/50 border border-gray-800 rounded-xl p-4">
+                    <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
+                      <Plus size={16} className="text-emerald-500" /> Adicionar Nova Loja
+                    </h3>
+                    <div className="flex gap-4">
+                      <div className="flex-1 space-y-1">
+                        <input 
+                          type="text" 
+                          placeholder="Nome da Loja (ex: Matriz)" 
+                          value={newStoreName}
+                          onChange={(e) => setNewStoreName(e.target.value)}
+                          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
+                        />
+                      </div>
+                      <div className="flex-1 space-y-1">
+                        <input 
+                          type="text" 
+                          placeholder="Cidade / Localização" 
+                          value={newStoreCity}
+                          onChange={(e) => setNewStoreCity(e.target.value)}
+                          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
+                        />
+                      </div>
+                      <button 
+                        onClick={handleAddStore}
+                        disabled={!newStoreName || !newStoreCity}
+                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                      >
+                        Adicionar
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* List of Stores */}
                   <div className="space-y-4">
-                    <div className="grid grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Ambiente</label>
-                        <select className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 text-sm focus:ring-1 focus:ring-emerald-500 outline-none">
-                          <option value="production">Produção</option>
-                          <option value="sandbox">Sandbox / Staging</option>
-                          <option value="development">Desenvolvimento</option>
-                        </select>
+                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider">Lojas Cadastradas ({editingStores.length})</h3>
+                    
+                    {editingStores.length === 0 ? (
+                      <div className="text-center py-8 border border-dashed border-gray-800 rounded-xl">
+                        <Building2 className="mx-auto text-gray-600 mb-2" size={32} />
+                        <p className="text-gray-500">Nenhuma loja cadastrada para este cliente.</p>
                       </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Método de Autenticação</label>
-                        <select className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 text-sm focus:ring-1 focus:ring-emerald-500 outline-none">
-                          <option value="bearer">Bearer Token</option>
-                          <option value="apikey_header">API Key (Header)</option>
-                          <option value="basic">Basic Auth</option>
-                          <option value="oauth2">OAuth 2.0</option>
-                        </select>
-                      </div>
-                    </div>
+                    ) : (
+                      <div className="grid gap-4">
+                        {editingStores.map(store => (
+                          <div key={store.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                            {/* Store Header */}
+                            <div className="p-4 flex items-center justify-between bg-gray-950/30 border-b border-gray-800">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-500">
+                                  <Building2 size={20} />
+                                </div>
+                                <div>
+                                  <h4 className="font-bold text-white text-sm">{store.name}</h4>
+                                  <p className="text-xs text-gray-500 flex items-center gap-1">
+                                    <MapPin size={10} /> {store.city}
+                                  </p>
+                                </div>
+                              </div>
+                              <button 
+                                onClick={() => handleRemoveStore(store.id)}
+                                className="text-gray-500 hover:text-red-400 transition-colors p-2 hover:bg-red-900/10 rounded-lg"
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
 
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Endpoint da API (Base URL)</label>
-                      <div className="relative">
-                          <input 
-                              type="text" 
-                              defaultValue="https://api.techsolutions.com/v1"
-                              className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                          />
-                          <Server className="absolute right-3 top-2.5 text-gray-600" size={16} />
-                      </div>
-                    </div>
+                            {/* Store Content (Devices) */}
+                            <div className="p-4 bg-gray-900/20">
+                              <div className="flex items-center justify-between mb-3">
+                                <h5 className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
+                                  <Camera size={12} /> Câmeras ({store.devices.length})
+                                </h5>
+                              </div>
 
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Chave da API / Token</label>
-                      <div className="relative">
-                          <input 
-                              type="text" 
-                              placeholder="sk-xxxxxxxxxxxxxxxx" 
-                              className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                          />
-                          <Lock className="absolute right-3 top-2.5 text-gray-600" size={16} />
-                      </div>
-                    </div>
+                              {/* Add Device to Store */}
+                              <div className="flex gap-2 mb-4">
+                                <select 
+                                  className="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-1 focus:ring-emerald-500 outline-none"
+                                  onChange={(e) => {
+                                    if (e.target.value) {
+                                      handleAddDeviceToStore(store.id, e.target.value);
+                                      e.target.value = ''; // Reset select
+                                    }
+                                  }}
+                                >
+                                  <option value="">+ Vincular Câmera da API...</option>
+                                  {MOCK_API_DEVICES.map(device => (
+                                    <option 
+                                      key={device.id} 
+                                      value={device.id}
+                                      disabled={store.devices.some(d => d.id === device.id)}
+                                    >
+                                      {device.name} ({device.macAddress}) - {device.status}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
 
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Header Personalizado (Opcional)</label>
-                      <div className="relative">
-                          <input 
-                              type="text" 
-                              placeholder="X-Custom-Auth: value" 
-                              className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                          />
-                          <Key className="absolute right-3 top-2.5 text-gray-600" size={16} />
+                              {/* Device List */}
+                              {store.devices.length > 0 ? (
+                                <div className="space-y-2">
+                                  {store.devices.map(device => (
+                                    <div key={device.id} className="flex items-center justify-between bg-gray-950 rounded-lg p-2 border border-gray-800/50">
+                                      <div className="flex items-center gap-2">
+                                        <div className={`w-2 h-2 rounded-full ${device.status === 'online' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                                        <div>
+                                          <p className="text-xs font-medium text-white">{device.name}</p>
+                                          <p className="text-[10px] text-gray-500 font-mono">{device.macAddress}</p>
+                                        </div>
+                                      </div>
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-[10px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded border border-gray-700">{device.type}</span>
+                                        <button 
+                                          onClick={() => handleRemoveDeviceFromStore(store.id, device.id)}
+                                          className="text-gray-600 hover:text-red-400 transition-colors"
+                                        >
+                                          <X size={12} />
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="text-xs text-gray-600 italic text-center py-2">Nenhum dispositivo vinculado.</p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    </div>
-
-                    <div className="space-y-2">
-                      <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">URL da Documentação</label>
-                      <div className="relative">
-                          <input 
-                              type="text" 
-                              placeholder="https://docs.api.com" 
-                              className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                          />
-                          <FileText className="absolute right-3 top-2.5 text-gray-600" size={16} />
-                      </div>
-                    </div>
+                    )}
                   </div>
                 </div>
               )}
