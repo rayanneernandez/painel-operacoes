@@ -65,16 +65,39 @@ export function Users() {
     password: ''
   });
 
+  // Estado para clientes disponíveis
+  const [availableClients, setAvailableClients] = useState<{ id: string; name: string }[]>([]);
+
   useEffect(() => {
     fetchUsers();
+    fetchClients();
   }, []);
+
+  const fetchClients = async () => {
+    try {
+      const { data, error } = await supabase.from('clients').select('id, name');
+      if (error) throw error;
+      setAvailableClients(data || []);
+    } catch (error) {
+      console.error('Erro ao buscar clientes:', error);
+    }
+  };
 
   const fetchUsers = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase.from('users').select('*');
+      const { data, error } = await supabase
+        .from('users')
+        .select('*, clients(id, name)');
+      
       if (error) throw error;
-      setUsers(data || []);
+      
+      const formattedUsers = data?.map(user => ({
+        ...user,
+        clients: Array.isArray(user.clients) ? user.clients : (user.clients ? [user.clients] : [])
+      })) || [];
+
+      setUsers(formattedUsers);
     } catch (error) {
       console.error('Erro ao buscar usuários:', error);
     } finally {
@@ -85,8 +108,6 @@ export function Users() {
   // Estado para seleção múltipla de clientes no modal
   const [selectedClientIds, setSelectedClientIds] = useState<string[]>([]);
   const [isClientDropdownOpen, setIsClientDropdownOpen] = useState(false);
-
-  const availableClients: { id: string; name: string }[] = [];
 
   const handleOpenModal = (user?: UserType, mode: 'create' | 'edit' = 'create', initialTab: 'details' | 'permissions' | 'clients' = 'details') => {
     setModalMode(mode);
@@ -150,56 +171,46 @@ export function Users() {
   };
 
   const handleSaveUser = async () => {
-    const selectedClientsList = availableClients.filter(c => selectedClientIds.includes(c.id));
-    
     try {
-      if (editingUser) {
-        const updates: any = {
-          name: formData.name,
-          email: formData.email,
-          role: formData.role,
-          clients: selectedClientsList,
-          permissions: perms
-        };
-        
-        if (formData.password) {
-          updates.password = formData.password;
-        }
+      const payload: any = {
+        name: formData.name,
+        email: formData.email,
+        role: formData.role,
+        permissions: perms,
+        // Assuming single client relationship via client_id for now based on common patterns
+        // If supporting multiple clients, this logic needs to be adjusted based on DB schema
+        client_id: formData.role === 'client' && selectedClientIds.length > 0 ? selectedClientIds[0] : null
+      };
+      
+      if (formData.password) {
+        payload.password_hash = formData.password;
+      }
 
+      if (editingUser) {
         const { error } = await supabase
           .from('users')
-          .update(updates)
+          .update(payload)
           .eq('id', editingUser.id);
 
         if (error) throw error;
-        
-        await fetchUsers();
       } else {
         if (!formData.password) {
           alert('Senha é obrigatória para novos usuários');
           return;
         }
 
-        const newUser = {
-          name: formData.name,
-          email: formData.email,
-          role: formData.role,
-          password: formData.password,
-          clients: selectedClientsList,
-          status: 'active',
-          last_login: new Date().toISOString(),
-          permissions: perms
-        };
+        payload.status = 'active';
+        payload.last_login = null;
 
-        const { error } = await supabase.from('users').insert([newUser]);
+        const { error } = await supabase.from('users').insert([payload]);
         if (error) throw error;
-        
-        await fetchUsers();
       }
+      
+      await fetchUsers();
       setIsModalOpen(false);
     } catch (error) {
       console.error('Erro ao salvar usuário:', error);
-      alert('Erro ao salvar usuário');
+      alert('Erro ao salvar usuário: ' + (error as any).message);
     }
   };
 
@@ -252,7 +263,6 @@ export function Users() {
               <th className="p-4 font-medium first:rounded-tl-xl">Usuário</th>
               <th className="p-4 font-medium">Perfil</th>
               <th className="p-4 font-medium">Cliente Vinculado</th>
-              <th className="p-4 font-medium">Status</th>
               <th className="p-4 font-medium">Último Acesso</th>
               <th className="p-4 font-medium text-right last:rounded-tr-xl">Ações</th>
             </tr>
@@ -312,15 +322,11 @@ export function Users() {
                     <span className="text-gray-600 text-sm italic">Sem vínculo (Global)</span>
                   )}
                 </td>
-                <td className="p-4">
-                  <span className={`flex items-center gap-1.5 text-xs font-medium ${
-                    user.status === 'active' ? 'text-emerald-400' : 'text-red-400'
-                  }`}>
-                    <div className={`w-1.5 h-1.5 rounded-full ${user.status === 'active' ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                    {user.status === 'active' ? 'Ativo' : 'Inativo'}
-                  </span>
+                <td className="p-4 text-sm text-gray-500">
+                  {user.last_login 
+                    ? new Date(user.last_login.endsWith('Z') || user.last_login.includes('+') ? user.last_login : user.last_login + 'Z').toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' }) 
+                    : 'Nunca'}
                 </td>
-                <td className="p-4 text-sm text-gray-500">{user.last_login ? new Date(user.last_login).toLocaleString() : 'Nunca'}</td>
                 <td className="p-4 text-right relative">
                   <button 
                     onClick={() => setActiveMenu(activeMenu === user.id ? null : user.id)}

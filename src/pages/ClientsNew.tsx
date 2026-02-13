@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, CheckCircle2, Activity, Camera } from 'lucide-react';
+import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, CheckCircle2, Activity, Camera, ShieldAlert } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import supabase from '../lib/supabase';
 
@@ -27,6 +27,7 @@ type Client = {
   initials: string;
   color: string;
   stores?: Store[];
+  logo_url?: string;
 };
 
 type Device = {
@@ -67,23 +68,53 @@ export function Clients() {
     company: '',
     status: 'active' as 'active' | 'inactive' | 'pending',
     plan: 'basic' as 'enterprise' | 'pro' | 'basic',
-    notes: ''
+    notes: '',
+    logo_url: ''
   });
+
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
   const [apiConfig, setApiConfig] = useState({
     environment: 'production',
     authMethod: 'token',
-    endpoint: '',
+    endpoint: 'https://api.displayforce.ai',
+    folderEndpoint: '/public/v1/device-folder/list',
+    deviceEndpoint: '/public/v1/device/list',
+    analyticsEndpoint: '/public/v1/stats/visitor/list',
     token: '',
     customHeaderKey: '',
     customHeaderValue: '',
-    docUrl: ''
+    docUrl: '',
+    // Data Collection Body Params
+    collectionStart: '',
+    collectionEnd: '',
+    collectTracks: true,
+    collectFaceQuality: true,
+    collectGlasses: true,
+    collectBeard: true,
+    collectHairColor: true,
+    collectHairType: true,
+    collectHeadwear: true
   });
+
+  const [connectionSuccess, setConnectionSuccess] = useState(false);
 
   // State for managing stores in the modal
   const [editingStores, setEditingStores] = useState<Store[]>([]);
   const [newStoreName, setNewStoreName] = useState('');
   const [newStoreCity, setNewStoreCity] = useState('');
+
+  // Toast State
+  const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
+
+  const showToast = (message: string, type: 'success' | 'error' = 'success') => {
+    setToast({ message, type });
+    setTimeout(() => setToast(null), 5000);
+  };
+
+  // State for manual device addition
+  const [newDeviceName, setNewDeviceName] = useState('');
 
   // Data for client stores
   const getClientStores = (clientId: string): Store[] => {
@@ -146,11 +177,252 @@ export function Clients() {
 
   const [apiStatus, setApiStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
 
-  const handleTestConnection = () => {
+  const handleTestConnection = async () => {
     setApiStatus('testing');
-    setTimeout(() => {
+    setConnectionSuccess(false);
+    
+    try {
+      // Validar Token
+      if (!apiConfig.token) {
+        throw new Error('Token de API é obrigatório');
+      }
+
+      // Headers para DisplayForce
+      const headers = {
+        'X-API-Token': apiConfig.token,
+        'Content-Type': 'application/json'
+      };
+
+      // 1. Fetch Folders (Lojas) - POST Request
+      // Usar proxy se o endpoint for da DisplayForce para evitar erro de CORS
+      const isDisplayForce = apiConfig.endpoint.includes('displayforce.ai');
+      const baseUrl = isDisplayForce ? '/api-proxy' : apiConfig.endpoint;
+
+      const folderUrl = `${baseUrl}${apiConfig.folderEndpoint}`;
+      const folderBody = {
+        recursive: true,
+        limit: 1000,
+        offset: 0
+      };
+
+      console.log('Buscando Pastas:', { url: folderUrl, body: folderBody });
+
+      const foldersResponse = await fetch(folderUrl, { 
+        method: 'POST',
+        headers: {
+            'X-API-Token': apiConfig.token,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(folderBody)
+      });
+      
+      if (!foldersResponse.ok) {
+        const errorText = await foldersResponse.text();
+        throw new Error(`Erro ao buscar pastas: ${foldersResponse.status} - ${errorText}`);
+      }
+      
+      const foldersData = await foldersResponse.json();
+      console.log('Dados das Pastas:', foldersData);
+      const folders = foldersData.data || [];
+
+      // 2. Fetch Devices (Dispositivos) - POST Request
+      const deviceUrl = `${baseUrl}${apiConfig.deviceEndpoint}`;
+      const deviceBody = {
+        recursive: true,
+        params: [
+          "id",
+          "name",
+          "parent_id",
+          "parent_ids",
+          "tags",
+          "connection_state",
+          "address"
+        ],
+        limit: 1000,
+        offset: 0
+      };
+
+      console.log('Buscando Dispositivos:', { url: deviceUrl, body: deviceBody });
+
+      const devicesResponse = await fetch(deviceUrl, { 
+        method: 'POST',
+        headers: {
+            'X-API-Token': apiConfig.token,
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(deviceBody)
+      });
+      
+      if (!devicesResponse.ok) {
+        const errorText = await devicesResponse.text();
+        throw new Error(`Erro ao buscar dispositivos: ${devicesResponse.status} - ${errorText}`);
+      }
+
+      const devicesData = await devicesResponse.json();
+      console.log('Dados dos Dispositivos:', devicesData);
+      const devices = devicesData.data || [];
+
+      // Debug: Verificar estrutura do primeiro dispositivo
+      if (devices.length > 0) {
+          console.log('DEBUG - Primeiro dispositivo retornado:', devices[0]);
+          console.log('DEBUG - parent_id presente?', 'parent_id' in devices[0]);
+      }
+
+      // 3. Fetch Analytics (Visitor List)
+      // Usar proxy para analytics também
+      const analyticsUrl = `${baseUrl}${apiConfig.analyticsEndpoint}`;
+      
+      // Auto-generate dates for testing
+      // USER REQUEST: Use a wider range or specific logic. 
+      // Setting to start of 2024 to ensure we catch 2025 data mentioned by user.
+      const now = new Date();
+      const startDate = new Date('2024-01-01T00:00:00Z');
+      
+      // Construct Body for Analytics Request
+      const analyticsBody = {
+        start: startDate.toISOString(),
+        end: now.toISOString(),
+        tracks: true, // Force true as per user request example
+        face_quality: true,
+        glasses: true,
+        facial_hair: true,
+        hair_color: true,
+        hair_type: true,
+        headwear: true,
+        additional_attributes: [
+          "smile", 
+          "pitch", 
+          "yaw", 
+          "x", 
+          "y", 
+          "height" 
+        ]
+      };
+
+      try {
+        console.log('Enviando Requisição de Analytics:', { url: analyticsUrl, body: analyticsBody });
+        
+        const analyticsResponse = await fetch(analyticsUrl, { 
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(analyticsBody)
+        });
+
+        if (analyticsResponse.ok) {
+          const analyticsData = await analyticsResponse.json();
+          console.log('Dados de Analytics/Visitantes:', analyticsData);
+          
+          if (analyticsData.payload && analyticsData.payload.length > 0) {
+              const firstVisitor = analyticsData.payload[0];
+              console.log('DEBUG ANALYTICS - Primeiro Visitante:', firstVisitor);
+              // Tentar identificar o campo de ID do dispositivo
+              const possibleDeviceFields = ['device_id', 'source_id', 'camera_id', 'device'];
+              const foundField = possibleDeviceFields.find(f => f in firstVisitor);
+              console.log('DEBUG ANALYTICS - Campo de Dispositivo encontrado:', foundField || 'NENHUM (Verificar payload)');
+          }
+
+        } else {
+          console.warn(`Erro ao buscar analytics: ${analyticsResponse.statusText}`);
+          const errorText = await analyticsResponse.text();
+          console.warn('Detalhes do Erro de Analytics:', errorText);
+        }
+      } catch (error) {
+        console.warn('Erro ao buscar analytics:', error);
+      }
+
+      // 4. Processar e Vincular (De/Para: parent_id -> folder.id)
+      const newStores: Store[] = folders.map((folder: any) => {
+        // Encontrar dispositivos que pertencem a esta pasta (Loja)
+        // A API retorna 'parent_id' no dispositivo que deve bater com o 'id' da pasta
+        // IMPORTANTE: Converter para String para evitar erro de tipo (number vs string)
+        // TAMBÉM: Verificar parent_ids para encontrar dispositivos em subpastas
+        const storeDevices = devices
+          .filter((device: any) => {
+             const fId = String(folder.id);
+             const dParentId = device.parent_id ? String(device.parent_id) : 'undefined';
+             
+             const directMatch = dParentId === fId;
+             // Verificar se a pasta é um ancestral do dispositivo (para subpastas)
+             const ancestorMatch = Array.isArray(device.parent_ids) && device.parent_ids.some((pid: any) => String(pid) === fId);
+             
+             // Debug específico se falhar
+             if (directMatch || ancestorMatch) {
+                 // console.log(`Device ${device.name} vinculado a Loja ${folder.name}`);
+             }
+
+             return directMatch || ancestorMatch;
+          })
+          .map((device: any) => ({
+            id: String(device.id), // ID do dispositivo não é usado no insert (gera novo UUID)
+            name: device.name,
+            type: 'camera', // Padrão
+            macAddress: '', 
+            status: device.connection_state === 'online' ? 'online' : 'offline'
+          }));
+
+        // Tentar encontrar uma loja existente com o mesmo nome para manter o ID (UUID)
+        // Se não encontrar, criar um ID temporário "new-store-..." para o Supabase gerar um UUID
+        const existingStore = editingStores.find(s => s.name.trim().toLowerCase() === folder.name.trim().toLowerCase());
+        
+        // CORREÇÃO: Garantir que o ID seja um UUID válido ou um ID temporário
+        let storeId = `new-store-${folder.id}`;
+        if (existingStore && existingStore.id && !existingStore.id.startsWith('new-store')) {
+             // Se já existe e tem ID, usamos ele. 
+             // O erro 1075 indica que pode haver IDs numéricos antigos no estado ou banco
+             // Vamos validar se parece um UUID (simplificado)
+             if (existingStore.id.length > 10) { 
+                 storeId = existingStore.id;
+             }
+        }
+
+        return {
+          id: storeId,
+          name: folder.name,
+          city: 'Não informada', // Definir padrão para não ficar vazio
+          devices: storeDevices
+        };
+      });
+
+      console.log('Lojas Mapeadas:', newStores);
+
+      if (newStores.length === 0) {
+        throw new Error('Nenhuma loja encontrada na API. Verifique se as pastas existem.');
+      }
+
+      // Atualizar estado com dados reais
+      setEditingStores(newStores);
       setApiStatus('success');
-    }, 1500);
+      setConnectionSuccess(true);
+      
+      // Show the stores tab so user can see what was fetched
+      if (newStores.length > 0) {
+        setActiveTab('stores');
+      }
+      
+      // Auto-hide success message after 5 seconds
+      setTimeout(() => setConnectionSuccess(false), 5000);
+
+    } catch (error: any) {
+      console.error('API Error:', error);
+      setApiStatus('error');
+      showToast(`Erro ao conectar com a API: ${error.message}`, 'error');
+    }
+  };
+
+  const formatPhone = (value: string) => {
+    // Remove tudo que não é número
+    const numbers = value.replace(/\D/g, '');
+    
+    // Aplica a máscara (XX) XXXXX-XXXX
+    if (numbers.length <= 11) {
+      return numbers
+        .replace(/^(\d{2})(\d)/g, '($1) $2')
+        .replace(/(\d{5})(\d)/, '$1-$2');
+    }
+    
+    return numbers.substring(0, 11)
+      .replace(/^(\d{2})(\d)/g, '($1) $2')
+      .replace(/(\d{5})(\d)/, '$1-$2');
   };
 
   const handleEdit = async (client: Client, initialTab: 'details' | 'permissions' | 'api' | 'stores' = 'details') => {
@@ -162,15 +434,52 @@ export function Clients() {
       company: client.company,
       status: client.status,
       plan: client.plan,
-      notes: '' 
+      notes: '',
+      logo_url: client.logo_url || ''
     });
+    setLogoPreview(client.logo_url || null);
+    setLogoFile(null);
+
+    // Resetar estados para evitar dados do cliente anterior
+    setPerms({
+      view_dashboard: true,
+      view_reports: false,
+      view_analytics: false,
+      export_data: false,
+      manage_settings: false
+    });
+
+    setApiConfig({
+      environment: 'production',
+      authMethod: 'token',
+      endpoint: 'https://api.displayforce.ai',
+      folderEndpoint: '/public/v1/device-folder/list',
+      deviceEndpoint: '/public/v1/device/list',
+      analyticsEndpoint: '/public/v1/stats/visitor/list',
+      token: '',
+      customHeaderKey: '',
+      customHeaderValue: '',
+      docUrl: '',
+      collectionStart: '',
+      collectionEnd: '',
+      collectTracks: true,
+      collectFaceQuality: true,
+      collectGlasses: true,
+      collectBeard: true,
+      collectHairColor: true,
+      collectHairType: true,
+      collectHeadwear: true
+    });
+
+    setApiStatus('idle');
+    setConnectionSuccess(false);
 
     // Fetch permissions
     const { data: permData } = await supabase
       .from('client_permissions')
       .select('*')
       .eq('client_id', client.id)
-      .single();
+      .maybeSingle(); // Usar maybeSingle para não lançar erro se não existir
     
     if (permData) {
       setPerms({
@@ -187,27 +496,29 @@ export function Clients() {
       .from('client_api_configs')
       .select('*')
       .eq('client_id', client.id)
-      .single();
+      .maybeSingle();
 
     if (apiData) {
       setApiConfig({
         environment: apiData.environment || 'production',
         authMethod: apiData.auth_method || 'token',
-        endpoint: apiData.api_endpoint || '',
+        endpoint: apiData.api_endpoint || 'https://api.displayforce.ai',
+        folderEndpoint: apiData.folder_endpoint || '/public/v1/device-folder/list',
+        deviceEndpoint: apiData.device_endpoint || '/public/v1/device/list',
+        analyticsEndpoint: apiData.analytics_endpoint || '/public/v1/stats/visitor/list',
         token: apiData.api_key || '',
         customHeaderKey: apiData.custom_header_key || '',
         customHeaderValue: apiData.custom_header_value || '',
-        docUrl: apiData.documentation_url || ''
-      });
-    } else {
-       setApiConfig({
-        environment: 'production',
-        authMethod: 'token',
-        endpoint: '',
-        token: '',
-        customHeaderKey: '',
-        customHeaderValue: '',
-        docUrl: ''
+        docUrl: apiData.documentation_url || '',
+        collectionStart: apiData.collection_start || '',
+        collectionEnd: apiData.collection_end || '',
+        collectTracks: apiData.collect_tracks ?? true,
+        collectFaceQuality: apiData.collect_face_quality ?? true,
+        collectGlasses: apiData.collect_glasses ?? true,
+        collectBeard: apiData.collect_beard ?? true,
+        collectHairColor: apiData.collect_hair_color ?? true,
+        collectHairType: apiData.collect_hair_type ?? true,
+        collectHeadwear: apiData.collect_headwear ?? true
       });
     }
 
@@ -226,8 +537,11 @@ export function Clients() {
       company: '',
       status: 'active',
       plan: 'basic',
-      notes: ''
+      notes: '',
+      logo_url: ''
     });
+    setLogoFile(null);
+    setLogoPreview(null);
     setPerms({
       view_dashboard: true,
       view_reports: false,
@@ -235,17 +549,30 @@ export function Clients() {
       export_data: false,
       manage_settings: false
     });
-    setApiConfig({
+      setApiConfig({
       environment: 'production',
       authMethod: 'token',
-      endpoint: '',
+      endpoint: 'https://api.displayforce.ai',
+      folderEndpoint: '/public/v1/device-folder/list',
+      deviceEndpoint: '/public/v1/device/list',
+      analyticsEndpoint: '/public/v1/stats/visitor/list',
       token: '',
       customHeaderKey: '',
       customHeaderValue: '',
-      docUrl: ''
+      docUrl: '',
+      collectionStart: '',
+      collectionEnd: '',
+      collectTracks: true,
+      collectFaceQuality: true,
+      collectGlasses: true,
+      collectBeard: true,
+      collectHairColor: true,
+      collectHairType: true,
+      collectHeadwear: true
     });
     setEditingStores([]);
     setIsEditModalOpen(true);
+    setConnectionSuccess(false);
   };
 
   const handleAddStore = () => {
@@ -272,7 +599,7 @@ export function Clients() {
          if (error) throw error;
        } catch (e) {
          console.error('Error deleting store:', e);
-         alert('Erro ao excluir loja.');
+         showToast('Erro ao excluir loja.', 'error');
          return;
        }
     }
@@ -280,18 +607,28 @@ export function Clients() {
   };
 
   const handleAddDeviceToStore = (storeId: string, deviceId: string) => {
-    if (!deviceId) return;
-    const device = MOCK_API_DEVICES.find(d => d.id === deviceId);
-    if (!device) return;
+    // Função desativada/simplificada
+  };
+
+  const handleAddManualDevice = (storeId: string) => {
+    if (!newDeviceName) return;
+    
+    const newDevice: Device = {
+      id: `new-device-${Date.now()}`,
+      name: newDeviceName,
+      type: 'camera',
+      macAddress: '', // Não obrigatório
+      status: 'online'
+    };
 
     setEditingStores(editingStores.map(store => {
       if (store.id === storeId) {
-        // Avoid duplicates
-        if (store.devices.find(d => d.id === deviceId)) return store;
-        return { ...store, devices: [...store.devices, device] };
+        return { ...store, devices: [...store.devices, newDevice] };
       }
       return store;
     }));
+
+    setNewDeviceName('');
   };
 
   const handleRemoveDeviceFromStore = (storeId: string, deviceId: string) => {
@@ -303,8 +640,81 @@ export function Clients() {
     }));
   };
 
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{
+    isOpen: boolean;
+    clientId: string | null;
+    clientName: string;
+  }>({
+    isOpen: false,
+    clientId: null,
+    clientName: ''
+  });
+
+  const handleDeleteClient = (client: Client) => {
+    setDeleteConfirmation({
+      isOpen: true,
+      clientId: client.id,
+      clientName: client.name
+    });
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteConfirmation.clientId) return;
+    
+    const clientId = deleteConfirmation.clientId;
+
+    try {
+      // 1. Delete dependent data
+      await supabase.from('client_api_configs').delete().eq('client_id', clientId);
+      await supabase.from('client_permissions').delete().eq('client_id', clientId);
+      
+      // 2. Delete client
+      const { error } = await supabase.from('clients').delete().eq('id', clientId);
+      
+      if (error) throw error;
+
+      // 3. Update UI
+      setClients(clients.filter(c => c.id !== clientId));
+      if (selectedClient?.id === clientId) {
+        setIsEditModalOpen(false);
+        setSelectedClient(null);
+      }
+      
+      if (expandedClient === clientId) setExpandedClient(null);
+      
+      // Close confirmation modal
+      setDeleteConfirmation({ isOpen: false, clientId: null, clientName: '' });
+      showToast('Cliente excluído com sucesso!');
+
+    } catch (error: any) {
+      console.error('Error deleting client:', error);
+      showToast(`Erro ao excluir cliente: ${error.message}`, 'error');
+    }
+  };
+
   const handleSave = async () => {
     try {
+      let logoUrl = formData.logo_url;
+
+      // 0. Upload Logo if exists
+      if (logoFile) {
+        const fileExt = logoFile.name.split('.').pop();
+        const fileName = `${Math.random()}.${fileExt}`;
+        const filePath = `${fileName}`;
+
+        const { error: uploadError } = await supabase.storage
+          .from('logos')
+          .upload(filePath, logoFile);
+
+        if (uploadError) throw uploadError;
+
+        const { data: { publicUrl } } = supabase.storage
+          .from('logos')
+          .getPublicUrl(filePath);
+
+        logoUrl = publicUrl;
+      }
+
       // 1. Save Client
       const { data: clientData, error: clientError } = await supabase
         .from('clients')
@@ -316,7 +726,8 @@ export function Clients() {
           company: formData.company,
           status: formData.status,
           plan: formData.plan,
-          notes: formData.notes
+          notes: formData.notes,
+          logo_url: logoUrl
         })
         .select()
         .single();
@@ -337,14 +748,51 @@ export function Clients() {
         environment: apiConfig.environment,
         auth_method: apiConfig.authMethod,
         api_endpoint: apiConfig.endpoint,
+        folder_endpoint: apiConfig.folderEndpoint,
+        device_endpoint: apiConfig.deviceEndpoint,
+        analytics_endpoint: apiConfig.analyticsEndpoint,
         api_key: apiConfig.token,
         custom_header_key: apiConfig.customHeaderKey,
         custom_header_value: apiConfig.customHeaderValue,
-        documentation_url: apiConfig.docUrl
+        documentation_url: apiConfig.docUrl,
+        collection_start: apiConfig.collectionStart || null,
+        collection_end: apiConfig.collectionEnd || null,
+        collect_tracks: apiConfig.collectTracks,
+        collect_face_quality: apiConfig.collectFaceQuality,
+        collect_glasses: apiConfig.collectGlasses,
+        collect_beard: apiConfig.collectBeard,
+        collect_hair_color: apiConfig.collectHairColor,
+        collect_hair_type: apiConfig.collectHairType,
+        collect_headwear: apiConfig.collectHeadwear
       }, { onConflict: 'client_id' });
       if (apiError) throw apiError;
 
       // 4. Save Stores & Devices
+      
+      // PREVENIR DUPLICIDADE:
+      // Primeiro, identificar quais lojas DEVEM permanecer (as que estão na lista editingStores e possuem ID válido)
+      const validStoreIds = editingStores
+          .map(s => s.id)
+          .filter(id => !id.startsWith('new-store'));
+
+      // Buscar IDs de lojas existentes no banco para este cliente
+      const { data: currentDbStores } = await supabase
+          .from('stores')
+          .select('id')
+          .eq('client_id', clientId);
+
+      if (currentDbStores) {
+          // Identificar lojas que estão no banco mas NÃO estão na lista atual (devem ser excluídas)
+          const idsToDelete = currentDbStores
+              .map(s => s.id)
+              .filter(id => !validStoreIds.includes(id));
+          
+          if (idsToDelete.length > 0) {
+              console.log('Removendo lojas obsoletas/duplicadas:', idsToDelete);
+              await supabase.from('stores').delete().in('id', idsToDelete);
+          }
+      }
+
       for (const store of editingStores) {
         const { data: storeData, error: storeError } = await supabase
           .from('stores')
@@ -352,7 +800,7 @@ export function Clients() {
              id: store.id.startsWith('new-store') ? undefined : store.id,
              client_id: clientId,
              name: store.name,
-             city: store.city
+             city: store.city || 'Não informada'
           })
           .select()
           .single();
@@ -375,10 +823,22 @@ export function Clients() {
       }
 
       setIsEditModalOpen(false);
-      fetchClients();
-    } catch (error) {
+      await fetchClients(); // Garantir que a lista seja atualizada após salvar
+      showToast('Alterações salvas com sucesso!');
+    } catch (error: any) {
       console.error('Error saving client:', error);
-      alert('Erro ao salvar cliente. Verifique o console.');
+      
+      let msg = error.message || 'Erro desconhecido ao salvar.';
+      
+      if (msg.includes('row-level security policy')) {
+        msg = 'Permissão negada (RLS). Execute o script SQL "supabase_fix_rls.sql" no seu painel Supabase.';
+      } else if (msg.includes('duplicate key')) {
+        msg = 'Já existe um registro com estes dados (Email ou ID duplicado).';
+      } else if (msg.includes('invalid input syntax for type uuid')) {
+        msg = 'ERRO DE ID: Este cliente possui um ID antigo ("1075") que não é compatível. Por favor, cancele e EXCLUA este cliente, depois crie um novo.';
+      }
+
+      showToast(msg, 'error');
     }
   };
 
@@ -401,6 +861,13 @@ export function Clients() {
               className="bg-gray-900 border border-gray-800 text-white pl-10 pr-4 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 w-64 placeholder-gray-600"
             />
           </div>
+          <button 
+            onClick={fetchClients}
+            title="Atualizar Lista"
+            className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors border border-gray-700"
+          >
+            <Activity size={18} />
+          </button>
           <button 
             onClick={handleNewClient}
             className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-lg shadow-emerald-900/20"
@@ -442,14 +909,6 @@ export function Clients() {
                 <div>
                   <div className="flex items-center gap-3">
                     <h3 className="font-bold text-white text-lg">{client.name}</h3>
-                    <span className={`px-2 py-0.5 rounded text-xs font-medium border ${
-                      client.status === 'active' ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'bg-gray-800 text-gray-400 border-gray-700'
-                    }`}>
-                      {client.status === 'active' ? 'Ativo' : 'Inativo'}
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-xs font-medium bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                      {client.plan === 'enterprise' ? 'Enterprise' : 'Pro'}
-                    </span>
                   </div>
                   <p className="text-sm text-gray-500 mt-1">{client.company}</p>
                   
@@ -477,7 +936,7 @@ export function Clients() {
                   className="px-4 py-2 rounded-lg border border-gray-700 hover:bg-gray-800 text-gray-300 text-sm font-medium flex items-center gap-2 transition-colors whitespace-nowrap"
                  >
                    <LayoutDashboard size={16} className="text-emerald-500" />
-                   Dashboard
+                   Painel
                  </button>
                  
                  <div className="relative">
@@ -505,7 +964,10 @@ export function Clients() {
                           <LinkIcon size={16} /> Configurar APIs
                           </button>
                           <div className="h-px bg-gray-800 my-1"></div>
-                          <button className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-900/20 rounded-md flex items-center gap-2">
+                          <button 
+                            onClick={() => handleDeleteClient(client)}
+                            className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-900/20 rounded-md flex items-center gap-2"
+                          >
                           <Trash2 size={16} /> Excluir
                           </button>
                       </div>
@@ -522,6 +984,12 @@ export function Clients() {
                   <Building2 size={14} /> Lojas da Rede
                 </h4>
                 <div className="flex flex-col gap-2">
+                  {getClientStores(client.id).length === 0 && (
+                    <div className="text-center py-4 bg-gray-900/50 rounded-lg border border-gray-800 border-dashed">
+                      <p className="text-gray-500 text-sm">Nenhuma loja vinculada a este cliente.</p>
+                      <p className="text-xs text-gray-600 mt-1">Configure a API ou adicione lojas manualmente.</p>
+                    </div>
+                  )}
                   {getClientStores(client.id).map(store => (
                     <div 
                       key={store.id}
@@ -562,7 +1030,7 @@ export function Clients() {
                       {expandedStore === store.id && (
                         <div className="bg-gray-900/50 border-t border-gray-800 p-3 animate-in slide-in-from-top-2 duration-200">
                           <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-2 px-1">
-                            <Camera size={12} /> Câmeras Conectadas (Recebendo Dados)
+                            <Camera size={12} /> Dispositivos Conectados (Recebendo Dados)
                           </h5>
                           
                           {store.devices.length > 0 ? (
@@ -596,7 +1064,7 @@ export function Clients() {
                               ))}
                             </div>
                           ) : (
-                            <p className="text-xs text-gray-600 italic px-1">Nenhuma câmera vinculada a esta loja.</p>
+                            <p className="text-xs text-gray-600 italic px-1">Nenhum dispositivo vinculado a esta loja.</p>
                           )}
                         </div>
                       )}
@@ -659,16 +1127,18 @@ export function Clients() {
                 >
                   Configuração API
                 </button>
-                <button 
-                  onClick={() => setActiveTab('stores')}
-                  className={`pb-3 text-sm font-medium transition-colors relative ${
-                    activeTab === 'stores' 
-                      ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' 
-                      : 'text-gray-400 hover:text-gray-300'
-                  }`}
-                >
-                  Lojas e Dispositivos
-                </button>
+                {editingStores.length > 0 && (
+                  <button 
+                    onClick={() => setActiveTab('stores')}
+                    className={`pb-3 text-sm font-medium transition-colors relative ${
+                      activeTab === 'stores' 
+                        ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' 
+                        : 'text-gray-400 hover:text-gray-300'
+                    }`}
+                  >
+                    Lojas Encontradas ({editingStores.length})
+                  </button>
+                )}
               </div>
             </div>
             
@@ -700,7 +1170,9 @@ export function Clients() {
                       <input 
                         type="text" 
                         value={formData.phone}
-                        onChange={(e) => setFormData({...formData, phone: e.target.value})}
+                        onChange={(e) => setFormData({...formData, phone: formatPhone(e.target.value)})}
+                        placeholder="(11) 99999-9999"
+                        maxLength={15}
                         className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
                       />
                     </div>
@@ -724,29 +1196,33 @@ export function Clients() {
                         <option value="inactive">Inativo</option>
                       </select>
                     </div>
-                    <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-400">Plano</label>
-                      <select 
-                        value={formData.plan}
-                        onChange={(e) => setFormData({...formData, plan: e.target.value as any})}
-                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none"
-                      >
-                        <option value="enterprise">Enterprise</option>
-                        <option value="pro">Pro</option>
-                        <option value="basic">Basic</option>
-                      </select>
-                    </div>
                   </div>
 
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-400">Logo da Empresa</label>
-                    <div className="relative">
-                        <input 
-                            type="file" 
-                            accept="image/*"
-                            className="w-full bg-gray-950 border border-gray-800 rounded-lg pl-4 pr-10 py-2 text-white focus:ring-1 focus:ring-emerald-500 outline-none file:mr-4 file:py-1 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-medium file:bg-gray-800 file:text-emerald-500 hover:file:bg-gray-700 cursor-pointer text-sm"
-                        />
-                        <Upload className="absolute right-3 top-2.5 text-gray-600 pointer-events-none" size={16} />
+                    <div className="relative group">
+                        <div className="w-full h-32 bg-gray-950 border border-gray-800 rounded-lg flex items-center justify-center overflow-hidden relative cursor-pointer hover:border-emerald-500 transition-colors">
+                          {logoPreview ? (
+                            <img src={logoPreview} alt="Preview" className="h-full object-contain p-2" />
+                          ) : (
+                            <div className="flex flex-col items-center text-gray-600">
+                              <Upload size={24} className="mb-2" />
+                              <span className="text-xs">Clique para fazer upload</span>
+                            </div>
+                          )}
+                          <input 
+                              type="file" 
+                              accept="image/*"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  setLogoFile(file);
+                                  setLogoPreview(URL.createObjectURL(file));
+                                }
+                              }}
+                              className="absolute inset-0 opacity-0 cursor-pointer"
+                          />
+                        </div>
                     </div>
                     <p className="text-xs text-gray-500">Formatos aceitos: PNG, JPG, SVG (Máx. 2MB)</p>
                   </div>
@@ -852,35 +1328,30 @@ export function Clients() {
                   </div>
                   
                   <div className="space-y-6">
+                    
+                    {/* Success Message Banner */}
+                    {connectionSuccess && (
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-4 flex items-start gap-3 animate-in slide-in-from-top-2 duration-300">
+                        <CheckCircle2 className="text-emerald-500 shrink-0 mt-0.5" size={20} />
+                        <div>
+                          <h4 className="font-bold text-emerald-400 text-sm">Conexão Estabelecida com Sucesso!</h4>
+                          <p className="text-emerald-500/70 text-xs mt-1">
+                            A API está respondendo corretamente. Os parâmetros de coleta foram validados.
+                            Você já pode salvar as configurações e cadastrar dispositivos nas lojas.
+                          </p>
+                        </div>
+                        <button 
+                          onClick={() => setConnectionSuccess(false)}
+                          className="ml-auto text-emerald-500/50 hover:text-emerald-400 transition-colors"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+                    )}
+
                     <div className="grid grid-cols-1 gap-4">
                       <div className="space-y-2">
-                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Ambiente</label>
-                        <select 
-                          value={apiConfig.environment}
-                          onChange={(e) => setApiConfig({...apiConfig, environment: e.target.value})}
-                          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                        >
-                          <option value="production">Produção</option>
-                          <option value="sandbox">Sandbox / Staging</option>
-                          <option value="development">Desenvolvimento</option>
-                        </select>
-                      </div>
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Método de Autenticação</label>
-                        <select 
-                          value={apiConfig.authMethod}
-                          onChange={(e) => setApiConfig({...apiConfig, authMethod: e.target.value})}
-                          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                        >
-                          <option value="bearer">Bearer Token</option>
-                          <option value="apikey_header">API Key (Header)</option>
-                          <option value="basic">Basic Auth</option>
-                          <option value="oauth2">OAuth 2.0</option>
-                        </select>
-                      </div>
-
-                      <div className="space-y-2">
-                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Endpoint da API (Base URL)</label>
+                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Endereço da API (Base URL)</label>
                         <div className="relative">
                             <input 
                                 type="text" 
@@ -890,6 +1361,39 @@ export function Clients() {
                                 className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
                             />
                             <Server className="absolute right-3 top-2.5 text-gray-600" size={16} />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Caminho das Pastas (Lojas)</label>
+                          <input 
+                              type="text" 
+                              value={apiConfig.folderEndpoint}
+                              onChange={(e) => setApiConfig({...apiConfig, folderEndpoint: e.target.value})}
+                              placeholder="/public/v1/device-folder/list"
+                              className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Caminho dos Dispositivos</label>
+                          <input 
+                              type="text" 
+                              value={apiConfig.deviceEndpoint}
+                              onChange={(e) => setApiConfig({...apiConfig, deviceEndpoint: e.target.value})}
+                              placeholder="/public/v1/device/list"
+                              className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
+                          />
+                        </div>
+                        <div className="col-span-2 space-y-2">
+                          <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Caminho dos Dados (Analytics)</label>
+                          <input 
+                              type="text" 
+                              value={apiConfig.analyticsEndpoint}
+                              onChange={(e) => setApiConfig({...apiConfig, analyticsEndpoint: e.target.value})}
+                              placeholder="/public/v1/analytics"
+                              className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
+                          />
                         </div>
                       </div>
 
@@ -914,50 +1418,38 @@ export function Clients() {
                         </h4>
                         
                         <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-                            {/* Date Range */}
-                            <div className="col-span-2 grid grid-cols-2 gap-4 mb-2">
-                                <div className="space-y-1">
-                                    <label className="text-[10px] text-gray-500 uppercase">Início (Start)</label>
-                                    <input type="text" placeholder="YYYY-MM-DDTHH:mm:ssZ" className="w-full bg-gray-900 border border-gray-800 rounded px-3 py-1.5 text-xs text-gray-400 font-mono" />
-                                </div>
-                                <div className="space-y-1">
-                                    <label className="text-[10px] text-gray-500 uppercase">Fim (End)</label>
-                                    <input type="text" placeholder="YYYY-MM-DDTHH:mm:ssZ" className="w-full bg-gray-900 border border-gray-800 rounded px-3 py-1.5 text-xs text-gray-400 font-mono" />
-                                </div>
-                            </div>
-
                             {/* Booleans */}
                             <div className="space-y-3">
                                 <div className="flex items-center justify-between">
                                     <span className="text-sm text-gray-300">Rastreamento (Tracks)</span>
-                                    <Toggle checked={true} onChange={() => {}} />
+                                    <Toggle checked={apiConfig.collectTracks} onChange={() => setApiConfig({...apiConfig, collectTracks: !apiConfig.collectTracks})} />
                                 </div>
                                 <div className="flex items-center justify-between">
                                     <span className="text-sm text-gray-300">Qualidade Facial</span>
-                                    <Toggle checked={true} onChange={() => {}} />
+                                    <Toggle checked={apiConfig.collectFaceQuality} onChange={() => setApiConfig({...apiConfig, collectFaceQuality: !apiConfig.collectFaceQuality})} />
                                 </div>
                                 <div className="flex items-center justify-between">
                                     <span className="text-sm text-gray-300">Óculos</span>
-                                    <Toggle checked={true} onChange={() => {}} />
+                                    <Toggle checked={apiConfig.collectGlasses} onChange={() => setApiConfig({...apiConfig, collectGlasses: !apiConfig.collectGlasses})} />
                                 </div>
                                 <div className="flex items-center justify-between">
                                     <span className="text-sm text-gray-300">Barba/Bigode</span>
-                                    <Toggle checked={true} onChange={() => {}} />
+                                    <Toggle checked={apiConfig.collectBeard} onChange={() => setApiConfig({...apiConfig, collectBeard: !apiConfig.collectBeard})} />
                                 </div>
                             </div>
 
                             <div className="space-y-3">
                                 <div className="flex items-center justify-between">
                                     <span className="text-sm text-gray-300">Cor do Cabelo</span>
-                                    <Toggle checked={true} onChange={() => {}} />
+                                    <Toggle checked={apiConfig.collectHairColor} onChange={() => setApiConfig({...apiConfig, collectHairColor: !apiConfig.collectHairColor})} />
                                 </div>
                                 <div className="flex items-center justify-between">
                                     <span className="text-sm text-gray-300">Tipo de Cabelo</span>
-                                    <Toggle checked={true} onChange={() => {}} />
+                                    <Toggle checked={apiConfig.collectHairType} onChange={() => setApiConfig({...apiConfig, collectHairType: !apiConfig.collectHairType})} />
                                 </div>
                                 <div className="flex items-center justify-between">
                                     <span className="text-sm text-gray-300">Chapéu/Boné</span>
-                                    <Toggle checked={true} onChange={() => {}} />
+                                    <Toggle checked={apiConfig.collectHeadwear} onChange={() => setApiConfig({...apiConfig, collectHeadwear: !apiConfig.collectHeadwear})} />
                                 </div>
                             </div>
                         </div>
@@ -993,169 +1485,95 @@ export function Clients() {
                         ) : apiStatus === 'success' ? (
                           <>
                             <CheckCircle2 size={18} />
-                            Conexão Estabelecida • {MOCK_API_DEVICES.length} Câmeras Encontradas
+                            Conexão Estabelecida
                           </>
                         ) : (
                           <>
                             <Activity size={18} />
-                            Testar Conexão e Buscar Câmeras
+                            Testar Conexão e Sincronizar
                           </>
                         )}
                       </button>
+
+                      {/* Feedback Visual da Sincronização */}
+                      {editingStores.length > 0 && apiStatus === 'success' && (
+                        <div className="mt-4 p-4 bg-emerald-900/20 border border-emerald-500/30 rounded-lg animate-in fade-in slide-in-from-top-2">
+                          <h4 className="text-emerald-400 font-bold text-sm mb-2 flex items-center gap-2">
+                            <CheckCircle2 size={16} /> Sincronização Automática Concluída
+                          </h4>
+                          <p className="text-xs text-gray-400 mb-3">
+                            Foram detectados e vinculados automaticamente através da API:
+                          </p>
+                          <div className="flex gap-4">
+                             <div className="bg-gray-900 px-3 py-2 rounded border border-gray-800 flex items-center gap-2">
+                               <Building2 size={14} className="text-gray-500" />
+                               <span className="text-white text-sm font-bold">{editingStores.length}</span>
+                               <span className="text-xs text-gray-500">Lojas</span>
+                             </div>
+                             <div className="bg-gray-900 px-3 py-2 rounded border border-gray-800 flex items-center gap-2">
+                               <Camera size={14} className="text-gray-500" />
+                               <span className="text-white text-sm font-bold">
+                                 {editingStores.reduce((acc, store) => acc + store.devices.length, 0)}
+                               </span>
+                               <span className="text-xs text-gray-500">Dispositivos</span>
+                             </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
               )}
 
-              {/* Stores & Devices Tab */}
+              {/* Stores Tab (New) */}
               {activeTab === 'stores' && (
-                <div className="space-y-6">
-                  {/* Add New Store Section */}
-                  <div className="bg-emerald-500/5 border border-emerald-500/10 rounded-xl p-4 flex gap-3 items-start">
-                    <div className="p-2 bg-emerald-500/10 rounded-lg text-emerald-500 mt-0.5">
-                      <Camera size={18} />
-                    </div>
-                    <div>
-                      <h4 className="text-sm font-bold text-emerald-400">Fluxo de Dados</h4>
-                      <p className="text-xs text-gray-400 mt-1 leading-relaxed">
-                        Ao vincular uma <strong>Câmera</strong> a uma <strong>Loja</strong>, as imagens e dados analíticos capturados
-                        serão automaticamente direcionados para o dashboard dessa loja específica.
+                <div className="space-y-4">
+                   <div className="bg-emerald-900/20 border border-emerald-500/30 rounded-lg p-4 mb-6">
+                      <h4 className="text-emerald-400 font-bold text-sm mb-2 flex items-center gap-2">
+                        <CheckCircle2 size={16} /> Dados Sincronizados
+                      </h4>
+                      <p className="text-sm text-gray-300">
+                        Abaixo estão as lojas e dispositivos encontrados na sua conta DisplayForce. 
+                        Clique em <b>Salvar Alterações</b> para confirmar a importação.
                       </p>
-                    </div>
-                  </div>
+                   </div>
 
-                  <div className="bg-gray-950/50 border border-gray-800 rounded-xl p-4">
-                    <h3 className="text-sm font-bold text-white mb-4 flex items-center gap-2">
-                      <Plus size={16} className="text-emerald-500" /> Adicionar Nova Loja
-                    </h3>
-                    <div className="flex gap-4">
-                      <div className="flex-1 space-y-1">
-                        <input 
-                          type="text" 
-                          placeholder="Nome da Loja (ex: Matriz)" 
-                          value={newStoreName}
-                          onChange={(e) => setNewStoreName(e.target.value)}
-                          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                        />
-                      </div>
-                      <div className="flex-1 space-y-1">
-                        <input 
-                          type="text" 
-                          placeholder="Cidade / Localização" 
-                          value={newStoreCity}
-                          onChange={(e) => setNewStoreCity(e.target.value)}
-                          className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2 text-white text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                        />
-                      </div>
-                      <button 
-                        onClick={handleAddStore}
-                        disabled={!newStoreName || !newStoreCity}
-                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-                      >
-                        Adicionar
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* List of Stores */}
-                  <div className="space-y-4">
-                    <h3 className="text-sm font-bold text-gray-400 uppercase tracking-wider">Lojas Cadastradas ({editingStores.length})</h3>
-                    
-                    {editingStores.length === 0 ? (
-                      <div className="text-center py-8 border border-dashed border-gray-800 rounded-xl">
-                        <Building2 className="mx-auto text-gray-600 mb-2" size={32} />
-                        <p className="text-gray-500">Nenhuma loja cadastrada para este cliente.</p>
-                      </div>
-                    ) : (
-                      <div className="grid gap-4">
-                        {editingStores.map(store => (
-                          <div key={store.id} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
-                            {/* Store Header */}
-                            <div className="p-4 flex items-center justify-between bg-gray-950/30 border-b border-gray-800">
-                              <div className="flex items-center gap-3">
-                                <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-500">
-                                  <Building2 size={20} />
-                                </div>
-                                <div>
-                                  <h4 className="font-bold text-white text-sm">{store.name}</h4>
-                                  <p className="text-xs text-gray-500 flex items-center gap-1">
-                                    <MapPin size={10} /> {store.city}
-                                  </p>
-                                </div>
-                              </div>
-                              <button 
-                                onClick={() => handleRemoveStore(store.id)}
-                                className="text-gray-500 hover:text-red-400 transition-colors p-2 hover:bg-red-900/10 rounded-lg"
-                              >
-                                <Trash2 size={16} />
-                              </button>
-                            </div>
-
-                            {/* Store Content (Devices) */}
-                            <div className="p-4 bg-gray-900/20">
-                              <div className="flex items-center justify-between mb-3">
-                                <h5 className="text-xs font-semibold text-gray-400 uppercase tracking-wider flex items-center gap-2">
-                                  <Camera size={12} /> Câmeras ({store.devices.length})
-                                </h5>
-                              </div>
-
-                              {/* Add Device to Store */}
-                              <div className="flex gap-2 mb-4">
-                                <select 
-                                  className="flex-1 bg-gray-950 border border-gray-800 rounded-lg px-3 py-1.5 text-xs text-white focus:ring-1 focus:ring-emerald-500 outline-none"
-                                  onChange={(e) => {
-                                    if (e.target.value) {
-                                      handleAddDeviceToStore(store.id, e.target.value);
-                                      e.target.value = ''; // Reset select
-                                    }
-                                  }}
-                                >
-                                  <option value="">+ Vincular Câmera da API...</option>
-                                  {MOCK_API_DEVICES.map(device => (
-                                    <option 
-                                      key={device.id} 
-                                      value={device.id}
-                                      disabled={store.devices.some(d => d.id === device.id)}
-                                    >
-                                      {device.name} ({device.macAddress}) - {device.status}
-                                    </option>
-                                  ))}
-                                </select>
-                              </div>
-
-                              {/* Device List */}
-                              {store.devices.length > 0 ? (
-                                <div className="space-y-2">
-                                  {store.devices.map(device => (
-                                    <div key={device.id} className="flex items-center justify-between bg-gray-950 rounded-lg p-2 border border-gray-800/50">
-                                      <div className="flex items-center gap-2">
-                                        <div className={`w-2 h-2 rounded-full ${device.status === 'online' ? 'bg-emerald-500' : 'bg-red-500'}`} />
-                                        <div>
-                                          <p className="text-xs font-medium text-white">{device.name}</p>
-                                          <p className="text-[10px] text-gray-500 font-mono">{device.macAddress}</p>
-                                        </div>
-                                      </div>
-                                      <div className="flex items-center gap-2">
-                                        <span className="text-[10px] bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded border border-gray-700">{device.type}</span>
-                                        <button 
-                                          onClick={() => handleRemoveDeviceFromStore(store.id, device.id)}
-                                          className="text-gray-600 hover:text-red-400 transition-colors"
-                                        >
-                                          <X size={12} />
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <p className="text-xs text-gray-600 italic text-center py-2">Nenhum dispositivo vinculado.</p>
-                              )}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
+                   <div className="grid grid-cols-1 gap-3">
+                     {editingStores.map((store, idx) => (
+                       <div key={store.id || idx} className="bg-gray-950 border border-gray-800 rounded-lg p-4">
+                         <div className="flex items-center justify-between mb-3">
+                           <div className="flex items-center gap-3">
+                             <div className="w-8 h-8 rounded bg-gray-900 flex items-center justify-center text-gray-500">
+                               <Building2 size={16} />
+                             </div>
+                             <div>
+                               <h4 className="font-bold text-white text-sm">{store.name}</h4>
+                               <p className="text-xs text-gray-500">ID: {store.id.startsWith('new-store') ? 'Novo (Será gerado)' : store.id}</p>
+                             </div>
+                           </div>
+                           <span className="text-xs bg-gray-900 text-gray-400 px-2 py-1 rounded border border-gray-800">
+                             {store.devices.length} Dispositivos
+                           </span>
+                         </div>
+                         
+                         {store.devices.length > 0 ? (
+                           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pl-11">
+                             {store.devices.map((device, dIdx) => (
+                               <div key={dIdx} className="bg-gray-900/50 p-2 rounded border border-gray-800/50 flex items-center justify-between">
+                                 <div className="flex items-center gap-2">
+                                   <div className={`w-1.5 h-1.5 rounded-full ${device.status === 'online' ? 'bg-emerald-500' : 'bg-red-500'}`} />
+                                   <span className="text-xs text-gray-300">{device.name}</span>
+                                 </div>
+                                 <span className="text-[10px] text-gray-600 font-mono">{device.status === 'online' ? 'ONLINE' : 'OFFLINE'}</span>
+                               </div>
+                             ))}
+                           </div>
+                         ) : (
+                           <p className="text-xs text-gray-500 pl-11 italic">Nenhum dispositivo nesta loja.</p>
+                         )}
+                       </div>
+                     ))}
+                   </div>
                 </div>
               )}
 
@@ -1183,6 +1601,68 @@ export function Clients() {
       {/* Overlay to close menus */}
       {activeMenu && (
         <div className="fixed inset-0 z-0" onClick={() => setActiveMenu(null)} />
+      )}
+
+      {/* TOAST NOTIFICATION */}
+      {toast && (
+        <div className="fixed top-6 right-6 z-[100] animate-in slide-in-from-right-10 duration-300">
+          <div className={`flex items-center gap-4 px-5 py-4 rounded-2xl shadow-2xl border ${
+            toast.type === 'success' 
+              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500 shadow-emerald-500/10' 
+              : 'bg-red-500/10 border-red-500/20 text-red-500 shadow-red-500/10'
+          } backdrop-blur-xl bg-gray-900/95`}>
+            <div className={`p-2 rounded-full ${
+              toast.type === 'success' ? 'bg-emerald-500/20' : 'bg-red-500/20'
+            }`}>
+              {toast.type === 'success' ? <CheckCircle2 size={24} /> : <ShieldAlert size={24} />}
+            </div>
+            <div>
+              <h4 className="font-bold text-base">{toast.type === 'success' ? 'Sucesso' : 'Erro'}</h4>
+              <p className="text-sm opacity-90 text-gray-300">{toast.message}</p>
+            </div>
+            <button onClick={() => setToast(null)} className="ml-2 p-1 rounded-lg hover:bg-white/10 transition-colors text-gray-400 hover:text-white">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* DELETE CONFIRMATION MODAL */}
+      {deleteConfirmation.isOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md shadow-2xl animate-in zoom-in-95 duration-200 overflow-hidden">
+            <div className="p-6">
+              <div className="flex items-center gap-4 mb-4">
+                <div className="w-12 h-12 rounded-full bg-red-500/10 flex items-center justify-center flex-shrink-0">
+                  <ShieldAlert className="text-red-500" size={24} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Excluir Cliente</h3>
+                  <p className="text-sm text-gray-400">Esta ação é irreversível.</p>
+                </div>
+              </div>
+              
+              <p className="text-gray-300 text-sm mb-6 bg-gray-800/50 p-3 rounded-lg border border-gray-800">
+                Tem certeza que deseja excluir o cliente <span className="font-bold text-white">{deleteConfirmation.clientName}</span> e todos os seus dados associados?
+              </p>
+              
+              <div className="flex gap-3 justify-end">
+                <button 
+                  onClick={() => setDeleteConfirmation({ isOpen: false, clientId: null, clientName: '' })}
+                  className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button 
+                  onClick={confirmDelete}
+                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg shadow-lg shadow-red-900/20 transition-all flex items-center gap-2"
+                >
+                  <Trash2 size={16} /> Confirmar Exclusão
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

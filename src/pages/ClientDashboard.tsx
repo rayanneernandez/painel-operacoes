@@ -29,8 +29,8 @@ import {
 } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 
-// Mock Data para Clientes (Simulando API)
-const CLIENT_DATA: Record<string, { name: string; logo?: string }> = {};
+// Mock Data para Clientes (Simulando API) - REMOVIDO
+// const CLIENT_DATA: Record<string, { name: string; logo?: string }> = {};
 
 // Tipos para a hierarquia
 type CameraType = {
@@ -51,8 +51,7 @@ type StoreType = {
   cameras: CameraType[];
 };
 
-// Mock Data
-const MOCK_STORES: StoreType[] = [];
+import supabase from '../lib/supabase';
 
 export function ClientDashboard() {
   const { id } = useParams();
@@ -64,10 +63,140 @@ export function ClientDashboard() {
   const [selectedStore, setSelectedStore] = useState<StoreType | null>(null);
   const [selectedCamera, setSelectedCamera] = useState<CameraType | null>(null);
 
-  // Dados do Cliente (Simulação de API)
-  const clientData = CLIENT_DATA[id || '1'] || CLIENT_DATA['1'];
-  const clientName = clientData.name;
-  const clientLogo = clientData.logo;
+  // Estado para Lojas (buscando do Supabase)
+  const [stores, setStores] = useState<StoreType[]>([]);
+  // Dados do Cliente
+  const [clientData, setClientData] = useState<{ name: string; logo?: string } | null>(null);
+
+  // Estado para Analytics
+  const [analyticsData, setAnalyticsData] = useState<any[]>([]);
+  const [dailyStats, setDailyStats] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
+  const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
+  const [totalVisitors, setTotalVisitors] = useState(0);
+
+  useEffect(() => {
+    async function fetchAnalytics() {
+      if (!id) return;
+      
+      const now = new Date();
+      // Default to last 30 days if no date filter
+      const startDate = new Date();
+      startDate.setDate(now.getDate() - 30);
+
+      let query = supabase
+        .from('visitor_analytics')
+        .select('*')
+        .eq('client_id', id)
+        .gte('timestamp', startDate.toISOString());
+
+      if (view === 'store' && selectedStore) {
+         // Filter by devices belonging to this store
+         // We need to get device IDs first or filter in memory if volume is low.
+         // Better: Filter by store_id if we added it to analytics table, or filter by device_id list.
+         // Assuming we can filter by device_id list:
+         const deviceIds = selectedStore.cameras.map(c => Number(c.id)); // Ensure numeric ID matching API
+         if (deviceIds.length > 0) {
+            query = query.in('device_id', deviceIds);
+         } else {
+            // No devices in store = no data
+            setAnalyticsData([]);
+            setDailyStats([0,0,0,0,0,0,0]);
+            setHourlyStats(new Array(24).fill(0));
+            setTotalVisitors(0);
+            return;
+         }
+      }
+
+      const { data, error } = await query;
+
+      if (data) {
+        setAnalyticsData(data);
+        
+        // Process Daily Stats (Day of Week)
+        const days = [0, 0, 0, 0, 0, 0, 0]; // Sun to Sat
+        const hours = new Array(24).fill(0);
+        
+        data.forEach((visit: any) => {
+           const date = new Date(visit.timestamp);
+           const day = date.getDay(); // 0-6
+           // Adjust to Mon-Sun (0-6) where 0=Mon, 6=Sun
+           const adjustedDay = day === 0 ? 6 : day - 1;
+           days[adjustedDay]++;
+           
+           const hour = date.getHours();
+           hours[hour]++;
+        });
+
+        setDailyStats(days);
+        setHourlyStats(hours); // Simplificado: Total por hora (não média ainda)
+        setTotalVisitors(data.length);
+      }
+    }
+
+    fetchAnalytics();
+  }, [id, view, selectedStore]);
+
+  useEffect(() => {
+    async function fetchClientAndStores() {
+      if (!id) return;
+      
+      // 1. Fetch Client Info
+      const { data: client } = await supabase
+        .from('clients')
+        .select('name, logo_url')
+        .eq('id', id)
+        .single();
+        
+      if (client) {
+        setClientData({
+          name: client.name,
+          logo: client.logo_url
+        });
+      }
+
+      // 2. Fetch Stores and Devices
+      const { data: storesData, error } = await supabase
+        .from('stores')
+        .select(`
+          id,
+          name,
+          city,
+          devices (
+            id,
+            name,
+            type,
+            mac_address,
+            status
+          )
+        `)
+        .eq('client_id', id);
+
+      if (storesData) {
+        const formattedStores: StoreType[] = storesData.map((store: any) => ({
+          id: store.id,
+          name: store.name,
+          address: '', // Campo não existe no banco por enquanto
+          city: store.city || '',
+          status: 'online', // Status da loja baseado nos dispositivos ou padrão
+          cameras: (store.devices || []).map((device: any) => ({
+            id: device.id,
+            name: device.name,
+            status: device.status || 'offline',
+            type: device.type || 'dome',
+            resolution: '1080p', // Valor padrão
+            lastEvent: undefined,
+            macAddress: device.mac_address
+          }))
+        }));
+        setStores(formattedStores);
+      }
+    }
+    
+    fetchClientAndStores();
+  }, [id]);
+
+  const clientName = clientData?.name || 'Carregando...';
+  const clientLogo = clientData?.logo;
 
   // Widget Configuration
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
@@ -109,7 +238,7 @@ export function ClientDashboard() {
   // Inicializar estado baseado na navegação
   useEffect(() => {
     if (location.state?.initialView === 'store' && location.state?.storeId) {
-      const store = MOCK_STORES.find(s => s.id === location.state.storeId);
+      const store = stores.find(s => s.id === location.state.storeId);
       if (store) {
         setSelectedStore(store);
         setView('store');
@@ -134,15 +263,15 @@ export function ClientDashboard() {
   const getStats = () => {
     if (view === 'network') {
       return [
-        { label: 'Total Visitantes', value: '0', icon: Users, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
-        { label: 'Média Visitantes Dia', value: '0', icon: BarChart2, color: 'text-blue-500', bg: 'bg-blue-500/10' },
+        { label: 'Total Visitantes', value: totalVisitors.toLocaleString(), icon: Users, color: 'text-emerald-500', bg: 'bg-emerald-500/10' },
+        { label: 'Média Visitantes Dia', value: Math.round(totalVisitors / 30).toLocaleString(), icon: BarChart2, color: 'text-blue-500', bg: 'bg-blue-500/10' },
         { label: 'Tempo Médio Visita', value: '00:00', icon: Clock, color: 'text-orange-500', bg: 'bg-orange-500/10' },
         { label: 'Taxa Conversão', value: '0%', icon: Activity, color: 'text-purple-500', bg: 'bg-purple-500/10' },
       ];
     } else if (view === 'store' && selectedStore) {
       return [
-        { label: 'TOTAL VISITANTES', value: '0', icon: Users, color: 'text-white', bg: 'bg-blue-600' },
-        { label: 'MÉDIA VISITANTES DIA', value: '0', icon: BarChart2, color: 'text-white', bg: 'bg-blue-600' },
+        { label: 'TOTAL VISITANTES', value: totalVisitors.toLocaleString(), icon: Users, color: 'text-white', bg: 'bg-blue-600' },
+        { label: 'MÉDIA VISITANTES DIA', value: Math.round(totalVisitors / 30).toLocaleString(), icon: BarChart2, color: 'text-white', bg: 'bg-blue-600' },
         { label: 'TEMPO MED VISITA', value: '00:00', icon: Clock, color: 'text-white', bg: 'bg-blue-600' },
         { label: 'TEMPO MED CONTATO', value: '00:00', icon: Activity, color: 'text-white', bg: 'bg-blue-600' },
       ];
@@ -215,7 +344,7 @@ export function ClientDashboard() {
                  selectedCamera?.name}
               </h1>
               <p className="text-gray-400 mt-1">
-                {view === 'network' ? `Monitorando ${MOCK_STORES.length} lojas nesta rede` : 
+                {view === 'network' ? `Monitorando ${stores.length} lojas nesta rede` : 
                  view === 'store' ? `${selectedStore?.address} - ${selectedStore?.city}` : 
                  'Feed ao vivo e histórico de eventos'}
               </p>
@@ -233,14 +362,14 @@ export function ClientDashboard() {
                      if (storeId === 'all') {
                        goToNetwork();
                      } else {
-                       const store = MOCK_STORES.find(s => s.id === storeId);
+                       const store = stores.find(s => s.id === storeId);
                        if (store) goToStore(store);
                      }
                   }}
                   value={view === 'network' ? 'all' : selectedStore?.id || 'all'}
                >
                   <option value="all">Todas as Lojas</option>
-                  {MOCK_STORES.map(store => (
+                  {stores.map(store => (
                     <option key={store.id} value={store.id}>{store.name}</option>
                   ))}
                </select>
@@ -331,7 +460,7 @@ export function ClientDashboard() {
                    <Activity size={14} className="text-blue-500" />
                    Média Visitantes Dia - Dia da Semana
                  </h3>
-                 <LineChart data={[0, 0, 0, 0, 0, 0, 0]} color="text-blue-500" height={100} />
+                 <LineChart data={dailyStats} color="text-blue-500" height={100} />
                  <div className="flex justify-between text-[10px] text-gray-500 mt-2 uppercase">
                     <span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sab</span><span>Dom</span>
                  </div>
@@ -342,7 +471,7 @@ export function ClientDashboard() {
                    <Clock size={14} className="text-emerald-500" />
                    Média Visitantes por Hora
                  </h3>
-                 <LineChart data={[10, 20, 50, 100, 300, 800, 1200, 1400, 1300, 1100, 900, 600, 300, 100]} color="text-emerald-500" height={100} />
+                 <LineChart data={hourlyStats} color="text-emerald-500" height={100} />
                  <div className="flex justify-between text-[10px] text-gray-500 mt-2">
                     <span>06h</span><span>09h</span><span>12h</span><span>15h</span><span>18h</span><span>21h</span>
                  </div>

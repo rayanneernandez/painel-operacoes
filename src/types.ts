@@ -25,6 +25,7 @@ export type Client = {
   createdAt: string;
   initials: string;
   color: string;
+  logo_url?: string;
   stores?: Store[];
 };
 
