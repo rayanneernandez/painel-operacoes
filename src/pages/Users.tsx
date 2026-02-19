@@ -176,7 +176,7 @@ export function Users() {
         name: formData.name,
         email: formData.email,
         role: formData.role,
-        permissions: perms,
+        // permissions: perms, // REMOVIDO: Coluna não existe na tabela users
         // Assuming single client relationship via client_id for now based on common patterns
         // If supporting multiple clients, this logic needs to be adjusted based on DB schema
         client_id: formData.role === 'client' && selectedClientIds.length > 0 ? selectedClientIds[0] : null

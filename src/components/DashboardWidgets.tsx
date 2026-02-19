@@ -80,8 +80,8 @@ export const HorizontalBarChart = ({ data, color }: { data: { label: string, val
   );
 };
 
-export const AgePyramid = () => {
-  const data = [
+export const AgePyramid = ({ data: externalData }: { data?: any[] }) => {
+  const defaultData = [
     { age: '65+', m: 0, f: 0 },
     { age: '55-64', m: 0, f: 0 },
     { age: '45-54', m: 0, f: 0 },
@@ -90,7 +90,14 @@ export const AgePyramid = () => {
     { age: '18-24', m: 0, f: 0 },
     { age: '18-', m: 0, f: 0 },
   ];
-  const maxVal = 1;
+  
+  const data = externalData || defaultData;
+  
+  // Calculate max value for relative width
+  const maxVal = Math.max(
+     ...data.map(d => Math.max(d.m, d.f)),
+     1 // Avoid division by zero
+  );
 
   return (
     <div className="w-full flex flex-col gap-1">

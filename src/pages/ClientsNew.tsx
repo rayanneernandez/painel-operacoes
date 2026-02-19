@@ -99,6 +99,7 @@ export function Clients() {
   });
 
   const [connectionSuccess, setConnectionSuccess] = useState(false);
+  const [fetchedAnalytics, setFetchedAnalytics] = useState<any[]>([]);
 
   // State for managing stores in the modal
   const [editingStores, setEditingStores] = useState<Store[]>([]);
@@ -319,6 +320,10 @@ export function Clients() {
               const possibleDeviceFields = ['device_id', 'source_id', 'camera_id', 'device'];
               const foundField = possibleDeviceFields.find(f => f in firstVisitor);
               console.log('DEBUG ANALYTICS - Campo de Dispositivo encontrado:', foundField || 'NENHUM (Verificar payload)');
+              
+              setFetchedAnalytics(analyticsData.payload);
+          } else {
+              setFetchedAnalytics([]);
           }
 
         } else {
@@ -356,7 +361,7 @@ export function Clients() {
             id: String(device.id), // ID do dispositivo não é usado no insert (gera novo UUID)
             name: device.name,
             type: 'camera', // Padrão
-            macAddress: '', 
+            macAddress: String(device.id), // Salvar ID da API no campo macAddress para vínculo
             status: device.connection_state === 'online' ? 'online' : 'offline'
           }));
 
@@ -473,6 +478,7 @@ export function Clients() {
 
     setApiStatus('idle');
     setConnectionSuccess(false);
+    setFetchedAnalytics([]);
 
     // Fetch permissions
     const { data: permData } = await supabase
@@ -573,6 +579,7 @@ export function Clients() {
     setEditingStores([]);
     setIsEditModalOpen(true);
     setConnectionSuccess(false);
+    setFetchedAnalytics([]);
   };
 
   const handleAddStore = () => {
@@ -819,6 +826,54 @@ export function Clients() {
                 status: d.status
             }));
             await supabase.from('devices').insert(devicesToInsert);
+        }
+      }
+
+      // 5. Save Fetched Analytics Data
+      if (fetchedAnalytics.length > 0) {
+        try {
+          console.log(`Salvando ${fetchedAnalytics.length} registros de analytics...`);
+          
+          const analyticsToInsert = fetchedAnalytics.map((visit: any) => {
+            const mainDeviceId = Array.isArray(visit.devices) && visit.devices.length > 0 
+              ? Number(visit.devices[0]) 
+              : null;
+
+            const attrs: any = {
+              face_quality: visit.face_quality ?? null,
+              facial_hair: visit.facial_hair ?? null,
+              hair_color: visit.hair_color ?? null,
+              hair_type: visit.hair_type ?? null,
+              headwear: visit.headwear ?? null,
+              glasses: visit.glasses ?? null,
+            };
+
+            if (Array.isArray(visit.additional_atributes)) {
+              attrs.additional_attributes = visit.additional_atributes;
+            }
+
+            return {
+              client_id: clientId,
+              device_id: mainDeviceId,
+              timestamp: visit.start,
+              age: typeof visit.age === 'number' ? Math.round(visit.age) : null,
+              gender: typeof visit.sex === 'number' ? visit.sex : 0,
+              attributes: attrs,
+              raw_data: visit
+            };
+          });
+
+          const chunkSize = 100;
+          for (let i = 0; i < analyticsToInsert.length; i += chunkSize) {
+            const chunk = analyticsToInsert.slice(i, i + chunkSize);
+            const { error: analyticsError } = await supabase
+              .from('visitor_analytics')
+              .insert(chunk);
+            
+            if (analyticsError) console.error('Erro ao salvar chunk de analytics:', analyticsError);
+          }
+        } catch (analyticsErr) {
+          console.error('Erro ao processar salvamento de analytics:', analyticsErr);
         }
       }
 

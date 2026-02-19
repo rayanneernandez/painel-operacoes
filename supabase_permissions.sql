@@ -1,0 +1,2 @@
+-- Add permissions column to users table if it doesn't exist
+alter table users add column if not exists permissions jsonb default '{"view_dashboard": true, "view_reports": false, "view_analytics": false, "export_data": false, "manage_settings": false}';

@@ -1,0 +1,144 @@
+| ?column?                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CREATE TABLE public.client_api_configs (
+    custom_header_value text,
+    api_key text,
+    collect_beard boolean,
+    collect_hair_color boolean,
+    collect_hair_type boolean,
+    collect_headwear boolean,
+    created_at timestamp with time zone,
+    updated_at timestamp with time zone,
+    folder_endpoint text,
+    documentation_url text,
+    analytics_endpoint text,
+    device_endpoint text,
+    environment text,
+    custom_header_key text,
+    auth_method text,
+    api_endpoint text,
+    client_id uuid NOT NULL,
+    collection_start timestamp with time zone,
+    collection_end timestamp with time zone,
+    collect_tracks boolean,
+    collect_face_quality boolean,
+    collect_glasses boolean
+);
+                                                            |
+| CREATE TABLE public.client_permissions (
+    view_dashboard boolean,
+    view_reports boolean,
+    updated_at timestamp with time zone,
+    client_id uuid NOT NULL,
+    view_analytics boolean,
+    export_data boolean,
+    manage_settings boolean,
+    created_at timestamp with time zone
+);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| CREATE TABLE public.clients (
+    color character varying,
+    notes text,
+    created_at timestamp without time zone,
+    apis_connected integer,
+    id uuid NOT NULL,
+    name character varying NOT NULL,
+    company character varying,
+    email character varying,
+    phone character varying,
+    status character varying,
+    plan character varying,
+    initials character varying,
+    logo_url text
+);
+                                                                                                                                                                                                                                                                                                                                                                           |
+| CREATE TABLE public.dashboard_configs (
+    id uuid NOT NULL,
+    layout_name character varying,
+    user_id uuid,
+    client_id uuid,
+    widgets_config jsonb NOT NULL,
+    updated_at timestamp without time zone
+);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| CREATE TABLE public.devices (
+    status character varying,
+    config jsonb,
+    id uuid NOT NULL,
+    store_id uuid NOT NULL,
+    external_id integer,
+    name character varying NOT NULL,
+    type character varying,
+    mac_address character varying
+);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| CREATE TABLE public.stores (
+    city character varying,
+    name character varying NOT NULL,
+    id uuid NOT NULL,
+    address text,
+    state character varying,
+    client_id uuid NOT NULL,
+    created_at timestamp without time zone
+);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| CREATE TABLE public.users (
+    email character varying NOT NULL,
+    last_login timestamp without time zone,
+    created_at timestamp without time zone,
+    client_id uuid,
+    id uuid NOT NULL,
+    password_hash character varying NOT NULL,
+    role character varying,
+    name character varying NOT NULL
+);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| CREATE TABLE public.visitor_analytics (
+    created_at timestamp with time zone,
+    id uuid NOT NULL,
+    client_id uuid,
+    device_id bigint,
+    timestamp timestamp with time zone NOT NULL,
+    age integer,
+    gender integer,
+    attributes jsonb,
+    raw_data jsonb
+);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| CREATE TABLE public.visitor_sessions (
+    campaigns_json jsonb,
+    tracks_json jsonb,
+    attributes_json jsonb,
+    facial_hair character varying,
+    face_quality double precision,
+    gender integer,
+    age_deviation integer,
+    age integer,
+    content_view_duration integer,
+    duration_seconds integer,
+    hair_color character varying,
+    end_time timestamp without time zone NOT NULL,
+    start_time timestamp without time zone NOT NULL,
+    hair_type character varying,
+    store_id uuid,
+    client_id uuid,
+    headwear character varying,
+    glasses character varying,
+    id uuid NOT NULL,
+    session_id character varying NOT NULL,
+    visitor_id character varying NOT NULL,
+    created_at timestamp without time zone,
+    device_ids_json jsonb
+);
+ |
+| CREATE TABLE public.visitors (
+    client_id uuid,
+    gender text,
+    id uuid NOT NULL,
+    emotion text,
+    raw_data jsonb,
+    timestamp timestamp with time zone,
+    visit_duration integer,
+    age integer
+);
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
