@@ -30,7 +30,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Check users table in Supabase
       const { data, error } = await supabase
         .from('users')
-        .select('*, clients(id)')
+        .select('*')
         .eq('email', email)
         .single();
 
@@ -49,7 +49,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         name: data.name,
         email: data.email,
         role: data.role as UserRole, // Ensure database role matches 'admin' | 'client'
-        clientId: data.clients && data.clients.length > 0 ? data.clients[0].id : undefined
+        clientId: data.client_id || undefined
       };
 
       setUser(newUser);

@@ -90,181 +90,223 @@ export function ClientDashboard() {
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
   // Filtro de Data (fim)
-  const [selectedStartDate, setSelectedStartDate] = useState<Date>(new Date('2024-01-01T00:00:00Z'));
-  const [selectedEndDate, setSelectedEndDate] = useState<Date>(new Date());
+  const [selectedStartDate, setSelectedStartDate] = useState<Date>(new Date('2025-01-01T00:00:00Z'));
+  const [selectedEndDate, setSelectedEndDate] = useState<Date>(new Date('2025-12-31T23:59:59Z'));
   const [showDatePicker, setShowDatePicker] = useState(false);
 
   // Estado para Analytics (dados vindos da API)
-  const [analyticsData, setAnalyticsData] = useState<any[]>([]);
+
   const [dailyStats, setDailyStats] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
   const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
   const [totalVisitors, setTotalVisitors] = useState(0);
   const [ageStats, setAgeStats] = useState<any[]>([]);
   const [genderStats, setGenderStats] = useState<any[]>([]);
+  const [attributeStats, setAttributeStats] = useState<{ label: string; value: number }[]>([]);
   const [avgVisitSeconds, setAvgVisitSeconds] = useState(0);
   const [avgVisitorsPerDay, setAvgVisitorsPerDay] = useState(0);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     async function fetchAnalytics() {
-      if (!id || !apiConfig) return;
-
+      if (!id) return;
       try {
-        const isDisplayForce = apiConfig.api_endpoint?.includes('displayforce.ai');
-        const baseUrl = isDisplayForce ? '/api-proxy' : apiConfig.api_endpoint;
-        const analyticsPath = apiConfig.analytics_endpoint || '/public/v1/stats/visitor/list';
-        const analyticsUrl = `${baseUrl}${analyticsPath}`;
-
-        const headers: Record<string, string> = {
-          'X-API-Token': apiConfig.api_key,
-          'Content-Type': 'application/json'
-        };
-
-        if (apiConfig.custom_header_key && apiConfig.custom_header_value) {
-          headers[apiConfig.custom_header_key] = apiConfig.custom_header_value;
-        }
-
         const now = new Date();
         const defaultStart = new Date(now.getFullYear() - 1, 0, 1).toISOString();
         const endDate = new Date(selectedEndDate);
         endDate.setHours(23, 59, 59, 999);
+        const startIso = selectedStartDate ? new Date(selectedStartDate).toISOString() : (apiConfig?.collection_start || defaultStart);
+        const endIso = apiConfig?.collection_end || endDate.toISOString();
 
-        const baseBody: any = {
-          start: (selectedStartDate ? new Date(selectedStartDate).toISOString() : (apiConfig.collection_start || defaultStart)),
-          end: apiConfig.collection_end || endDate.toISOString(),
-          tracks: apiConfig.collect_tracks ?? true,
-          face_quality: apiConfig.collect_face_quality ?? true,
-          glasses: apiConfig.collect_glasses ?? true,
-          facial_hair: apiConfig.collect_beard ?? true,
-          hair_color: apiConfig.collect_hair_color ?? true,
-          hair_type: apiConfig.collect_hair_type ?? true,
-          headwear: apiConfig.collect_headwear ?? true,
-          additional_attributes: ['smile', 'pitch', 'yaw', 'x', 'y', 'height']
-        };
-
+        let deviceIds: number[] | null = null;
         if (view === 'store' && selectedStore) {
-          const deviceIds = selectedStore.cameras
-            .map(c => Number((c as any).macAddress))
-            .filter(id => !isNaN(id));
-          if (deviceIds.length > 0) {
-            baseBody.devices = deviceIds;
-          }
+          deviceIds = selectedStore.cameras.map(c => Number((c as any).macAddress)).filter(n => !isNaN(n));
         } else if (view === 'camera' && selectedCamera) {
-          const apiDeviceId = Number((selectedCamera as any).macAddress);
-          if (!isNaN(apiDeviceId)) {
-            baseBody.devices = [apiDeviceId];
-          }
+          const n = Number((selectedCamera as any).macAddress);
+          if (!isNaN(n)) deviceIds = [n];
         }
 
-        // Paginação: buscar todas as páginas até completar total
-        const limit = 1000;
+        const isDev = import.meta.env.DEV;
+        if (!isDev) {
+          const srvResp = await fetch('/api/sync-analytics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer painel@2026*' },
+            body: JSON.stringify({ client_id: id, start: startIso, end: endIso, devices: deviceIds || [] })
+          });
+          if (srvResp.ok) {
+            const srv = await srvResp.json();
+            const d = srv.dashboard || {};
+            setTotalVisitors(Number(d.total_visitors || 0));
+            setAvgVisitorsPerDay(Number(d.avg_visitors_per_day || 0));
+            const perHour = d.visitors_per_hour_avg || {};
+            setHourlyStats(Array.from({ length: 24 }, (_, h) => Number(perHour[String(h)] || 0)));
+            const perDay = d.visitors_per_day || {};
+            const week = [0,0,0,0,0,0,0];
+            Object.keys(perDay).forEach(k => { const dd = new Date(`${k}T00:00:00Z`); const day = dd.getUTCDay(); const idx = day === 0 ? 6 : day - 1; week[idx] += Number(perDay[k] || 0); });
+            setDailyStats(week);
+            const g = d.gender_percent || {};
+            setGenderStats([{ label: 'Masculino', value: Number(g.male || 0) }, { label: 'Feminino', value: Number(g.female || 0) }]);
+            const attrs = d.attributes_percent || {};
+            const pctTrue = (obj:any) => Math.round(Number(obj?.true || obj?.['true'] || 0));
+            setAttributeStats([
+              { label: 'Óculos', value: pctTrue(attrs.glasses) },
+              { label: 'Barba', value: pctTrue(attrs.facial_hair) },
+              { label: 'Chapéu/Boné', value: pctTrue(attrs.headwear) },
+              { label: 'Máscara', value: 0 }
+            ]);
+            setAvgVisitSeconds(Number(d.avg_times_seconds?.avg_visit_time_seconds || 0));
+            setLastUpdate(new Date());
+            return;
+          }
+        }
+        // 2) Fallback direto na API externa (dev)
+        const baseUrl = isDev ? '/api-proxy' : (apiConfig?.api_endpoint || 'https://api.displayforce.ai');
+        const path = apiConfig?.analytics_endpoint || '/public/v1/stats/visitor/list';
+        const url = `${baseUrl}${path}`;
+        const key = apiConfig?.api_key ? String(apiConfig.api_key) : null;
+        const baseHeaders = { 'Content-Type': 'application/json', 'Accept': 'application/json' } as Record<string,string>;
+        const headerVariants: Record<string,string>[] = [];
+        if (apiConfig?.custom_header_key && apiConfig?.custom_header_value) {
+          headerVariants.push({ ...baseHeaders, [String(apiConfig.custom_header_key)]: String(apiConfig.custom_header_value) });
+        } else if (key) {
+          headerVariants.push({ ...baseHeaders, 'X-API-Token': key });
+          headerVariants.push({ ...baseHeaders, 'Authorization': `Bearer ${key}` });
+        }
+        if (import.meta.env.DEV) {
+          const devKey = localStorage.getItem('df_api_token');
+          const devHKey = localStorage.getItem('df_auth_header_key');
+          const devHVal = localStorage.getItem('df_auth_header_value');
+          if (devHKey && devHVal) {
+            headerVariants.unshift({ ...baseHeaders, [String(devHKey)]: String(devHVal) });
+          } else if (devKey) {
+            headerVariants.unshift({ ...baseHeaders, 'Authorization': `Bearer ${String(devKey)}` });
+            headerVariants.unshift({ ...baseHeaders, 'X-API-Token': String(devKey) });
+          }
+        }
+        if (headerVariants.length === 0) headerVariants.push(baseHeaders);
+
+        const pageSize = 1000;
         let offset = 0;
-        const combined: any[] = [];
-        let total = 0;
-        while (true) {
-          const body = { ...baseBody, limit, offset };
-          const resp = await fetch(analyticsUrl, { method: 'POST', headers, body: JSON.stringify(body) });
-          if (!resp.ok) {
-            console.error('Erro ao buscar analytics da API:', await resp.text());
-            break;
+        const allRows: any[] = [];
+        let chosenHeaders: Record<string,string> | null = null;
+        for (;;) {
+          const body: any = { start: startIso, end: endIso, limit: pageSize, offset, fields: ['start','end','age','sex','device','devices','face_quality','facial_hair','hair_color','hair_type','headwear','glasses','additional_attributes'] };
+          if (deviceIds && deviceIds.length > 0) body.devices = deviceIds;
+
+          let rows: any[] = [];
+          const tryHeaders: Record<string,string>[] = chosenHeaders ? [chosenHeaders as Record<string,string>] : headerVariants;
+          for (const h of tryHeaders) {
+            // Tenta POST
+            let resp = await fetch(url, { method: 'POST', headers: h, body: JSON.stringify(body) });
+            if (resp.ok) {
+              const json = await resp.json();
+              rows = json.payload || json.data || [];
+              chosenHeaders = h;
+              break;
+            }
+            // Endpoint é POST-only; não usar GET fallback
+            
+            if (resp.status !== 401 && resp.status !== 403) {
+              console.warn('API externa erro:', resp.status, await resp.text());
+              rows = [];
+              break;
+            } else {
+              const hk = Object.keys(h).find(x => x.toLowerCase() !== 'content-type' && x.toLowerCase() !== 'accept') || '';
+              console.warn('Falha de auth', resp.status, hk);
+            }
           }
-          const json = await resp.json();
-          const pagePayload = json?.payload || [];
-          const pageTotal = json?.pagination?.total ?? pagePayload.length;
-          total = pageTotal;
-          combined.push(...pagePayload);
-          if (pagePayload.length < limit || combined.length >= total) break;
-          offset += limit;
+
+          if (!Array.isArray(rows) || rows.length === 0) break;
+          allRows.push(...rows);
+          if (rows.length < pageSize) break;
+          offset += pageSize;
+          if (offset > 200000) break;
         }
 
-        setAnalyticsData(combined);
+        const combined = allRows.map((v:any) => ({ timestamp: v.start, age: typeof v.age === 'number' ? Math.round(v.age) : null, gender: typeof v.sex === 'number' ? v.sex : 0, raw_data: v }));
+        void 0;
 
-        const days = [0, 0, 0, 0, 0, 0, 0];
+        let latest: Date | null = null;
+        combined.forEach((row:any) => { const t = new Date(row.timestamp || row.raw_data?.start); if (!isNaN(t.getTime())) { if (!latest || t > latest) latest = t; } });
+        setLastUpdate(latest);
+
+        const days = [0,0,0,0,0,0,0];
         const hours = new Array(24).fill(0);
-
         const genderCount = { male: 0, female: 0 };
-        let totalDur = 0;
-        let durCount = 0;
-        const ageMap: Record<string, { m: number, f: number }> = {
-          '18-': { m: 0, f: 0 },
-          '18-24': { m: 0, f: 0 },
-          '25-34': { m: 0, f: 0 },
-          '35-44': { m: 0, f: 0 },
-          '45-54': { m: 0, f: 0 },
-          '55-64': { m: 0, f: 0 },
-          '65+': { m: 0, f: 0 }
-        };
+        let totalDur = 0; let durCount = 0;
+        const ageMap: Record<string, { m: number, f: number }> = { '18-': { m:0,f:0 }, '18-24': { m:0,f:0 }, '25-34': { m:0,f:0 }, '35-44': { m:0,f:0 }, '45-54': { m:0,f:0 }, '55-64': { m:0,f:0 }, '65+': { m:0,f:0 } };
+        let attrGlasses = 0, attrBeard = 0, attrMask = 0, attrHeadwear = 0;
 
-        combined.forEach((visit: any) => {
-          const date = new Date(visit.start);
-          if (!isNaN(date.getTime())) {
-            const day = date.getDay();
-            const adjustedDay = day === 0 ? 6 : day - 1;
-            days[adjustedDay]++;
-
-            const hour = date.getHours();
-            hours[hour]++;
-          }
-
-          const startDt = new Date(visit.start);
-          const endDt = new Date(visit.end);
-          if (!isNaN(startDt.getTime()) && !isNaN(endDt.getTime()) && endDt > startDt) {
-            totalDur += (endDt.getTime() - startDt.getTime()) / 1000;
-            durCount++;
-          }
-
-          const sex = visit.sex;
-          const isMale = sex === 1;
-          const isFemale = sex === 2;
-          if (isMale) genderCount.male++;
-          if (isFemale) genderCount.female++;
-
-          const age = typeof visit.age === 'number' ? visit.age : 0;
-          let ageGroup = '18-';
-          if (age >= 18 && age <= 24) ageGroup = '18-24';
-          else if (age >= 25 && age <= 34) ageGroup = '25-34';
-          else if (age >= 35 && age <= 44) ageGroup = '35-44';
-          else if (age >= 45 && age <= 54) ageGroup = '45-54';
-          else if (age >= 55 && age <= 64) ageGroup = '55-64';
-          else if (age >= 65) ageGroup = '65+';
-
-          if (isMale) ageMap[ageGroup].m++;
-          if (isFemale) ageMap[ageGroup].f++;
+        combined.forEach((visit:any) => {
+          const baseTimestamp = visit.timestamp || visit.raw_data?.start;
+          const date = new Date(baseTimestamp);
+          if (!isNaN(date.getTime())) { const day = date.getDay(); const adjustedDay = day === 0 ? 6 : day - 1; days[adjustedDay]++; const hour = date.getHours(); hours[hour]++; }
+          const startDt = new Date(visit.raw_data?.start || visit.timestamp);
+          const endDt = new Date(visit.raw_data?.end || visit.timestamp);
+          if (!isNaN(startDt.getTime()) && !isNaN(endDt.getTime()) && endDt > startDt) { totalDur += (endDt.getTime() - startDt.getTime())/1000; durCount++; }
+          const sex = visit.gender ?? visit.raw_data?.sex; const isMale = sex === 1 || sex === 'male'; const isFemale = sex === 2 || sex === 'female'; if (isMale) genderCount.male++; if (isFemale) genderCount.female++;
+          const ageValue = typeof visit.age === 'number' ? visit.age : (visit.raw_data?.age ?? 0); const age = typeof ageValue === 'number' ? ageValue : 0;
+          let ageGroup = '18-'; if (age >= 18 && age <= 24) ageGroup = '18-24'; else if (age >= 25 && age <= 34) ageGroup = '25-34'; else if (age >= 35 && age <= 44) ageGroup = '35-44'; else if (age >= 45 && age <= 54) ageGroup = '45-54'; else if (age >= 55 && age <= 64) ageGroup = '55-64'; else if (age >= 65) ageGroup = '65+';
+          if (isMale) ageMap[ageGroup].m++; if (isFemale) ageMap[ageGroup].f++;
+          const raw = visit.raw_data || {};
+          const hasGlasses = raw.glasses === true || raw.glasses === 1 || raw.glasses === '1' || (Array.isArray(raw.glasses) && raw.glasses.length > 0); if (hasGlasses) attrGlasses++;
+          const facialHair = raw.facial_hair; if (facialHair && facialHair !== 'none') attrBeard++;
+          const mask = raw.mask || raw.has_mask || raw.mask_on; if (mask) attrMask++;
+          const headwear = raw.headwear; if (headwear && headwear !== 'none') attrHeadwear++;
         });
 
         setAvgVisitSeconds(durCount ? Math.round(totalDur / durCount) : 0);
         setDailyStats(days);
         setHourlyStats(hours);
-        const dayCount = Math.max(1, Math.floor((new Date(baseBody.end).getTime() - new Date(baseBody.start).getTime()) / 86400000) + 1);
-        setAvgVisitorsPerDay(Math.round(total / dayCount));
-        setTotalVisitors(total);
-
-        setGenderStats([
-          { label: 'Masculino', value: genderCount.male },
-          { label: 'Feminino', value: genderCount.female }
+        const dayCount = Math.max(1, Math.floor((new Date(endIso).getTime() - new Date(startIso).getTime()) / 86400000) + 1);
+        const totalCombined = combined.length;
+        setAvgVisitorsPerDay(dayCount ? Math.round(totalCombined / dayCount) : totalCombined);
+        setTotalVisitors(totalCombined);
+        setGenderStats([{ label: 'Masculino', value: genderCount.male }, { label: 'Feminino', value: genderCount.female }]);
+        const base = Math.max(totalCombined, 1);
+        setAttributeStats([
+          { label: 'Óculos', value: base ? Math.round((attrGlasses / base) * 100) : 0 },
+          { label: 'Barba', value: base ? Math.round((attrBeard / base) * 100) : 0 },
+          { label: 'Máscara', value: base ? Math.round((attrMask / base) * 100) : 0 },
+          { label: 'Chapéu/Boné', value: base ? Math.round((attrHeadwear / base) * 100) : 0 }
         ]);
-
+        // Persistir rollup básico no Supabase (best-effort)
+        try {
+          if (!isDev) {
+            const perHourAvgObj = Object.fromEntries(hours.map((v, i) => [String(i), v]));
+            await supabase.from('visitor_analytics_rollups').upsert({
+              client_id: id,
+              start: startIso,
+              end: endIso,
+              total_visitors: totalCombined,
+              avg_visitors_per_day: dayCount ? Math.round(totalCombined / dayCount) : totalCombined,
+              visitors_per_day: { seg: days[0], ter: days[1], qua: days[2], qui: days[3], sex: days[4], sab: days[5], dom: days[6] },
+              visitors_per_hour_avg: perHourAvgObj,
+              updated_at: new Date().toISOString(),
+            });
+          }
+        } catch(e) { /* ignore RLS */ }
         setAgeStats([
-          { age: '65+', ...ageMap['65+'] },
-          { age: '55-64', ...ageMap['55-64'] },
-          { age: '45-54', ...ageMap['45-54'] },
-          { age: '35-44', ...ageMap['35-44'] },
-          { age: '25-34', ...ageMap['25-34'] },
-          { age: '18-24', ...ageMap['18-24'] },
-          { age: '18-', ...ageMap['18-'] }
+          { age: '65+', m: Math.round((ageMap['65+'].m / base) * 100), f: Math.round((ageMap['65+'].f / base) * 100) },
+          { age: '55-64', m: Math.round((ageMap['55-64'].m / base) * 100), f: Math.round((ageMap['55-64'].f / base) * 100) },
+          { age: '45-54', m: Math.round((ageMap['45-54'].m / base) * 100), f: Math.round((ageMap['45-54'].f / base) * 100) },
+          { age: '35-44', m: Math.round((ageMap['35-44'].m / base) * 100), f: Math.round((ageMap['35-44'].f / base) * 100) },
+          { age: '25-34', m: Math.round((ageMap['25-34'].m / base) * 100), f: Math.round((ageMap['25-34'].f / base) * 100) },
+          { age: '18-24', m: Math.round((ageMap['18-24'].m / base) * 100), f: Math.round((ageMap['18-24'].f / base) * 100) },
+          { age: '18-', m: Math.round((ageMap['18-'].m / base) * 100), f: Math.round((ageMap['18-'].f / base) * 100) }
         ]);
       } catch (err) {
-        console.error('Erro inesperado ao buscar analytics:', err);
-        setAnalyticsData([]);
-        setDailyStats([0, 0, 0, 0, 0, 0, 0]);
+        console.error('Erro inesperado ao buscar analytics (API externa):', err);
+        void 0;
+        setDailyStats([0,0,0,0,0,0,0]);
         setHourlyStats(new Array(24).fill(0));
         setTotalVisitors(0);
         setGenderStats([]);
         setAgeStats([]);
       }
     }
-
     fetchAnalytics();
-  }, [id, apiConfig, view, selectedStore, selectedCamera, selectedStartDate, selectedEndDate]);
+  }, [id, view, selectedStore, selectedCamera, selectedStartDate, selectedEndDate, apiConfig, refreshTick]);
 
   useEffect(() => {
     async function fetchClientAndStores() {
@@ -284,22 +326,15 @@ export function ClientDashboard() {
         });
       }
 
-      // 2. Fetch Stores and Devices
-      const { data: storesData, error } = await supabase
+      // 2. Fetch Stores and Devices (sem JOIN)
+      const { data: storesData } = await supabase
         .from('stores')
-        .select(`
-          id,
-          name,
-          city,
-          devices (
-            id,
-            name,
-            type,
-            mac_address,
-            status
-          )
-        `)
+        .select('id, name, city')
         .eq('client_id', id);
+
+      const { data: devicesData } = await supabase
+        .from('devices')
+        .select('id, name, type, mac_address, status, store_id');
 
       // 3. Fetch Client API Config (DisplayForce)
       const { data: apiCfg } = await supabase
@@ -328,23 +363,36 @@ export function ClientDashboard() {
       }
 
       if (storesData) {
-        const formattedStores: StoreType[] = storesData.map((store: any) => ({
-          id: store.id,
-          name: store.name,
-          address: '', // Campo não existe no banco por enquanto
-          city: store.city || '',
-          status: 'online', // Status da loja baseado nos dispositivos ou padrão
-          cameras: (store.devices || []).map((device: any) => ({
+        const devicesByStore: Record<string, any[]> = {};
+        (devicesData || []).forEach((device: any) => {
+          const sid = device.store_id;
+          if (!devicesByStore[sid]) devicesByStore[sid] = [];
+          devicesByStore[sid].push({
             id: device.id,
             name: device.name,
             status: device.status || 'offline',
             type: device.type || 'dome',
-            resolution: '1080p', // Valor padrão
-            lastEvent: undefined,
+            resolution: '1080p',
             macAddress: device.mac_address
-          }))
+          });
+        });
+
+        const formattedStores: StoreType[] = storesData.map((store: any) => ({
+          id: store.id,
+          name: store.name,
+          address: '',
+          city: store.city || '',
+          status: 'online',
+          cameras: devicesByStore[store.id] || []
         }));
-        setStores(formattedStores);
+        const seen = new Set<string>();
+        const uniqueStores = formattedStores.filter(s => {
+          const key = String(s.id);
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        setStores(uniqueStores);
       }
     }
     
@@ -403,6 +451,10 @@ export function ClientDashboard() {
   }, [location.state]);
 
   // Handlers de Navegação
+  const syncNow = async () => {
+    setRefreshTick(t => t + 1);
+  };
+
   const goToNetwork = () => {
     setView('network');
     setSelectedStore(null);
@@ -438,7 +490,6 @@ export function ClientDashboard() {
         { label: 'TOTAL VISITANTES', value: totalVisitors.toLocaleString(), icon: Users, color: 'text-white', bg: 'bg-blue-600' },
         { label: 'MÉDIA VISITANTES DIA', value: avgVisitorsPerDay.toLocaleString(), icon: BarChart2, color: 'text-white', bg: 'bg-blue-600' },
         { label: 'TEMPO MED VISITA', value: formatDuration(avgVisitSeconds), icon: Clock, color: 'text-white', bg: 'bg-blue-600' },
-        { label: 'TEMPO MED CONTATO', value: formatDuration(avgVisitSeconds), icon: Activity, color: 'text-white', bg: 'bg-blue-600' },
       ];
 
     } else if (view === 'camera' && selectedCamera) {
@@ -550,33 +601,48 @@ export function ClientDashboard() {
                  <ChevronDown size={14} className="text-gray-500" />
                </button>
                {showDatePicker && (
-                 <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl space-y-2">
-                   <label className="block text-xs text-gray-400">Início</label>
-                   <input
-                     type="date"
-                     value={new Date(selectedStartDate).toISOString().slice(0,10)}
-                     onChange={(e) => {
-                       const d = new Date(e.target.value + 'T00:00:00');
-                       if (!isNaN(d.getTime())) setSelectedStartDate(d);
-                     }}
-                     className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
-                   />
-                   <label className="block text-xs text-gray-400 mt-2">Fim</label>
-                   <input
-                     type="date"
-                     value={new Date(selectedEndDate).toISOString().slice(0,10)}
-                     onChange={(e) => {
-                       const d = new Date(e.target.value + 'T00:00:00');
-                       if (!isNaN(d.getTime())) setSelectedEndDate(d);
-                     }}
-                     className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
-                   />
-                   <div className="flex justify-end pt-2">
-                     <button onClick={() => setShowDatePicker(false)} className="px-3 py-1 bg-emerald-600 text-white rounded-md">Aplicar</button>
-                   </div>
-                 </div>
-               )}
+                <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl">
+                  <div className="flex items-end gap-3">
+                    <div>
+                      <label className="block text-xs text-gray-400">Início</label>
+                
+                
+                
+                
+                      <input
+                        type="date"
+                        value={new Date(selectedStartDate).toISOString().slice(0,10)}
+                        onChange={(e) => {
+                          const d = new Date(e.target.value + 'T00:00:00');
+                          if (!isNaN(d.getTime())) setSelectedStartDate(d);
+                        }}
+                        className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
+                      />
+                    </div>
+                    <span className="text-gray-500">→</span>
+                    <div>
+                      <label className="block text-xs text-gray-400">Fim</label>
+                      <input
+                        type="date"
+                        value={new Date(selectedEndDate).toISOString().slice(0,10)}
+                        onChange={(e) => {
+                          const d = new Date(e.target.value + 'T00:00:00');
+                          if (!isNaN(d.getTime())) setSelectedEndDate(d);
+                        }}
+                        className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
+                      />
+                    </div>
+                    <button onClick={() => setShowDatePicker(false)} className="px-3 py-2 bg-emerald-600 text-white rounded-md">Aplicar</button>
+                  </div>
+                </div>
+              )}
              </div>
+
+             {lastUpdate && (
+               <div className="text-xs text-gray-500 hidden md:block">
+                 Última atualização: {lastUpdate.toLocaleString('pt-BR')}
+               </div>
+             )}
 
              {/* Config Button */}
              <button 
@@ -586,6 +652,16 @@ export function ClientDashboard() {
              >
                <Settings size={16} className="text-gray-500" />
                <span className="text-sm hidden md:inline">Configurar</span>
+             </button>
+
+             {/* Sync Button */}
+             <button 
+               onClick={syncNow}
+               className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-500 transition-colors"
+               title="Sincronizar Agora"
+             >
+               <Activity size={16} />
+               <span className="text-sm hidden md:inline">Sincronizar</span>
              </button>
           </div>
         </div>
@@ -627,9 +703,19 @@ export function ClientDashboard() {
                   if (widget.size === 'quarter') colSpan = 'lg:col-span-3';
                   if (widget.size === '2/3') colSpan = 'lg:col-span-8';
 
+                  const widgetProps: any = { view: 'network' };
+                  if (widget.id === 'flow_trend') widgetProps.dailyData = dailyStats;
+                  if (widget.id === 'hourly_flow') widgetProps.hourlyData = hourlyStats;
+                  if (widget.id === 'age_pyramid') widgetProps.ageData = ageStats;
+                  if (widget.id === 'gender_dist') {
+                    widgetProps.genderData = genderStats;
+                    widgetProps.totalVisitors = totalVisitors;
+                  }
+                  if (widget.id === 'attributes') widgetProps.attrData = attributeStats;
+
                   return (
                     <div key={widget.id} className={`col-span-1 ${colSpan} animate-in fade-in zoom-in-95 duration-500`}>
-                      <Component view="network" />
+                      <Component {...widgetProps} />
                     </div>
                   );
                })
@@ -706,21 +792,11 @@ export function ClientDashboard() {
                    Atributos Identificados
                  </h3>
                  <div className="space-y-6">
-                    <div>
-                      <p className="text-xs text-gray-500 mb-2 uppercase">Tipo de Cabelo</p>
-                      <HorizontalBarChart 
-                        data={[{ label: 'Curto', value: 52 }, { label: 'Longo', value: 35 }, { label: 'Careca', value: 13 }]} 
-                        color="bg-orange-500"
-                      />
-                    </div>
-                    <div>
-                      <p className="text-xs text-gray-500 mb-2 uppercase">Acessórios</p>
-                      <HorizontalBarChart 
-                        data={[{ label: 'Óculos', value: 18 }, { label: 'Boné/Chapéu', value: 12 }, { label: 'Máscara', value: 5 }]} 
-                        color="bg-emerald-500"
-                      />
-                    </div>
-                 </div>
+                  <HorizontalBarChart 
+                    data={attributeStats.map(a => ({ label: a.label, value: a.value }))} 
+                    color="bg-emerald-500"
+                  />
+                </div>
                </div>
             </div>
 

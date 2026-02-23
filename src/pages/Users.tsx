@@ -22,9 +22,10 @@ type UserType = {
   name: string;
   email: string;
   role: 'admin' | 'client';
-  clients: Client[]; // Array de clientes
-  status: 'active' | 'inactive';
-  last_login: string;
+  client_id?: string | null;
+  clients: Client[]; // sempre um array (pode ser vazio)
+  status?: 'active' | 'inactive';
+  last_login: string | null;
   permissions: {
     view_dashboard: boolean;
     view_reports: boolean;
@@ -88,14 +89,19 @@ export function Users() {
       setLoading(true);
       const { data, error } = await supabase
         .from('users')
-        .select('*, clients(id, name)');
+        .select('*');
       
       if (error) throw error;
       
-      const formattedUsers = data?.map(user => ({
-        ...user,
-        clients: Array.isArray(user.clients) ? user.clients : (user.clients ? [user.clients] : [])
-      })) || [];
+      const formattedUsers: UserType[] = (data || []).map((user: any) => {
+        const linkedClient = user.client_id
+          ? availableClients.find(c => c.id === user.client_id)
+          : undefined;
+        return {
+          ...user,
+          clients: linkedClient ? [linkedClient] : []
+        };
+      });
 
       setUsers(formattedUsers);
     } catch (error) {

@@ -24,13 +24,14 @@ export const LineChart = ({ data, color, height = 60 }: { data: number[], color:
 
 export const DonutChart = ({ data, colors }: { data: { label: string, value: number }[], colors: string[] }) => {
   const total = data.reduce((acc, curr) => acc + curr.value, 0);
+  const safeTotal = total > 0 ? total : 1;
   let accumulatedAngle = 0;
 
   return (
     <div className="h-[200px] w-full relative flex items-center justify-center">
        <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90 overflow-visible">
          {data.map((d, i) => {
-           const angle = (d.value / total) * 360;
+           const angle = (d.value / safeTotal) * 360;
            const radius = 40;
            const circumference = 2 * Math.PI * radius;
            const strokeDasharray = `${(angle / 360) * circumference} ${circumference}`;
@@ -61,7 +62,7 @@ export const DonutChart = ({ data, colors }: { data: { label: string, value: num
 };
 
 export const HorizontalBarChart = ({ data, color }: { data: { label: string, value: number }[], color: string }) => {
-  const max = Math.max(...data.map(d => d.value));
+  const max = Math.max(...data.map(d => d.value), 1);
   return (
     <div className="space-y-3 w-full">
       {data.map((d, i) => (
@@ -202,78 +203,101 @@ export const AVAILABLE_WIDGETS: WidgetType[] = [
 
 // --- WIDGET COMPONENTS ---
 
-export const WidgetFlowTrend = ({ view }: { view: string }) => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider">
-       <Activity size={14} className="text-blue-500" />
-       Média Visitantes Dia - {view === 'network' ? 'Rede' : 'Dia da Semana'}
-     </h3>
-     <LineChart data={[0, 0, 0, 0, 0, 0, 0]} color="text-blue-500" height={100} />
-     <div className="flex justify-between text-[10px] text-gray-500 mt-2 uppercase">
-        <span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sab</span><span>Dom</span>
+export const WidgetFlowTrend = ({ view, dailyData }: { view: string, dailyData?: number[] }) => {
+  const data = dailyData && dailyData.length ? dailyData : [0, 0, 0, 0, 0, 0, 0];
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+       <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider">
+         <Activity size={14} className="text-blue-500" />
+         Média Visitantes Dia - {view === 'network' ? 'Rede' : 'Dia da Semana'}
+       </h3>
+       <LineChart data={data} color="text-blue-500" height={100} />
+       <div className="flex justify-between text-[10px] text-gray-500 mt-2 uppercase">
+          <span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sab</span><span>Dom</span>
+       </div>
      </div>
-   </div>
-);
+  );
+};
 
-export const WidgetHourlyFlow = ({ view }: { view: string }) => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider">
-       <Clock size={14} className="text-emerald-500" />
-       Média Visitantes por Hora {view === 'network' ? '(Rede)' : ''}
-     </h3>
-     <LineChart data={[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]} 
-        color="text-emerald-500" height={100} 
-     />
-     <div className="flex justify-between text-[10px] text-gray-500 mt-2">
-        <span>06h</span><span>09h</span><span>12h</span><span>15h</span><span>18h</span><span>21h</span>
+export const WidgetHourlyFlow = ({ view, hourlyData }: { view: string, hourlyData?: number[] }) => {
+  const data = hourlyData && hourlyData.length ? hourlyData : new Array(24).fill(0);
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+       <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider">
+         <Clock size={14} className="text-emerald-500" />
+         Média Visitantes por Hora {view === 'network' ? '(Rede)' : ''}
+       </h3>
+       <LineChart data={data} 
+          color="text-emerald-500" height={100} 
+       />
+       <div className="flex justify-between text-[10px] text-gray-500 mt-2">
+          <span>06h</span><span>09h</span><span>12h</span><span>15h</span><span>18h</span><span>21h</span>
+       </div>
      </div>
-   </div>
-);
+  );
+};
 
-export const WidgetAgePyramid = ({ view }: { view: string }) => (
+export const WidgetAgePyramid = ({ view, ageData }: { view: string, ageData?: any[] }) => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
      <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider">
        <Users size={16} className="text-purple-500" />
        Pirâmide Etária {view === 'network' ? '(Consolidado)' : ''}
      </h3>
-     <AgePyramid />
+     <AgePyramid data={ageData} />
    </div>
 );
 
-export const WidgetGenderDist = ({ view }: { view: string }) => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider">
-       <Users size={16} className="text-pink-500" />
-       Gênero {view === 'network' ? '(Consolidado)' : ''}
-     </h3>
-     <DonutChart 
-        data={[{ label: 'Masculino', value: 0 }, { label: 'Feminino', value: 0 }]} 
-        colors={['#1e40af', '#db2777']}
-     />
-     <div className="flex justify-center gap-4 mt-4 text-xs">
-        <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-blue-800 rounded-full" /> Masculino (0%)</span>
-        <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-pink-600 rounded-full" /> Feminino (0%)</span>
+export const WidgetGenderDist = ({ view, genderData, totalVisitors }: { view: string, genderData?: { label: string, value: number }[], totalVisitors?: number }) => {
+  const fallback = [{ label: 'Masculino', value: 0 }, { label: 'Feminino', value: 0 }];
+  const data = genderData && genderData.length === 2 ? genderData : fallback;
+  const total = typeof totalVisitors === 'number' ? totalVisitors : data.reduce((acc, d) => acc + d.value, 0);
+  const male = data[0]?.value || 0;
+  const female = data[1]?.value || 0;
+  const base = total || (male + female) || 1;
+  const malePct = Math.round((male / base) * 100);
+  const femalePct = Math.round((female / base) * 100);
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+       <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider">
+         <Users size={16} className="text-pink-500" />
+         Gênero {view === 'network' ? '(Consolidado)' : ''}
+       </h3>
+       <DonutChart 
+          data={data} 
+          colors={['#1e40af', '#db2777']}
+       />
+       <div className="flex justify-center gap-4 mt-4 text-xs">
+          <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-blue-800 rounded-full" /> Masculino ({malePct}%)</span>
+          <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-pink-600 rounded-full" /> Feminino ({femalePct}%)</span>
+       </div>
      </div>
-   </div>
-);
+  );
+};
 
-export const WidgetAttributes = ({ view }: { view: string }) => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider">
-       <Users size={16} className="text-orange-500" />
-       Atributos {view === 'network' ? '(Consolidado)' : ''}
-     </h3>
-     <HorizontalBarChart 
-        data={[
-          { label: 'Óculos', value: 0 },
-          { label: 'Barba', value: 0 },
-          { label: 'Máscara', value: 0 },
-          { label: 'Chapéu/Boné', value: 0 }
-        ]}
-        color="bg-orange-500"
-     />
-   </div>
-);
+export const WidgetAttributes = ({ view, attrData }: { view: string, attrData?: { label: string, value: number }[] }) => {
+  const data = attrData && attrData.length
+    ? attrData
+    : [
+        { label: 'Óculos', value: 0 },
+        { label: 'Barba', value: 0 },
+        { label: 'Máscara', value: 0 },
+        { label: 'Chapéu/Boné', value: 0 }
+      ];
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+       <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider">
+         <Users size={16} className="text-orange-500" />
+         Atributos {view === 'network' ? '(Consolidado)' : ''}
+       </h3>
+       <HorizontalBarChart 
+          data={data}
+          color="bg-orange-500"
+       />
+     </div>
+  );
+};
 
 export const WidgetCampaigns = ({ view }: { view: string }) => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
@@ -305,7 +329,6 @@ export const WidgetKPIFlowStats = () => (
      <KPIStat label="Total Visitantes" value="0" color="text-gray-900 dark:text-white" />
      <KPIStat label="Média Visitantes Dia" value="0" color="text-blue-500" />
      <KPIStat label="Tempo Médio Visita" value="00:00" color="text-emerald-500" />
-     <KPIStat label="Tempo Médio Contato" value="00:00" color="text-amber-500" />
   </div>
 );
 
@@ -501,7 +524,7 @@ export const WidgetJourneyPoints = () => (
   </div>
 );
 
-export const WIDGET_MAP: Record<string, React.FC<{view: string}>> = {
+export const WIDGET_MAP: Record<string, React.FC<any>> = {
   'flow_trend': WidgetFlowTrend,
   'hourly_flow': WidgetHourlyFlow,
   'age_pyramid': WidgetAgePyramid,

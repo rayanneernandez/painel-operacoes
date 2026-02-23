@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, CheckCircle2, Activity, Camera, ShieldAlert } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import supabase from '../lib/supabase';
+const ENV_DF_TOKEN = (import.meta.env.VITE_DISPLAYFORCE_TOKEN as string | undefined) || '';
 
 // Componente Toggle
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
@@ -45,9 +46,9 @@ type Store = {
   devices: Device[];
 };
 
-const MOCK_API_DEVICES: Device[] = [];
 
-const MOCK_CLIENTS: Client[] = [];
+
+
 
 export function Clients() {
   const navigate = useNavigate();
@@ -82,9 +83,9 @@ export function Clients() {
     folderEndpoint: '/public/v1/device-folder/list',
     deviceEndpoint: '/public/v1/device/list',
     analyticsEndpoint: '/public/v1/stats/visitor/list',
-    token: '',
-    customHeaderKey: '',
-    customHeaderValue: '',
+    token: ENV_DF_TOKEN,
+    customHeaderKey: 'Authorization',
+    customHeaderValue: ENV_DF_TOKEN ? `Bearer ${ENV_DF_TOKEN}` : '',
     docUrl: '',
     // Data Collection Body Params
     collectionStart: '',
@@ -126,29 +127,40 @@ export function Clients() {
   const fetchClients = async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
+      const { data: clientsData, error } = await supabase
         .from('clients')
-        .select(`
-          *,
-          stores (
-            id,
-            name,
-            city,
-            devices (*)
-          )
-        `);
+        .select('*');
+
+      const { data: storesData } = await supabase
+        .from('stores')
+        .select('id, name, city, client_id');
+
+      const { data: devicesData } = await supabase
+        .from('devices')
+        .select('id, name, type, mac_address, status, store_id');
       
       if (error) throw error;
 
-      if (data) {
-        const formattedClients: Client[] = data.map(client => ({
+      if (clientsData) {
+        const devicesByStore: Record<string, any[]> = {};
+        (devicesData || []).forEach((d: any) => {
+          const sid = d.store_id;
+          if (!devicesByStore[sid]) devicesByStore[sid] = [];
+          devicesByStore[sid].push({ id: d.id, name: d.name, type: d.type, macAddress: d.mac_address, status: d.status });
+        });
+
+        const storesByClient: Record<string, any[]> = {};
+        (storesData || []).forEach((s: any) => {
+          const cid = s.client_id;
+          if (!storesByClient[cid]) storesByClient[cid] = [];
+          storesByClient[cid].push({ id: s.id, name: s.name, city: s.city, devices: devicesByStore[s.id] || [] });
+        });
+
+        const formattedClients: Client[] = clientsData.map(client => ({
           ...client,
           initials: client.name.substring(0, 1).toUpperCase(),
           color: 'bg-indigo-600',
-          stores: client.stores?.map((s: any) => ({
-            ...s,
-            devices: s.devices || []
-          })) || []
+          stores: storesByClient[client.id] || []
         }));
         setClients(formattedClients);
       }
@@ -184,38 +196,53 @@ export function Clients() {
     
     try {
       // Validar Token
-      if (!apiConfig.token) {
+      if (!apiConfig.token && !ENV_DF_TOKEN) {
         throw new Error('Token de API é obrigatório');
       }
 
       // Headers para DisplayForce
-      const headers = {
-        'X-API-Token': apiConfig.token,
-        'Content-Type': 'application/json'
+      const tokenTrim = (apiConfig.token || ENV_DF_TOKEN || '').trim();
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-API-Token': tokenTrim,
+        'Authorization': `Bearer ${tokenTrim}`
       };
+      if (apiConfig.customHeaderKey && apiConfig.customHeaderValue) {
+        headers[apiConfig.customHeaderKey] = apiConfig.customHeaderValue;
+      }
 
       // 1. Fetch Folders (Lojas) - POST Request
       // Usar proxy se o endpoint for da DisplayForce para evitar erro de CORS
       const isDisplayForce = apiConfig.endpoint.includes('displayforce.ai');
-      const baseUrl = isDisplayForce ? '/api-proxy' : apiConfig.endpoint;
+      const isDev = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+      const baseUrl = isDisplayForce
+        ? (isDev ? '/api-proxy' : 'https://api.displayforce.ai')
+        : apiConfig.endpoint;
 
       const folderUrl = `${baseUrl}${apiConfig.folderEndpoint}`;
       const folderBody = {
+        id: [],
+        name: [],
+        parent_ids: [],
         recursive: true,
-        limit: 1000,
+        limit: 100,
         offset: 0
       };
 
       console.log('Buscando Pastas:', { url: folderUrl, body: folderBody });
 
-      const foldersResponse = await fetch(folderUrl, { 
-        method: 'POST',
-        headers: {
-            'X-API-Token': apiConfig.token,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(folderBody)
+      let foldersResponse = await fetch(`${folderUrl}?recursive=true&limit=${folderBody.limit}&offset=${folderBody.offset}`, {
+        method: 'GET',
+        headers: headers
       });
+
+      if (!foldersResponse.ok) {
+        foldersResponse = await fetch(folderUrl, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(folderBody)
+        });
+      }
       
       if (!foldersResponse.ok) {
         const errorText = await foldersResponse.text();
@@ -229,30 +256,35 @@ export function Clients() {
       // 2. Fetch Devices (Dispositivos) - POST Request
       const deviceUrl = `${baseUrl}${apiConfig.deviceEndpoint}`;
       const deviceBody = {
+        id: [],
+        name: [],
+        parent_ids: [],
         recursive: true,
         params: [
           "id",
           "name",
           "parent_id",
           "parent_ids",
-          "tags",
-          "connection_state",
-          "address"
+          "tags"
         ],
-        limit: 1000,
+        limit: 100,
         offset: 0
       };
 
       console.log('Buscando Dispositivos:', { url: deviceUrl, body: deviceBody });
 
-      const devicesResponse = await fetch(deviceUrl, { 
-        method: 'POST',
-        headers: {
-            'X-API-Token': apiConfig.token,
-            'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(deviceBody)
+      let devicesResponse = await fetch(`${deviceUrl}?recursive=true&limit=${deviceBody.limit}&offset=${deviceBody.offset}`, {
+        method: 'GET',
+        headers: headers
       });
+
+      if (!devicesResponse.ok) {
+        devicesResponse = await fetch(deviceUrl, {
+          method: 'POST',
+          headers: headers,
+          body: JSON.stringify(deviceBody)
+        });
+      }
       
       if (!devicesResponse.ok) {
         const errorText = await devicesResponse.text();
@@ -303,33 +335,32 @@ export function Clients() {
       try {
         console.log('Enviando Requisição de Analytics:', { url: analyticsUrl, body: analyticsBody });
         
-        const analyticsResponse = await fetch(analyticsUrl, { 
+        let analyticsResponse = await fetch(analyticsUrl, { 
           method: 'POST',
           headers: headers,
           body: JSON.stringify(analyticsBody)
         });
 
+        if (!analyticsResponse.ok) {
+          const qp = new URLSearchParams({
+            start: analyticsBody.start,
+            end: analyticsBody.end,
+            limit: '1000',
+            offset: '0'
+          });
+          analyticsResponse = await fetch(`${analyticsUrl}?${qp.toString()}`, { method: 'GET', headers });
+        }
+
         if (analyticsResponse.ok) {
           const analyticsData = await analyticsResponse.json();
           console.log('Dados de Analytics/Visitantes:', analyticsData);
-          
-          if (analyticsData.payload && analyticsData.payload.length > 0) {
-              const firstVisitor = analyticsData.payload[0];
-              console.log('DEBUG ANALYTICS - Primeiro Visitante:', firstVisitor);
-              // Tentar identificar o campo de ID do dispositivo
-              const possibleDeviceFields = ['device_id', 'source_id', 'camera_id', 'device'];
-              const foundField = possibleDeviceFields.find(f => f in firstVisitor);
-              console.log('DEBUG ANALYTICS - Campo de Dispositivo encontrado:', foundField || 'NENHUM (Verificar payload)');
-              
-              setFetchedAnalytics(analyticsData.payload);
-          } else {
-              setFetchedAnalytics([]);
-          }
-
+          const rows = analyticsData.payload || analyticsData.data || [];
+          setFetchedAnalytics(Array.isArray(rows) ? rows : []);
         } else {
           console.warn(`Erro ao buscar analytics: ${analyticsResponse.statusText}`);
           const errorText = await analyticsResponse.text();
           console.warn('Detalhes do Erro de Analytics:', errorText);
+          setFetchedAnalytics([]);
         }
       } catch (error) {
         console.warn('Erro ao buscar analytics:', error);
@@ -461,7 +492,7 @@ export function Clients() {
       folderEndpoint: '/public/v1/device-folder/list',
       deviceEndpoint: '/public/v1/device/list',
       analyticsEndpoint: '/public/v1/stats/visitor/list',
-      token: '',
+      token: ENV_DF_TOKEN,
       customHeaderKey: '',
       customHeaderValue: '',
       docUrl: '',
@@ -512,9 +543,9 @@ export function Clients() {
         folderEndpoint: apiData.folder_endpoint || '/public/v1/device-folder/list',
         deviceEndpoint: apiData.device_endpoint || '/public/v1/device/list',
         analyticsEndpoint: apiData.analytics_endpoint || '/public/v1/stats/visitor/list',
-        token: apiData.api_key || '',
-        customHeaderKey: apiData.custom_header_key || '',
-        customHeaderValue: apiData.custom_header_value || '',
+        token: apiData.api_key || ENV_DF_TOKEN,
+        customHeaderKey: apiData.custom_header_key || 'Authorization',
+        customHeaderValue: apiData.custom_header_value || (ENV_DF_TOKEN ? `Bearer ${ENV_DF_TOKEN}` : ''),
         docUrl: apiData.documentation_url || '',
         collectionStart: apiData.collection_start || '',
         collectionEnd: apiData.collection_end || '',
@@ -562,9 +593,9 @@ export function Clients() {
       folderEndpoint: '/public/v1/device-folder/list',
       deviceEndpoint: '/public/v1/device/list',
       analyticsEndpoint: '/public/v1/stats/visitor/list',
-      token: '',
-      customHeaderKey: '',
-      customHeaderValue: '',
+      token: ENV_DF_TOKEN,
+      customHeaderKey: 'Authorization',
+      customHeaderValue: ENV_DF_TOKEN ? `Bearer ${ENV_DF_TOKEN}` : '',
       docUrl: '',
       collectionStart: '',
       collectionEnd: '',
@@ -703,61 +734,117 @@ export function Clients() {
     try {
       let logoUrl = formData.logo_url;
 
-      // 0. Upload Logo if exists
+      // 0. Upload Logo if exists (mas não bloquear se bucket não existir)
       if (logoFile) {
-        const fileExt = logoFile.name.split('.').pop();
-        const fileName = `${Math.random()}.${fileExt}`;
-        const filePath = `${fileName}`;
+        try {
+          const fileExt = logoFile.name.split('.').pop();
+          const fileName = `${Math.random()}.${fileExt}`;
+          const filePath = `${fileName}`;
 
-        const { error: uploadError } = await supabase.storage
-          .from('logos')
-          .upload(filePath, logoFile);
+          const { error: uploadError } = await supabase.storage
+            .from('logos')
+            .upload(filePath, logoFile);
 
-        if (uploadError) throw uploadError;
+          if (uploadError) throw uploadError;
 
-        const { data: { publicUrl } } = supabase.storage
-          .from('logos')
-          .getPublicUrl(filePath);
+          const { data: { publicUrl } } = supabase.storage
+            .from('logos')
+            .getPublicUrl(filePath);
 
-        logoUrl = publicUrl;
+          logoUrl = publicUrl;
+        } catch (uploadError: any) {
+          console.error('Erro ao enviar logo:', uploadError);
+          const msg = String(uploadError?.message || '');
+          if (msg.includes('Bucket not found')) {
+            const toDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
+              const reader = new FileReader();
+              reader.onload = () => resolve(String(reader.result));
+              reader.onerror = reject;
+              reader.readAsDataURL(file);
+            });
+            try {
+              logoUrl = await toDataUrl(logoFile);
+            } catch {
+              logoUrl = formData.logo_url;
+            }
+          } else {
+            throw uploadError;
+          }
+        }
       }
 
       // 1. Save Client
-      const { data: clientData, error: clientError } = await supabase
-        .from('clients')
-        .upsert({
-          id: selectedClient?.id,
-          name: formData.name,
-          email: formData.email,
-          phone: formData.phone,
-          company: formData.company,
-          status: formData.status,
-          plan: formData.plan,
-          notes: formData.notes,
-          logo_url: logoUrl
-        })
-        .select()
-        .single();
+      const newClientId = selectedClient?.id || (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}-${Math.random()}`);
+      const newClientPayload: any = {
+        id: newClientId,
+        name: formData.name,
+        email: formData.email,
+        phone: formData.phone,
+        company: formData.company,
+        status: formData.status,
+        notes: formData.notes,
+        logo_url: logoUrl
+      };
+
+      let clientData: any = null;
+      let clientError: any = null;
+      if (selectedClient?.id) {
+        const { data, error } = await supabase
+          .from('clients')
+          .update({
+            name: formData.name,
+            email: formData.email || selectedClient.email,
+            phone: formData.phone,
+            company: formData.company,
+            status: formData.status,
+            notes: formData.notes,
+            logo_url: logoUrl
+          })
+          .eq('id', selectedClient.id)
+          .select()
+          .single();
+        clientData = data; clientError = error;
+      } else {
+        const { data, error } = await supabase
+          .from('clients')
+          .insert(newClientPayload)
+          .select()
+          .single();
+        clientData = data; clientError = error;
+      }
 
       if (clientError) throw clientError;
       const clientId = clientData.id;
 
-      // 2. Save Permissions
-      const { error: permError } = await supabase.from('client_permissions').upsert({
-        client_id: clientId,
-        ...perms
-      }, { onConflict: 'client_id' });
-      if (permError) throw permError;
+      // 2. Save Permissions (update-first, insert-if-missing)
+      const { data: permUpd, error: permUpdErr } = await supabase
+        .from('client_permissions')
+        .update({
+          view_dashboard: perms.view_dashboard,
+          view_reports: perms.view_reports,
+          view_analytics: perms.view_analytics,
+          export_data: perms.export_data,
+          manage_settings: perms.manage_settings
+        })
+        .eq('client_id', clientId)
+        .select();
+      if (permUpdErr) throw permUpdErr;
+      if (!permUpd || permUpd.length === 0) {
+        const { error: permInsErr } = await supabase
+          .from('client_permissions')
+          .insert({ client_id: clientId, ...perms });
+        if (permInsErr) throw permInsErr;
+      }
 
-      // 3. Save API Config
-      const { error: apiError } = await supabase.from('client_api_configs').upsert({
+      // 3. Save API Config (update-first, insert-if-missing)
+      const apiPayload = {
         client_id: clientId,
         environment: apiConfig.environment,
         auth_method: apiConfig.authMethod,
-        api_endpoint: apiConfig.endpoint,
-        folder_endpoint: apiConfig.folderEndpoint,
-        device_endpoint: apiConfig.deviceEndpoint,
-        analytics_endpoint: apiConfig.analyticsEndpoint,
+        api_endpoint: 'https://api.displayforce.ai',
+        folder_endpoint: '/public/v1/device-folder/list',
+        device_endpoint: '/public/v1/device/list',
+        analytics_endpoint: '/public/v1/stats/visitor/list',
         api_key: apiConfig.token,
         custom_header_key: apiConfig.customHeaderKey,
         custom_header_value: apiConfig.customHeaderValue,
@@ -771,8 +858,41 @@ export function Clients() {
         collect_hair_color: apiConfig.collectHairColor,
         collect_hair_type: apiConfig.collectHairType,
         collect_headwear: apiConfig.collectHeadwear
-      }, { onConflict: 'client_id' });
-      if (apiError) throw apiError;
+      };
+      const { data: apiUpd, error: apiUpdErr } = await supabase
+        .from('client_api_configs')
+        .update(apiPayload)
+        .eq('client_id', clientId)
+        .select();
+      if (apiUpdErr) throw apiUpdErr;
+      if (!apiUpd || apiUpd.length === 0) {
+        const { error: apiInsErr } = await supabase
+          .from('client_api_configs')
+          .insert(apiPayload);
+        if (apiInsErr) throw apiInsErr;
+      }
+
+      try {
+        const syncBody = {
+          client_id: clientId,
+          start: apiConfig.collectionStart || undefined,
+          end: apiConfig.collectionEnd || undefined
+        };
+        const syncResp = await fetch('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(syncBody)
+        });
+        if (syncResp.ok) {
+          const syncJson = await syncResp.json();
+          console.log('Sync Analytics Result:', syncJson);
+          showToast(`Analytics sincronizados: ${syncJson.inserted || 0}`, 'success');
+        } else {
+          console.warn('Falha na sincronização de analytics:', await syncResp.text());
+        }
+      } catch (e) {
+        console.warn('Erro ao acionar sync-analytics:', e);
+      }
 
       // 4. Save Stores & Devices
       
@@ -801,10 +921,14 @@ export function Clients() {
       }
 
       for (const store of editingStores) {
+        const storeId = store.id.startsWith('new-store')
+          ? (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}-${Math.random()}`)
+          : store.id;
+
         const { data: storeData, error: storeError } = await supabase
           .from('stores')
           .upsert({
-             id: store.id.startsWith('new-store') ? undefined : store.id,
+             id: storeId,
              client_id: clientId,
              name: store.name,
              city: store.city || 'Não informada'
@@ -835,9 +959,18 @@ export function Clients() {
           console.log(`Salvando ${fetchedAnalytics.length} registros de analytics...`);
           
           const analyticsToInsert = fetchedAnalytics.map((visit: any) => {
-            const mainDeviceId = Array.isArray(visit.devices) && visit.devices.length > 0 
-              ? Number(visit.devices[0]) 
-              : null;
+            let mainDeviceId: number | null = null;
+            const deviceFields = ['device', 'device_id', 'source_id', 'camera_id'];
+            for (const f of deviceFields) {
+              if (visit[f] != null) {
+                const v = Number(visit[f]);
+                if (!isNaN(v)) { mainDeviceId = v; break; }
+              }
+            }
+            if (mainDeviceId == null && Array.isArray(visit.devices) && visit.devices.length > 0) {
+              const v = Number(visit.devices[0]);
+              if (!isNaN(v)) mainDeviceId = v;
+            }
 
             const attrs: any = {
               face_quality: visit.face_quality ?? null,
@@ -958,8 +1091,12 @@ export function Clients() {
             
             <div className="w-full flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <div className={`w-14 h-14 rounded-2xl ${client.color} flex items-center justify-center text-white font-bold text-2xl shadow-inner`}>
-                  <Building size={24} />
+                <div className="w-14 h-14 rounded-2xl bg-gray-900 flex items-center justify-center text-white font-bold text-2xl shadow-inner overflow-hidden">
+                  {client.logo_url ? (
+                    <img src={client.logo_url} alt={client.name} className="w-full h-full object-contain" />
+                  ) : (
+                    <Building size={24} />
+                  )}
                 </div>
                 <div>
                   <div className="flex items-center gap-3">
