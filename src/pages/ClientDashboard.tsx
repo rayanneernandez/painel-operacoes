@@ -58,7 +58,7 @@ export function ClientDashboard() {
   // ── Sync state ──────────────────────────────────────────────────────────────
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
-  const syncingRef = useRef(false); // prevent overlapping syncs
+  const syncingRef = useRef(false);
 
   // ── Dashboard data ──────────────────────────────────────────────────────────
   const [totalVisitors, setTotalVisitors] = useState(0);
@@ -106,33 +106,29 @@ export function ClientDashboard() {
     setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
     setAvgVisitSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
 
-    // visitors_per_day → dailyStats [Mon..Sun]
     const vpd: Record<string, number> = rollup.visitors_per_day ?? {};
     const days = [0, 0, 0, 0, 0, 0, 0];
     Object.entries(vpd).forEach(([dateStr, count]) => {
       const d = new Date(dateStr);
       if (!isNaN(d.getTime())) {
-        const dow = d.getUTCDay(); // 0=Sun
-        const idx = dow === 0 ? 6 : dow - 1; // Mon=0..Sun=6
+        const dow = d.getUTCDay();
+        const idx = dow === 0 ? 6 : dow - 1;
         days[idx] += Number(count);
       }
     });
     setDailyStats(days);
 
-    // visitors_per_hour_avg → hourlyStats
     const vph: Record<string, number> = rollup.visitors_per_hour_avg ?? {};
     const hours = new Array(24).fill(0);
     Object.entries(vph).forEach(([h, v]) => { hours[Number(h)] = Math.round(Number(v)); });
     setHourlyStats(hours);
 
-    // gender
     const gp: Record<string, number> = rollup.gender_percent ?? {};
     setGenderStats([
       { label: 'Masculino', value: Math.round(gp.male ?? 0) },
       { label: 'Feminino', value: Math.round(gp.female ?? 0) },
     ]);
 
-    // attributes
     const ap: any = rollup.attributes_percent ?? {};
     setAttributeStats([
       { label: 'Óculos', value: Math.round(ap.glasses?.true ?? 0) },
@@ -141,11 +137,9 @@ export function ClientDashboard() {
       { label: 'Chapéu/Boné', value: Math.round(ap.headwear?.true ?? 0) },
     ]);
 
-    // age pyramid
     const agePct: Record<string, number> = rollup.age_pyramid_percent ?? {};
     const ageOrder = ['65+', '55-64', '45-54', '35-44', '25-34', '18-24', '18-'];
     const ageMap: Record<string, { m: number; f: number }> = {};
-    // map DB buckets → display labels
     const bucketMap: Record<string, string> = {
       '65-74': '65+', '75+': '65+',
       '55-64': '55-64', '45-54': '45-54', '35-44': '35-44',
@@ -155,7 +149,6 @@ export function ClientDashboard() {
     Object.entries(agePct).forEach(([bucket, pct]) => {
       const label = bucketMap[bucket] ?? bucket;
       if (!ageMap[label]) ageMap[label] = { m: 0, f: 0 };
-      // age_pyramid_percent doesn't split by gender in rollup — show as neutral
       ageMap[label].m += Math.round(Number(pct) / 2);
       ageMap[label].f += Math.round(Number(pct) / 2);
     });
@@ -165,7 +158,90 @@ export function ClientDashboard() {
     return true;
   }
 
-  // ── Load from DB (raw rows) as fallback ─────────────────────────────────────
+  // ── Load data: use rollup if fresh, otherwise rebuild from DB immediately ────
+  const loadData = useCallback(async () => {
+    if (!id) return;
+    setIsLoadingData(true);
+
+    try {
+      const startIso = selectedStartDate.toISOString();
+      const endIso   = selectedEndDate.toISOString();
+      const startDay = startIso.slice(0, 10);
+      const endDay   = endIso.slice(0, 10);
+
+      // 1. Try to find an existing valid rollup
+      const { data: rollups } = await supabase
+        .from('visitor_analytics_rollups')
+        .select('*')
+        .eq('client_id', id)
+        .gte('start', `${startDay}T00:00:00`)
+        .lte('start', `${startDay}T23:59:59.999Z`)
+        .gte('end',   `${endDay}T00:00:00`)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
+      const rollup = rollups?.[0] ?? null;
+
+      if (rollup) {
+        console.log(`[Dashboard] Rollup carregado ✅ (${rollup.total_visitors} visitantes)`);
+        applyRollup(rollup);
+        setIsLoadingData(false);
+        return;
+      }
+
+      // 2. No rollup found — ask the backend to rebuild from all DB rows immediately.
+      //    This is fast because it runs server-side (no browser pagination needed).
+      console.log('[Dashboard] Sem rollup — reconstruindo do banco via API...');
+      setSyncMessage('Carregando dados do banco...');
+
+      const resp = await fetch('/api/sync-analytics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: id,
+          start: startIso,
+          end: endIso,
+          rebuild_rollup: true,
+          ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
+        }),
+      });
+
+      if (resp.ok) {
+        const json = await resp.json();
+        if (json?.dashboard) {
+          console.log(`[Dashboard] Rollup reconstruído ✅ (${json.dashboard.total_visitors} visitantes)`);
+          applyRollup({
+            total_visitors:         json.dashboard.total_visitors,
+            avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
+            avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+            visitors_per_day:       json.dashboard.visitors_per_day,
+            visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
+            gender_percent:         json.dashboard.gender_percent,
+            attributes_percent:     json.dashboard.attributes_percent,
+            age_pyramid_percent:    json.dashboard.age_pyramid_percent,
+          });
+          setSyncMessage(`✅ ${json.dashboard.total_visitors.toLocaleString()} visitantes carregados.`);
+          setIsLoadingData(false);
+          return;
+        }
+      }
+
+      // 3. Last resort fallback: show zeros if everything fails
+      console.warn('[Dashboard] Rebuild falhou — sem dados para exibir.');
+      setSyncMessage('');
+      setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
+      setAvgVisitorsPerDay(0); setAvgVisitSeconds(0);
+      setGenderStats([]); setAttributeStats([]); setAgeStats([]);
+
+    } catch (err) {
+      console.error('[Dashboard] Erro ao carregar dados:', err);
+    } finally {
+      setIsLoadingData(false);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, view, selectedStore?.id, selectedCamera?.id, selectedStartDate, selectedEndDate, deviceIds]);
+
+  // ── processRawRows (fallback when no rollup exists) ──────────────────────────
   function processRawRows(rows: any[]) {
     const days = [0, 0, 0, 0, 0, 0, 0];
     const hours = new Array(24).fill(0);
@@ -257,145 +333,10 @@ export function ClientDashboard() {
     if (latest) setLastUpdate(latest);
   }
 
-  // ── Load data: rollup first (fuzzy date match), fallback to paginated raw rows
-  const loadData = useCallback(async () => {
-    if (!id) return;
-    setIsLoadingData(true);
-
-    try {
-      const startIso = selectedStartDate.toISOString();
-      const endIso   = selectedEndDate.toISOString();
-      // Start-of-day and end-of-day for the same calendar days (to find rollups
-      // that were saved with slightly different milliseconds)
-      const startDay = startIso.slice(0, 10); // "2025-01-01"
-      const endDay   = endIso.slice(0, 10);   // "2026-03-10"
-
-      // 1. Find the most recent rollup that covers this period
-      //    We match by date prefix (YYYY-MM-DD) to avoid millisecond mismatches
-      const { data: rollups } = await supabase
-        .from('visitor_analytics_rollups')
-        .select('*')
-        .eq('client_id', id)
-        .gte('start', `${startDay}T00:00:00`)
-        .lte('start', `${startDay}T23:59:59.999Z`)
-        .gte('end',   `${endDay}T00:00:00`)
-        .order('updated_at', { ascending: false })
-        .limit(1);
-
-      const rollup = rollups?.[0] ?? null;
-
-      if (rollup) {
-        console.log(`[Dashboard] Loaded from rollup ✅ (${rollup.total_visitors} visitors)`);
-        applyRollup(rollup);
-        setIsLoadingData(false);
-
-        if (Number(rollup.total_visitors) === 1000) {
-          void (async () => {
-            try {
-              let q = supabase
-                .from('visitor_analytics')
-                .select('timestamp')
-                .eq('client_id', id)
-                .gte('timestamp', startIso)
-                .lte('timestamp', endIso)
-                .order('timestamp', { ascending: true })
-                .range(1000, 1000);
-              if (deviceIds.length > 0) q = q.in('device_id', deviceIds);
-
-              const { data: probe, error: probeErr } = await q;
-              if (probeErr || !probe || probe.length === 0) return;
-
-              const resp = await fetch('/api/sync-analytics', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  client_id: id,
-                  start: startIso,
-                  end: endIso,
-                  devices: deviceIds.length > 0 ? deviceIds : undefined,
-                  rebuild_rollup: true,
-                }),
-              });
-
-              if (!resp.ok) return;
-              const json = await resp.json();
-              if (json?.dashboard) {
-                applyRollup({
-                  total_visitors:         json.dashboard.total_visitors,
-                  avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
-                  avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-                  visitors_per_day:       json.dashboard.visitors_per_day,
-                  visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
-                  gender_percent:         json.dashboard.gender_percent,
-                  attributes_percent:     json.dashboard.attributes_percent,
-                  age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-                });
-              }
-            } catch (e) {
-              console.warn('[Dashboard] Rollup rebuild failed:', e);
-            }
-          })();
-        }
-
-        return;
-      }
-
-      // 2. Fallback: read raw rows from DB in pages (no hard limit)
-      console.log('[Dashboard] No rollup found, loading raw rows from DB...');
-
-      const PAGE = 10000;
-      let from = 0;
-      const allData: any[] = [];
-
-      while (true) {
-        let q = supabase
-          .from('visitor_analytics')
-          .select('timestamp,end_timestamp,age,gender,attributes,raw_data,device_id,visit_time_seconds')
-          .eq('client_id', id)
-          .gte('timestamp', startIso)
-          .lte('timestamp', endIso)
-          .order('timestamp', { ascending: true })
-          .range(from, from + PAGE - 1);
-        if (deviceIds.length > 0) q = q.in('device_id', deviceIds);
-
-        const { data: page, error } = await q;
-        if (error) { console.error('[Dashboard] DB read error:', error); break; }
-        if (!page || page.length === 0) break;
-        allData.push(...page);
-        if (page.length < PAGE) break;
-        from += PAGE;
-      }
-
-      if (allData.length > 0) {
-        console.log(`[Dashboard] Loaded ${allData.length} raw rows from DB.`);
-        processRawRows(
-          allData.map((d: any) => ({
-            ...d.raw_data,
-            start: d.timestamp, end: d.end_timestamp,
-            age: d.age,
-            sex: d.gender === 1 ? 'male' : d.gender === 2 ? 'female' : 'unknown',
-            attributes: d.attributes,
-            visitor_id: d.raw_data?.visitor_id,
-          }))
-        );
-      } else {
-        console.log('[Dashboard] No data in DB for this period — sync needed.');
-        setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-        setAvgVisitorsPerDay(0); setAvgVisitSeconds(0);
-        setGenderStats([]); setAttributeStats([]); setAgeStats([]);
-      }
-    } catch (err) {
-      console.error('[Dashboard] Error loading data:', err);
-    } finally {
-      setIsLoadingData(false);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, view, selectedStore?.id, selectedCamera?.id, selectedStartDate, selectedEndDate, deviceIds]);
-
   // ── Sync from API → DB (backend does all the work) ──────────────────────────
   const syncFromApi = useCallback(async (silent = false) => {
     if (!id) return;
-    if (syncingRef.current) return; // prevent overlap
+    if (syncingRef.current) return;
     if (document.visibilityState !== 'visible') return;
 
     syncingRef.current = true;
@@ -408,13 +349,15 @@ export function ClientDashboard() {
       let totalFetched = 0;
 
       while (offset !== null) {
-        if (++loops > 300) { console.warn('[Sync] loop limit reached'); break; }
+        if (++loops > 300) { console.warn('[Sync] limite de loops atingido'); break; }
 
         const payload: any = {
           client_id: id,
           start: selectedStartDate.toISOString(),
           end: selectedEndDate.toISOString(),
           offset,
+          // ✅ force_full_sync ensures backend doesn't stop at MAX_MS prematurely
+          force_full_sync: true,
         };
         if (deviceIds.length > 0) payload.devices = deviceIds;
 
@@ -426,7 +369,7 @@ export function ClientDashboard() {
 
         if (!resp.ok) {
           const txt = await resp.text();
-          console.error('[Sync] error:', resp.status, txt);
+          console.error('[Sync] erro:', resp.status, txt);
           setSyncMessage(`Erro ao sincronizar (${resp.status})`);
           return;
         }
@@ -440,7 +383,6 @@ export function ClientDashboard() {
           const displayTotal = totalInDB > 0 ? totalInDB : totalFetched;
           setSyncMessage(`✅ ${displayTotal.toLocaleString()} registros sincronizados.`);
 
-          // Apply rollup returned by API — always has accurate total from full DB read
           if (json?.dashboard) {
             applyRollup({
               total_visitors:         json.dashboard.total_visitors,
@@ -463,7 +405,7 @@ export function ClientDashboard() {
         }
       }
     } catch (err) {
-      console.error('[Sync] unexpected error:', err);
+      console.error('[Sync] erro inesperado:', err);
       setSyncMessage('Erro inesperado na sincronização');
     } finally {
       syncingRef.current = false;
@@ -478,25 +420,24 @@ export function ClientDashboard() {
     (async () => {
       await loadData();
       if (!cancelled) {
-        // Sync in background after initial load
         syncFromApi(true);
       }
     })();
     return () => { cancelled = true; };
-  }, [loadData]); // loadData already memoizes all deps
+  }, [loadData]);
 
-  // ── Auto-refresh every 5 min ─────────────────────────────────────────────────
+  // ── Auto-refresh every 5 min ──────────────────────────────────────────────
   useEffect(() => {
     if (!id) return;
     const t = setInterval(() => {
       if (!syncingRef.current && document.visibilityState === 'visible') {
         syncFromApi(true);
       }
-    }, 5 * 60 * 1000); // 5 minutes
+    }, 5 * 60 * 1000);
     return () => clearInterval(t);
   }, [id, syncFromApi]);
 
-  // ── Fetch client info, stores, api config ────────────────────────────────────
+  // ── Fetch client info, stores, api config ─────────────────────────────────
   useEffect(() => {
     async function fetchClientAndStores() {
       if (!id) return;
@@ -542,7 +483,7 @@ export function ClientDashboard() {
     fetchClientAndStores();
   }, [id]);
 
-  // ── Widget config from localStorage ─────────────────────────────────────────
+  // ── Widget config ─────────────────────────────────────────────────────────
   useEffect(() => {
     const clientConfig = localStorage.getItem(`dashboard-config-${id}`);
     const globalConfig = localStorage.getItem('dashboard-config-global');
@@ -557,7 +498,7 @@ export function ClientDashboard() {
     setIsLoadingConfig(false);
   }, [id]);
 
-  // ── Navigation from location state ──────────────────────────────────────────
+  // ── Navigation from location state ────────────────────────────────────────
   useEffect(() => {
     if (location.state?.initialView === 'store' && location.state?.storeId) {
       const store = stores.find((s) => s.id === location.state.storeId);

@@ -141,27 +141,46 @@ function buildAndDeduplicateRows(combined: any[], client_id: string) {
 }
 
 // ── Read ALL rows from DB for client+period using pagination ─────────────────
+// ✅ PAGE=1000: Supabase caps responses at 1000 rows regardless of .range() size.
+//    We paginate manually and use count:"exact" on the first call to know the total.
 async function fetchAllDBRows(client_id: string, rangeStart: string, rangeEnd: string, deviceNums: number[]): Promise<any[]> {
-  const PAGE = 10000;
+  const PAGE = 1000;
   const all: any[] = [];
   let from = 0;
+  let knownTotal: number | null = null;
+
   while (true) {
-    let q = supabase
-      .from("visitor_analytics")
-      .select("visit_uid,timestamp,end_timestamp,age,gender,attributes,raw_data,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds")
+    // First page: request exact count so we know when to stop
+    const selectArgs = from === 0
+      ? ["visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds", { count: "exact" as const }]
+      : ["visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds"];
+
+    let q = (supabase.from("visitor_analytics") as any)
+      .select(...selectArgs)
       .eq("client_id", client_id)
       .gte("timestamp", rangeStart)
       .lte("timestamp", rangeEnd)
       .order("timestamp", { ascending: true })
       .range(from, from + PAGE - 1);
     if (deviceNums.length > 0) q = q.in("device_id", deviceNums);
-    const { data, error } = await q;
-    if (error) { console.error("fetchAllDBRows page error:", error); break; }
+
+    const { data, error, count } = await q;
+    if (error) { console.error(`fetchAllDBRows error at offset ${from}:`, error); break; }
     if (!data || data.length === 0) break;
+
+    if (from === 0 && typeof count === "number") {
+      knownTotal = count;
+      console.log(`[fetchAllDBRows] Total no banco: ${knownTotal}`);
+    }
+
     all.push(...data);
+
+    if (knownTotal !== null && all.length >= knownTotal) break;
     if (data.length < PAGE) break;
     from += PAGE;
   }
+
+  console.log(`[fetchAllDBRows] Lidos ${all.length} / ${knownTotal ?? "?"} registros`);
   return all;
 }
 
@@ -229,7 +248,6 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     if (typeof row.contact_time_seconds === "number" && Number.isFinite(row.contact_time_seconds)) { sumContact += row.contact_time_seconds; cntContact++; }
   }
 
-  // Each row = one visit event. Use row count as total_visitors.
   const totalVisitors = rows.length;
   const avgVisitorsPerDay = Number((totalVisitors / daysInRange).toFixed(2));
   const perHourAvg: Record<string,number> = {};
@@ -283,7 +301,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
 
-    // ✅ Only use custom header if BOTH key AND value are non-empty strings
     const ck = cfg.custom_header_key?.trim();
     const cv = cfg.custom_header_value?.trim();
     if (ck && cv) {
@@ -315,7 +332,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let   offset   = Number.isFinite(Number(incomingOffset)) ? Number(incomingOffset) : 0;
     const combined: any[] = [];
     const startedAt = Date.now();
-    const MAX_MS    = force_full_sync ? 25000 : 8000;
+
+    // ✅ FIX: force_full_sync gets much more time (55s) to paginate the full dataset.
+    // Normal background syncs get 8s per invocation (paginated across multiple calls).
+    const MAX_MS    = force_full_sync ? 55000 : 8000;
+    const MAX_PAGES = force_full_sync ? 2000 : 120;
+
     const deviceNums = Array.isArray(devices) ? (devices as any[]).map(Number).filter(Number.isFinite) : [];
 
     if (rebuild_rollup === true) {
@@ -350,13 +372,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return ok(res, { message: "Sem dados no período informado", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
     }
 
+    // ✅ FIX: track the pagination total from the API to know when we are truly done.
+    let apiReportedTotal: number | null = null;
     let lastSig: string | null = null;
     let pageCount = 0;
-    const MAX_PAGES = force_full_sync ? 500 : 120;
 
     while (true) {
-      if (Date.now() - startedAt > MAX_MS) break;
-      if (++pageCount > MAX_PAGES) break;
+      // ✅ FIX: check time BEFORE fetching, but only break if we've already collected
+      // at least some pages — never stop on the very first page.
+      if (pageCount > 0 && Date.now() - startedAt > MAX_MS) {
+        console.log(`[Sync] Tempo limite atingido após ${pageCount} páginas, offset=${offset}`);
+        break;
+      }
+      if (++pageCount > MAX_PAGES) {
+        console.log(`[Sync] Limite de páginas atingido: ${MAX_PAGES}`);
+        break;
+      }
 
       const resp = await fetch(analyticsUrl, { method:"POST", headers, body: JSON.stringify({...baseBody, limit, offset}) });
       if (!resp.ok) {
@@ -366,8 +397,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const json = await resp.json();
       const page = Array.isArray(json?.payload) ? json.payload : [];
-      const totalNum = Number(json?.pagination?.total);
-      const total = Number.isFinite(totalNum) && totalNum > 0 ? totalNum : null;
+
+      // ✅ FIX: capture the API-reported total on first page and reuse it.
+      if (apiReportedTotal === null) {
+        const totalNum = Number(json?.pagination?.total);
+        if (Number.isFinite(totalNum) && totalNum > 0) apiReportedTotal = totalNum;
+      }
 
       if (page.length > 0) {
         const first: any = page[0];
@@ -380,18 +415,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           last?.visitor_id ?? null,
           last?.start ?? last?.timestamp ?? null,
         ]));
-        if (lastSig && sig === lastSig) { offset = 0; break; }
+        // ✅ FIX: duplicate page detection resets offset to signal done, not re-zero
+        if (lastSig && sig === lastSig) {
+          console.log("[Sync] Página duplicada detectada — parando paginação.");
+          offset = 0;
+          break;
+        }
         lastSig = sig;
         combined.push(...page);
       }
 
-      if (page.length < limit) { offset = 0; break; }
-      if (total !== null && offset + page.length >= total) { offset = 0; break; }
+      // ✅ FIX: proper termination — stop when page is short, or we've hit the reported total
+      if (page.length < limit) {
+        offset = 0;
+        break;
+      }
+      if (apiReportedTotal !== null && offset + page.length >= apiReportedTotal) {
+        offset = 0;
+        break;
+      }
+      if (page.length === 0) {
+        offset = 0;
+        break;
+      }
 
       offset += limit;
-      if (offset > 2_000_000) break;
+      if (offset > 10_000_000) {
+        console.warn("[Sync] offset muito alto, interrompendo por segurança");
+        break;
+      }
     }
 
+    // ✅ FIX: offset === 0 means we finished naturally; otherwise we timed out mid-pagination
     const next_offset = offset === 0 ? null : offset;
     const done = next_offset === null;
 
@@ -433,20 +488,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // ── Read ALL rows from DB (paginated) for accurate rollup ─────────────────
-    const allRows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
-    console.log(`[Rollup] DB rows for period: ${allRows.length}`);
+    // ✅ Only rebuild rollup when this is the final page (done=true) to avoid
+    // partial rollups being saved and cached by the dashboard.
+    let rollupRow: ReturnType<typeof buildRollup> | null = null;
+    let rollupErr: any = null;
 
-    const rollupRow = buildRollup(allRows, client_id, rangeStart, rangeEnd);
-    const { error: rollupErr } = await supabase.from("visitor_analytics_rollups")
-      .upsert(rollupRow, { onConflict: "client_id,start,end" });
-    if (rollupErr) console.error("Rollup save error:", rollupErr);
+    if (done) {
+      const allRows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
+      console.log(`[Rollup] Linhas no banco para o período: ${allRows.length}`);
+      rollupRow = buildRollup(allRows, client_id, rangeStart, rangeEnd);
+      const { error: re } = await supabase.from("visitor_analytics_rollups")
+        .upsert(rollupRow, { onConflict: "client_id,start,end" });
+      rollupErr = re;
+      if (rollupErr) console.error("Rollup save error:", rollupErr);
+    }
 
     return ok(res, {
       message: done ? "Sincronização concluída" : "Sincronização parcial — continue chamando",
       start: rangeStart, end: rangeEnd,
       externalFetched: combined.length, raw_upserted_new: upserted,
-      total_in_db: allRows.length, next_offset, done,
-      dashboard: {
+      total_in_db: rollupRow?.total_visitors ?? null,
+      next_offset, done,
+      dashboard: rollupRow ? {
         total_visitors: rollupRow.total_visitors,
         avg_visitors_per_day: rollupRow.avg_visitors_per_day,
         visitors_per_day: rollupRow.visitors_per_day,
@@ -455,8 +518,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         attributes_percent: rollupRow.attributes_percent,
         age_pyramid_percent: rollupRow.age_pyramid_percent,
         avg_times_seconds: { avg_visit_time_seconds: rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds: rollupRow.avg_dwell_time_seconds },
-      },
-      stored_rollup: !rollupErr,
+      } : null,
+      stored_rollup: rollupRow ? !rollupErr : false,
     });
   } catch (err: any) {
     console.error("Erro inesperado:", err);
