@@ -16,7 +16,6 @@ const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void 
   </button>
 );
 
-// Tipo fictício para clientes
 type Client = {
   id: string;
   name: string;
@@ -49,10 +48,6 @@ type Store = {
   devices: Device[];
 };
 
-
-
-
-
 export function Clients() {
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -65,7 +60,6 @@ export function Clients() {
   const [loading, setLoading] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
 
-  // Form States
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -81,18 +75,19 @@ export function Clients() {
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
 
-  const [apiConfig, setApiConfig] = useState({
+  // ✅ CORREÇÃO 1: customHeaderKey e customHeaderValue começam VAZIOS
+  // O token vai apenas em api_key (X-API-Token). Nunca preencher Authorization aqui.
+  const emptyApiConfig = () => ({
     environment: 'production',
     authMethod: 'token',
     endpoint: 'https://api.displayforce.ai',
     folderEndpoint: '/public/v1/device-folder/list',
     deviceEndpoint: '/public/v1/device/list',
     analyticsEndpoint: '/public/v1/stats/visitor/list',
-    token: ENV_DF_TOKEN,
-    customHeaderKey: 'Authorization',
-    customHeaderValue: ENV_DF_TOKEN ? `Bearer ${ENV_DF_TOKEN}` : '',
+    token: '',
+    customHeaderKey: '',   // ← VAZIO, não 'Authorization'
+    customHeaderValue: '', // ← VAZIO, não 'Bearer TOKEN'
     docUrl: '',
-    // Data Collection Body Params
     collectionStart: '',
     collectionEnd: '',
     collectTracks: true,
@@ -104,15 +99,10 @@ export function Clients() {
     collectHeadwear: true
   });
 
+  const [apiConfig, setApiConfig] = useState(emptyApiConfig());
   const [connectionSuccess, setConnectionSuccess] = useState(false);
   const [fetchedAnalytics, setFetchedAnalytics] = useState<any[]>([]);
-
-  // State for managing stores in the modal
   const [editingStores, setEditingStores] = useState<Store[]>([]);
-  // const [newStoreName, setNewStoreName] = useState('');
-  // const [newStoreCity, setNewStoreCity] = useState('');
-
-  // Toast State
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
 
   const showToast = (message: string, type: 'success' | 'error' = 'success') => {
@@ -120,10 +110,6 @@ export function Clients() {
     setTimeout(() => setToast(null), 5000);
   };
 
-  // State for manual device addition
-  // const [newDeviceName, setNewDeviceName] = useState('');
-
-  // Data for client stores
   const getClientStores = (clientId: string): Store[] => {
     const client = clients.find(c => c.id === clientId);
     return client?.stores || [];
@@ -159,13 +145,9 @@ export function Clients() {
         (devicesData || []).forEach((d: any) => {
           const sid = d.store_id;
           if (!devicesByStore[sid]) devicesByStore[sid] = [];
-          
-          // PREVENIR DUPLICIDADE NA EXIBIÇÃO:
-          // Verificar se já existe dispositivo com este MAC nesta loja
           const exists = devicesByStore[sid].some(
              (existing: any) => existing.macAddress === d.mac_address
           );
-
           if (!exists) {
               devicesByStore[sid].push({ 
                   id: d.id, 
@@ -203,7 +185,6 @@ export function Clients() {
     fetchClients();
   }, []);
 
-  // Estado de permissões (mock)
   const [perms, setPerms] = useState({
     view_dashboard: true,
     view_reports: false,
@@ -223,24 +204,17 @@ export function Clients() {
     setConnectionSuccess(false);
     
     try {
-      // Validar Token
-      if (!apiConfig.token && !ENV_DF_TOKEN) {
+      if (!apiConfig.token) {
         throw new Error('Token de API é obrigatório');
       }
 
-      // Headers para DisplayForce
-      const tokenTrim = (apiConfig.token || ENV_DF_TOKEN || '').trim();
+      const tokenTrim = apiConfig.token.trim();
+      // ✅ Só envia X-API-Token. Não envia Authorization: Bearer.
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'X-API-Token': tokenTrim,
-        'Authorization': `Bearer ${tokenTrim}`
       };
-      if (apiConfig.customHeaderKey && apiConfig.customHeaderValue) {
-        headers[apiConfig.customHeaderKey] = apiConfig.customHeaderValue;
-      }
 
-      // 1. Fetch Folders (Lojas) - POST Request
-      // Usar proxy se o endpoint for da DisplayForce para evitar erro de CORS
       const isDisplayForce = apiConfig.endpoint.includes('displayforce.ai');
       const isDev = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
       const baseUrl = isDisplayForce
@@ -248,18 +222,9 @@ export function Clients() {
         : apiConfig.endpoint;
 
       const folderUrl = `${baseUrl}${apiConfig.folderEndpoint}`;
-      const folderBody = {
-        id: [],
-        name: [],
-        parent_ids: [],
-        recursive: true,
-        limit: 100,
-        offset: 0
-      };
+      const folderBody = { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 };
 
-      console.log('Buscando Pastas:', { url: folderUrl, body: folderBody });
-
-      let foldersResponse = await fetch(`${folderUrl}?recursive=true&limit=${folderBody.limit}&offset=${folderBody.offset}`, {
+      let foldersResponse = await fetch(`${folderUrl}?recursive=true&limit=100&offset=0`, {
         method: 'GET',
         headers: headers
       });
@@ -278,30 +243,16 @@ export function Clients() {
       }
       
       const foldersData = await foldersResponse.json();
-      console.log('Dados das Pastas:', foldersData);
       const folders = foldersData.data || [];
 
-      // 2. Fetch Devices (Dispositivos) - POST Request
       const deviceUrl = `${baseUrl}${apiConfig.deviceEndpoint}`;
       const deviceBody = {
-        id: [],
-        name: [],
-        parent_ids: [],
-        recursive: true,
-        params: [
-          "id",
-          "name",
-          "parent_id",
-          "parent_ids",
-          "tags"
-        ],
-        limit: 100,
-        offset: 0
+        id: [], name: [], parent_ids: [], recursive: true,
+        params: ["id", "name", "parent_id", "parent_ids", "tags"],
+        limit: 100, offset: 0
       };
 
-      console.log('Buscando Dispositivos:', { url: deviceUrl, body: deviceBody });
-
-      let devicesResponse = await fetch(`${deviceUrl}?recursive=true&limit=${deviceBody.limit}&offset=${deviceBody.offset}`, {
+      let devicesResponse = await fetch(`${deviceUrl}?recursive=true&limit=100&offset=0`, {
         method: 'GET',
         headers: headers
       });
@@ -320,49 +271,26 @@ export function Clients() {
       }
 
       const devicesData = await devicesResponse.json();
-      console.log('Dados dos Dispositivos:', devicesData);
       const devices = devicesData.data || [];
 
-      // Debug: Verificar estrutura do primeiro dispositivo
-      if (devices.length > 0) {
-          console.log('DEBUG - Primeiro dispositivo retornado:', devices[0]);
-          console.log('DEBUG - parent_id presente?', 'parent_id' in devices[0]);
-      }
-
-      // 3. Fetch Analytics (Visitor List)
-      // Usar proxy para analytics também
+      // Analytics
       const analyticsUrl = `${baseUrl}${apiConfig.analyticsEndpoint}`;
-      
-      // Auto-generate dates for testing
-      // USER REQUEST: Use a wider range or specific logic. 
-      // Setting to start of 2024 to ensure we catch 2025 data mentioned by user.
       const now = new Date();
       const startDate = new Date('2024-01-01T00:00:00Z');
-      
-      // Construct Body for Analytics Request
       const analyticsBody = {
         start: startDate.toISOString(),
         end: now.toISOString(),
-        tracks: true, // Force true as per user request example
+        tracks: true,
         face_quality: true,
         glasses: true,
         facial_hair: true,
         hair_color: true,
         hair_type: true,
         headwear: true,
-        additional_attributes: [
-          "smile", 
-          "pitch", 
-          "yaw", 
-          "x", 
-          "y", 
-          "height" 
-        ]
+        additional_attributes: ["smile", "pitch", "yaw", "x", "y", "height"]
       };
 
       try {
-        console.log('Enviando Requisição de Analytics:', { url: analyticsUrl, body: analyticsBody });
-        
         let analyticsResponse = await fetch(analyticsUrl, { 
           method: 'POST',
           headers: headers,
@@ -370,91 +298,53 @@ export function Clients() {
         });
 
         if (!analyticsResponse.ok) {
-          const qp = new URLSearchParams({
-            start: analyticsBody.start,
-            end: analyticsBody.end,
-            limit: '1000',
-            offset: '0'
-          });
+          const qp = new URLSearchParams({ start: analyticsBody.start, end: analyticsBody.end, limit: '1000', offset: '0' });
           analyticsResponse = await fetch(`${analyticsUrl}?${qp.toString()}`, { method: 'GET', headers });
         }
 
         if (analyticsResponse.ok) {
           const analyticsData = await analyticsResponse.json();
-          console.log('Dados de Analytics/Visitantes:', analyticsData);
           const rows = analyticsData.payload || analyticsData.data || [];
           setFetchedAnalytics(Array.isArray(rows) ? rows : []);
         } else {
-          console.warn(`Erro ao buscar analytics: ${analyticsResponse.statusText}`);
-          const errorText = await analyticsResponse.text();
-          console.warn('Detalhes do Erro de Analytics:', errorText);
           setFetchedAnalytics([]);
         }
       } catch (error) {
         console.warn('Erro ao buscar analytics:', error);
       }
 
-      // 4. Processar e Vincular (De/Para: parent_id -> folder.id)
       const newStores: Store[] = folders.map((folder: any) => {
-        // Encontrar dispositivos que pertencem a esta pasta (Loja)
-        // A API retorna 'parent_id' no dispositivo que deve bater com o 'id' da pasta
-        // IMPORTANTE: Converter para String para evitar erro de tipo (number vs string)
         const storeDevices = devices
           .filter((device: any) => {
              const fId = String(folder.id);
              const dParentId = device.parent_id ? String(device.parent_id) : 'undefined';
-             
-             // STRICT MATCH: Only assign device to its direct parent folder to prevent duplicates
              return dParentId === fId;
           })
           .map((device: any) => ({
-            id: String(device.id), // ID do dispositivo não é usado no insert (gera novo UUID)
+            id: String(device.id),
             name: device.name,
-            type: 'camera', // Padrão
-            macAddress: String(device.id), // Salvar ID da API no campo macAddress para vínculo
-            status: device.connection_state === 'online' ? 'online' : 'offline'
+            type: 'camera' as const,
+            macAddress: String(device.id),
+            status: (device.connection_state === 'online' ? 'online' : 'offline') as 'online' | 'offline'
           }));
 
-        // Tentar encontrar uma loja existente com o mesmo nome para manter o ID (UUID)
-        // Se não encontrar, criar um ID temporário "new-store-..." para o Supabase gerar um UUID
         const existingStore = editingStores.find(s => s.name.trim().toLowerCase() === folder.name.trim().toLowerCase());
-        
-        // CORREÇÃO: Garantir que o ID seja um UUID válido ou um ID temporário
         let storeId = `new-store-${folder.id}`;
-        if (existingStore && existingStore.id && !existingStore.id.startsWith('new-store')) {
-             // Se já existe e tem ID, usamos ele. 
-             // O erro 1075 indica que pode haver IDs numéricos antigos no estado ou banco
-             // Vamos validar se parece um UUID (simplificado)
-             if (existingStore.id.length > 10) { 
-                 storeId = existingStore.id;
-             }
+        if (existingStore && existingStore.id && !existingStore.id.startsWith('new-store') && existingStore.id.length > 10) {
+          storeId = existingStore.id;
         }
 
-        return {
-          id: storeId,
-          name: folder.name,
-          city: 'Não informada', // Definir padrão para não ficar vazio
-          devices: storeDevices
-        };
+        return { id: storeId, name: folder.name, city: 'Não informada', devices: storeDevices };
       });
-
-      console.log('Lojas Mapeadas:', newStores);
 
       if (newStores.length === 0) {
         throw new Error('Nenhuma loja encontrada na API. Verifique se as pastas existem.');
       }
 
-      // Atualizar estado com dados reais
       setEditingStores(newStores);
       setApiStatus('success');
       setConnectionSuccess(true);
-      
-      // Show the stores tab so user can see what was fetched
-      if (newStores.length > 0) {
-        setActiveTab('stores');
-      }
-      
-      // Auto-hide success message after 5 seconds
+      setActiveTab('stores');
       setTimeout(() => setConnectionSuccess(false), 5000);
 
     } catch (error: any) {
@@ -465,16 +355,12 @@ export function Clients() {
   };
 
   const formatPhone = (value: string) => {
-    // Remove tudo que não é número
     const numbers = value.replace(/\D/g, '');
-    
-    // Aplica a máscara (XX) XXXXX-XXXX
     if (numbers.length <= 11) {
       return numbers
         .replace(/^(\d{2})(\d)/g, '($1) $2')
         .replace(/(\d{5})(\d)/, '$1-$2');
     }
-    
     return numbers.substring(0, 11)
       .replace(/^(\d{2})(\d)/g, '($1) $2')
       .replace(/(\d{5})(\d)/, '$1-$2');
@@ -495,47 +381,12 @@ export function Clients() {
     });
     setLogoPreview(client.logo_url || null);
     setLogoFile(null);
-
-    // Resetar estados para evitar dados do cliente anterior
-    setPerms({
-      view_dashboard: true,
-      view_reports: false,
-      view_analytics: false,
-      export_data: false,
-      manage_settings: false
-    });
-
-    setApiConfig({
-      environment: 'production',
-      authMethod: 'token',
-      endpoint: 'https://api.displayforce.ai',
-      folderEndpoint: '/public/v1/device-folder/list',
-      deviceEndpoint: '/public/v1/device/list',
-      analyticsEndpoint: '/public/v1/stats/visitor/list',
-      token: ENV_DF_TOKEN,
-      customHeaderKey: '',
-      customHeaderValue: '',
-      docUrl: '',
-      collectionStart: '',
-      collectionEnd: '',
-      collectTracks: true,
-      collectFaceQuality: true,
-      collectGlasses: true,
-      collectBeard: true,
-      collectHairColor: true,
-      collectHairType: true,
-      collectHeadwear: true
-    });
-
+    setPerms({ view_dashboard: true, view_reports: false, view_analytics: false, export_data: false, manage_settings: false });
+    setApiConfig(emptyApiConfig());
     setApiStatus('idle');
     setConnectionSuccess(false);
     setFetchedAnalytics([]);
 
-    // Fetch latest stores from DB to ensure we have the most up-to-date list
-    // This prevents stale state from overwriting data or causing "empty" saves
-    // Using simple query first to avoid complex join issues if any
-    
-    // 1. Fetch Stores first (without join to avoid FK errors)
     const { data: latestStores, error: storesError } = await supabase
       .from('stores')
       .select('id, name, city')
@@ -549,7 +400,6 @@ export function Clients() {
     const stores = latestStores || [];
     const devicesByStore: Record<string, any[]> = {};
 
-    // 2. Fetch Devices separately if we have stores
     if (stores.length > 0) {
         const storeIds = stores.map((s: any) => s.id);
         const { data: devicesData, error: devicesError } = await supabase
@@ -560,7 +410,6 @@ export function Clients() {
         if (devicesError) {
             console.error('Erro ao buscar dispositivos:', devicesError);
         } else if (devicesData) {
-            // Group devices by store_id
             devicesData.forEach((d: any) => {
                 if (!devicesByStore[d.store_id]) devicesByStore[d.store_id] = [];
                 devicesByStore[d.store_id].push(d);
@@ -576,19 +425,18 @@ export function Clients() {
         id: d.id,
         name: d.name,
         type: d.type,
-        macAddress: d.mac_address, // Map from DB column
+        macAddress: d.mac_address,
         status: d.status
       }))
     }));
 
     setEditingStores(formattedStores);
     
-    // Fetch permissions
     const { data: permData } = await supabase
       .from('client_permissions')
       .select('*')
       .eq('client_id', client.id)
-      .maybeSingle(); // Usar maybeSingle para não lançar erro se não existir
+      .maybeSingle();
     
     if (permData) {
       setPerms({
@@ -600,7 +448,8 @@ export function Clients() {
       });
     }
 
-    // Fetch API Config
+    // ✅ CORREÇÃO 2: Ao carregar do banco, NÃO preencher customHeaderKey/Value
+    // com fallback para Authorization/Bearer — carrega exatamente o que está no banco
     const { data: apiData } = await supabase
       .from('client_api_configs')
       .select('*')
@@ -615,9 +464,9 @@ export function Clients() {
         folderEndpoint: apiData.folder_endpoint || '/public/v1/device-folder/list',
         deviceEndpoint: apiData.device_endpoint || '/public/v1/device/list',
         analyticsEndpoint: apiData.analytics_endpoint || '/public/v1/stats/visitor/list',
-        token: apiData.api_key || ENV_DF_TOKEN,
-        customHeaderKey: apiData.custom_header_key || 'Authorization',
-        customHeaderValue: apiData.custom_header_value || (ENV_DF_TOKEN ? `Bearer ${ENV_DF_TOKEN}` : ''),
+        token: apiData.api_key || '',
+        customHeaderKey: apiData.custom_header_key || '',   // ← Sem fallback para 'Authorization'
+        customHeaderValue: apiData.custom_header_value || '', // ← Sem fallback para Bearer
         docUrl: apiData.documentation_url || '',
         collectionStart: apiData.collection_start || '',
         collectionEnd: apiData.collection_end || '',
@@ -632,7 +481,6 @@ export function Clients() {
     }
 
     setActiveTab(initialTab);
-    // setEditingStores(client.stores || []); // Removed: We now fetch fresh data above
     setIsEditModalOpen(true);
     setActiveMenu(null);
   };
@@ -640,162 +488,43 @@ export function Clients() {
   const handleNewClient = () => {
     setSelectedClient(null);
     setFormData({
-      name: '',
-      email: '',
-      phone: '',
-      company: '',
-      status: 'active',
-      plan: 'basic',
-      notes: '',
-      logo_url: '',
+      name: '', email: '', phone: '', company: '',
+      status: 'active', plan: 'basic', notes: '', logo_url: '',
       entryDate: new Date().toISOString().split('T')[0]
     });
     setLogoFile(null);
     setLogoPreview(null);
-    setPerms({
-      view_dashboard: true,
-      view_reports: false,
-      view_analytics: false,
-      export_data: false,
-      manage_settings: false
-    });
-      setApiConfig({
-      environment: 'production',
-      authMethod: 'token',
-      endpoint: 'https://api.displayforce.ai',
-      folderEndpoint: '/public/v1/device-folder/list',
-      deviceEndpoint: '/public/v1/device/list',
-      analyticsEndpoint: '/public/v1/stats/visitor/list',
-      token: ENV_DF_TOKEN,
-      customHeaderKey: 'Authorization',
-      customHeaderValue: ENV_DF_TOKEN ? `Bearer ${ENV_DF_TOKEN}` : '',
-      docUrl: '',
-      collectionStart: '',
-      collectionEnd: '',
-      collectTracks: true,
-      collectFaceQuality: true,
-      collectGlasses: true,
-      collectBeard: true,
-      collectHairColor: true,
-      collectHairType: true,
-      collectHeadwear: true
-    });
+    setPerms({ view_dashboard: true, view_reports: false, view_analytics: false, export_data: false, manage_settings: false });
+    setApiConfig(emptyApiConfig()); // ✅ Sempre vazio para novo cliente
     setEditingStores([]);
     setIsEditModalOpen(true);
     setConnectionSuccess(false);
     setFetchedAnalytics([]);
   };
 
-  // Unused functions for manual store management - commented out to clear warnings
-  /*
-  const handleAddStore = () => {
-    if (!newStoreName || !newStoreCity) return;
-    const newStore: Store = {
-      id: `new-store-${Date.now()}`,
-      name: newStoreName,
-      city: newStoreCity,
-      devices: []
-    };
-    setEditingStores([...editingStores, newStore]);
-    setNewStoreName('');
-    setNewStoreCity('');
-  };
-
-  const handleRemoveStore = async (storeId: string) => {
-    if (!storeId.startsWith('new-store')) {
-       try {
-         const { error } = await supabase.from('stores').delete().eq('id', storeId);
-         if (error) throw error;
-       } catch (e) {
-         console.error('Error deleting store:', e);
-         showToast('Erro ao excluir loja.', 'error');
-         return;
-       }
-    }
-    setEditingStores(editingStores.filter(s => s.id !== storeId));
-  };
-
-  const handleAddDeviceToStore = (storeId: string, deviceId: string) => {
-    // Função desativada/simplificada
-  };
-
-  const handleAddManualDevice = (storeId: string) => {
-    if (!newDeviceName) return;
-    
-    const newDevice: Device = {
-      id: `new-device-${Date.now()}`,
-      name: newDeviceName,
-      type: 'camera',
-      macAddress: '', 
-      status: 'online'
-    };
-
-    setEditingStores(editingStores.map(store => {
-      if (store.id === storeId) {
-        return { ...store, devices: [...store.devices, newDevice] };
-      }
-      return store;
-    }));
-
-    setNewDeviceName('');
-  };
-
-  const handleRemoveDeviceFromStore = (storeId: string, deviceId: string) => {
-    setEditingStores(editingStores.map(store => {
-      if (store.id === storeId) {
-        return { ...store, devices: store.devices.filter(d => d.id !== deviceId) };
-      }
-      return store;
-    }));
-  };
-  */
-
   const [deleteConfirmation, setDeleteConfirmation] = useState<{
     isOpen: boolean;
     clientId: string | null;
     clientName: string;
-  }>({
-    isOpen: false,
-    clientId: null,
-    clientName: ''
-  });
+  }>({ isOpen: false, clientId: null, clientName: '' });
 
   const handleDeleteClient = (client: Client) => {
-    setDeleteConfirmation({
-      isOpen: true,
-      clientId: client.id,
-      clientName: client.name
-    });
+    setDeleteConfirmation({ isOpen: true, clientId: client.id, clientName: client.name });
   };
 
   const confirmDelete = async () => {
     if (!deleteConfirmation.clientId) return;
-    
     const clientId = deleteConfirmation.clientId;
-
     try {
-      // 1. Delete dependent data
       await supabase.from('client_api_configs').delete().eq('client_id', clientId);
       await supabase.from('client_permissions').delete().eq('client_id', clientId);
-      
-      // 2. Delete client
       const { error } = await supabase.from('clients').delete().eq('id', clientId);
-      
       if (error) throw error;
-
-      // 3. Update UI
       setClients(clients.filter(c => c.id !== clientId));
-      if (selectedClient?.id === clientId) {
-        setIsEditModalOpen(false);
-        setSelectedClient(null);
-      }
-      
+      if (selectedClient?.id === clientId) { setIsEditModalOpen(false); setSelectedClient(null); }
       if (expandedClient === clientId) setExpandedClient(null);
-      
-      // Close confirmation modal
       setDeleteConfirmation({ isOpen: false, clientId: null, clientName: '' });
       showToast('Cliente excluído com sucesso!');
-
     } catch (error: any) {
       console.error('Error deleting client:', error);
       showToast(`Erro ao excluir cliente: ${error.message}`, 'error');
@@ -806,23 +535,13 @@ export function Clients() {
     try {
       let logoUrl = formData.logo_url;
 
-      // 0. Upload Logo if exists (mas não bloquear se bucket não existir)
       if (logoFile) {
         try {
           const fileExt = logoFile.name.split('.').pop();
           const fileName = `${Math.random()}.${fileExt}`;
-          const filePath = `${fileName}`;
-
-          const { error: uploadError } = await supabase.storage
-            .from('logos')
-            .upload(filePath, logoFile);
-
+          const { error: uploadError } = await supabase.storage.from('logos').upload(fileName, logoFile);
           if (uploadError) throw uploadError;
-
-          const { data: { publicUrl } } = supabase.storage
-            .from('logos')
-            .getPublicUrl(filePath);
-
+          const { data: { publicUrl } } = supabase.storage.from('logos').getPublicUrl(fileName);
           logoUrl = publicUrl;
         } catch (uploadError: any) {
           console.error('Erro ao enviar logo:', uploadError);
@@ -834,19 +553,12 @@ export function Clients() {
               reader.onerror = reject;
               reader.readAsDataURL(file);
             });
-            try {
-              logoUrl = await toDataUrl(logoFile);
-            } catch {
-              logoUrl = formData.logo_url;
-            }
-          } else {
-            throw uploadError;
-          }
+            try { logoUrl = await toDataUrl(logoFile); } catch { logoUrl = formData.logo_url; }
+          } else { throw uploadError; }
         }
       }
 
-      // 1. Save Client
-      const newClientId = selectedClient?.id || (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}-${Math.random()}`);
+      const newClientId = selectedClient?.id || crypto.randomUUID();
       const newClientPayload: any = {
         id: newClientId,
         name: formData.name,
@@ -861,80 +573,43 @@ export function Clients() {
 
       let clientData: any = null;
       let clientError: any = null;
-      if (selectedClient?.id) {
-        const { data, error } = await supabase
-          .from('clients')
-          .update({
-            name: formData.name,
-            email: formData.email || selectedClient.email,
-            phone: formData.phone,
-            company: formData.company,
-            status: formData.status,
-            notes: formData.notes,
-            logo_url: logoUrl,
-            entry_date: formData.entryDate ? new Date(formData.entryDate + 'T12:00:00').toISOString() : undefined
-          })
-          .eq('id', selectedClient.id)
-          .select()
-          .single();
-        clientData = data; clientError = error;
 
-        // Log Update
+      if (selectedClient?.id) {
+        const { data, error } = await supabase.from('clients').update({
+          name: formData.name, email: formData.email || selectedClient.email,
+          phone: formData.phone, company: formData.company, status: formData.status,
+          notes: formData.notes, logo_url: logoUrl,
+          entry_date: formData.entryDate ? new Date(formData.entryDate + 'T12:00:00').toISOString() : undefined
+        }).eq('id', selectedClient.id).select().single();
+        clientData = data; clientError = error;
         if (!clientError && user?.email) {
-          await logService.logAction(
-            user.email,
-            'UPDATE',
-            `Atualizou cliente: ${formData.name}`,
-            'network',
-            formData.name,
-            { clientId: selectedClient.id, changes: formData }
-          );
+          await logService.logAction(user.email, 'UPDATE', `Atualizou cliente: ${formData.name}`, 'network', formData.name, { clientId: selectedClient.id, changes: formData });
         }
       } else {
-        const { data, error } = await supabase
-          .from('clients')
-          .insert(newClientPayload)
-          .select()
-          .single();
+        const { data, error } = await supabase.from('clients').insert(newClientPayload).select().single();
         clientData = data; clientError = error;
-
-        // Log Create
         if (!clientError && user?.email) {
-          await logService.logAction(
-            user.email,
-            'CREATE',
-            `Criou novo cliente: ${formData.name}`,
-            'network',
-            formData.name,
-            { clientId: data.id }
-          );
+          await logService.logAction(user.email, 'CREATE', `Criou novo cliente: ${formData.name}`, 'network', formData.name, { clientId: data.id });
         }
       }
 
       if (clientError) throw clientError;
       const clientId = clientData.id;
 
-      // 2. Save Permissions (update-first, insert-if-missing)
-      const { data: permUpd, error: permUpdErr } = await supabase
-        .from('client_permissions')
-        .update({
-          view_dashboard: perms.view_dashboard,
-          view_reports: perms.view_reports,
-          view_analytics: perms.view_analytics,
-          export_data: perms.export_data,
-          manage_settings: perms.manage_settings
-        })
-        .eq('client_id', clientId)
-        .select();
+      // Permissions
+      const { data: permUpd, error: permUpdErr } = await supabase.from('client_permissions').update({
+        view_dashboard: perms.view_dashboard, view_reports: perms.view_reports,
+        view_analytics: perms.view_analytics, export_data: perms.export_data,
+        manage_settings: perms.manage_settings
+      }).eq('client_id', clientId).select();
       if (permUpdErr) throw permUpdErr;
       if (!permUpd || permUpd.length === 0) {
-        const { error: permInsErr } = await supabase
-          .from('client_permissions')
-          .insert({ client_id: clientId, ...perms });
+        const { error: permInsErr } = await supabase.from('client_permissions').insert({ client_id: clientId, ...perms });
         if (permInsErr) throw permInsErr;
       }
 
-      // 3. Save API Config (update-first, insert-if-missing)
+      // ✅ CORREÇÃO 3: Salva customHeaderKey/Value exatamente como está (vazio = vazio)
+      // Nunca preenche automaticamente com Authorization/Bearer
       const apiPayload = {
         client_id: clientId,
         environment: apiConfig.environment,
@@ -957,25 +632,17 @@ export function Clients() {
         collect_hair_type: !!apiConfig.collectHairType,
         collect_headwear: !!apiConfig.collectHeadwear
       };
-      const { data: apiUpd, error: apiUpdErr } = await supabase
-        .from('client_api_configs')
-        .update(apiPayload)
-        .eq('client_id', clientId)
-        .select();
+
+      const { data: apiUpd, error: apiUpdErr } = await supabase.from('client_api_configs').update(apiPayload).eq('client_id', clientId).select();
       if (apiUpdErr) throw apiUpdErr;
       if (!apiUpd || apiUpd.length === 0) {
-        const { error: apiInsErr } = await supabase
-          .from('client_api_configs')
-          .insert(apiPayload);
+        const { error: apiInsErr } = await supabase.from('client_api_configs').insert(apiPayload);
         if (apiInsErr) throw apiInsErr;
       }
 
+      // Sync analytics via backend
       try {
-        const syncBody = {
-          client_id: clientId,
-          start: apiConfig.collectionStart || undefined,
-          end: apiConfig.collectionEnd || undefined
-        };
+        const syncBody = { client_id: clientId, start: apiConfig.collectionStart || undefined, end: apiConfig.collectionEnd || undefined };
         const syncResp = await fetch('/api/sync-analytics', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -992,208 +659,104 @@ export function Clients() {
         console.warn('Erro ao acionar sync-analytics:', e);
       }
 
-      // 4. Save Stores & Devices
-      
+      // Stores & Devices
       console.log('Iniciando salvamento de lojas. Total para salvar:', editingStores.length);
       
-      // PREVENIR DUPLICIDADE E ID CHURN (SMART MATCH):
-      // Buscar TODAS lojas existentes no banco para este cliente (ID e NOME)
-      const { data: dbStoresData, error: dbStoresErr } = await supabase
-          .from('stores')
-          .select('id, name')
-          .eq('client_id', clientId);
-
-      if (dbStoresErr) {
-        console.error('Erro crítico ao buscar lojas existentes:', dbStoresErr);
-        throw new Error(`Falha ao verificar lojas existentes: ${dbStoresErr.message}`);
-      }
+      const { data: dbStoresData, error: dbStoresErr } = await supabase.from('stores').select('id, name').eq('client_id', clientId);
+      if (dbStoresErr) throw new Error(`Falha ao verificar lojas existentes: ${dbStoresErr.message}`);
 
       const dbStores = dbStoresData || [];
-      
-      // DEDUPLICAÇÃO DE BANCO (Aggressive Cleanup)
-      // Identificar duplicatas no banco (mesmo nome) e marcar para exclusão
-      const uniqueDbStoresMap = new Map<string, string>(); // Name -> ID to keep
+      const uniqueDbStoresMap = new Map<string, string>();
       const duplicateDbIds = new Set<string>();
 
       dbStores.forEach(s => {
           const normName = s.name.trim().toLowerCase();
-          if (uniqueDbStoresMap.has(normName)) {
-              // Já temos uma loja com esse nome. Marcar esta para exclusão.
-              duplicateDbIds.add(s.id);
-          } else {
-              uniqueDbStoresMap.set(normName, s.id);
-          }
+          if (uniqueDbStoresMap.has(normName)) { duplicateDbIds.add(s.id); }
+          else { uniqueDbStoresMap.set(normName, s.id); }
       });
 
       if (duplicateDbIds.size > 0) {
-          console.warn(`Detectadas ${duplicateDbIds.size} lojas duplicadas no banco. Removendo...`);
           const dupIds = Array.from(duplicateDbIds);
           await supabase.from('devices').delete().in('store_id', dupIds);
           await supabase.from('stores').delete().in('id', dupIds);
-          
-          // Remover do array em memória para não atrapalhar o resto da lógica
           for (let i = dbStores.length - 1; i >= 0; i--) {
-              if (duplicateDbIds.has(dbStores[i].id)) {
-                  dbStores.splice(i, 1);
-              }
+              if (duplicateDbIds.has(dbStores[i].id)) dbStores.splice(i, 1);
           }
       }
 
-      const validStoreIds = new Set<string>(); // IDs que confirmamos que devem existir/ser mantidos
+      const validStoreIds = new Set<string>();
       
       for (const store of editingStores) {
           let storeIdToUse = store.id;
-          let isNew = false;
           const storeNameNorm = store.name.trim().toLowerCase();
 
-          // Se for ID temporário ou não for UUID válido, tentar achar match por nome
           if (storeIdToUse.startsWith('new-store') || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storeIdToUse)) {
-             // Tentar match no mapa de únicos
              const existingId = uniqueDbStoresMap.get(storeNameNorm);
-             
-             if (existingId) {
-                 storeIdToUse = existingId;
-                 console.log(`SmartMatch: Loja "${store.name}" usará ID existente ${storeIdToUse}`);
-             } else {
-                 isNew = true;
-                 // Gerar UUID v4 válido se não existir
-                 storeIdToUse = crypto.randomUUID(); 
-                 console.log(`Nova Loja: "${store.name}" terá novo ID ${storeIdToUse}`);
-             }
+             if (existingId) { storeIdToUse = existingId; }
+             else { storeIdToUse = crypto.randomUUID(); console.log(`Nova Loja: "${store.name}" terá novo ID ${storeIdToUse}`); }
           } else {
-             // Se já tem UUID válido, verificar se realmente existe no banco (e se não foi deletado como duplicata)
              const exists = dbStores.some(s => s.id === storeIdToUse);
              if (!exists) {
-                 // Se o ID não existe (ou foi deletado), tentar recuperar pelo nome
                  const recoveredId = uniqueDbStoresMap.get(storeNameNorm);
-                 if (recoveredId) {
-                     storeIdToUse = recoveredId;
-                     console.log(`Recuperação: ID original inválido, usando ID existente para "${store.name}": ${storeIdToUse}`);
-                 } else {
-                    console.warn(`Aviso: Loja ${storeIdToUse} não encontrada no banco. Será recriada.`);
-                 }
+                 if (recoveredId) storeIdToUse = recoveredId;
              }
           }
 
           validStoreIds.add(storeIdToUse);
 
-          // Salvar/Atualizar a Loja
-          const { error: storeUpsertError } = await supabase
-            .from('stores')
-            .upsert({
-              id: storeIdToUse,
-              client_id: clientId,
-              name: store.name,
-              city: store.city
-            });
+          const { error: storeUpsertError } = await supabase.from('stores').upsert({ id: storeIdToUse, client_id: clientId, name: store.name, city: store.city });
+          if (storeUpsertError) { console.error(`Erro ao salvar loja ${store.name}:`, storeUpsertError); continue; }
 
-          if (storeUpsertError) {
-             console.error(`Erro ao salvar loja ${store.name}:`, storeUpsertError);
-             showToast(`Erro ao salvar loja ${store.name}: ${storeUpsertError.message}`, 'error');
-             continue; // Pula dispositivos se a loja falhou
-          }
-
-          // Salvar Dispositivos da Loja
           if (store.devices && store.devices.length > 0) {
-             // 1. Buscar dispositivos existentes no banco para esta loja (para reaproveitar IDs e evitar duplicatas)
-             const { data: existingDevs } = await supabase
-                .from('devices')
-                .select('id, mac_address')
-                .eq('store_id', storeIdToUse);
-
-             const devMap = new Map<string, string>(); // mac_address -> id
-             if (existingDevs) {
-                 existingDevs.forEach((d: any) => {
-                     if (d.mac_address) devMap.set(d.mac_address, d.id);
-                 });
-             }
+             const { data: existingDevs } = await supabase.from('devices').select('id, mac_address').eq('store_id', storeIdToUse);
+             const devMap = new Map<string, string>();
+             if (existingDevs) existingDevs.forEach((d: any) => { if (d.mac_address) devMap.set(d.mac_address, d.id); });
 
              const devicesToUpsert = store.devices.map(d => {
-               // Tentar encontrar ID existente pelo mac_address (ID externo)
                const existingId = devMap.get(d.macAddress);
-               
-               // Se já tem ID válido (veio do banco), usa. 
-               // Se não, tenta achar pelo macAddress.
-               // Se não, gera novo.
                const idToUse = (d.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(d.id)) 
-                   ? d.id 
-                   : (existingId || crypto.randomUUID());
-
-               return {
-                 id: idToUse,
-                 store_id: storeIdToUse,
-                 name: d.name,
-                 type: d.type,
-                 mac_address: d.macAddress,
-                 status: d.status
-               };
+                   ? d.id : (existingId || crypto.randomUUID());
+               return { id: idToUse, store_id: storeIdToUse, name: d.name, type: d.type, mac_address: d.macAddress, status: d.status };
              });
 
-             // Deduplicar payload (caso a API retorne duplicados)
              const uniquePayload: any[] = [];
              const seenMacs = new Set();
              for (const dev of devicesToUpsert) {
-                 if (!seenMacs.has(dev.mac_address)) {
-                     seenMacs.add(dev.mac_address);
-                     uniquePayload.push(dev);
-                 }
+                 if (!seenMacs.has(dev.mac_address)) { seenMacs.add(dev.mac_address); uniquePayload.push(dev); }
              }
 
-             const { error: devError } = await supabase
-               .from('devices')
-               .upsert(uniquePayload);
-             
+             const { error: devError } = await supabase.from('devices').upsert(uniquePayload);
              if (devError) console.error(`Erro ao salvar dispositivos da loja ${store.name}:`, devError);
           }
       }
 
-      // Remover lojas que não estão mais na lista (Clean Up)
-      // CUIDADO: Só remover se realmente tivermos processado alguma loja com sucesso
       if (validStoreIds.size > 0) {
-         const idsToDelete = dbStores
-           .filter(s => !validStoreIds.has(s.id))
-           .map(s => s.id);
-         
+         const idsToDelete = dbStores.filter(s => !validStoreIds.has(s.id)).map(s => s.id);
          if (idsToDelete.length > 0) {
-             console.log('Removendo lojas obsoletas:', idsToDelete);
-             // 1. Remover dispositivos dessas lojas
              await supabase.from('devices').delete().in('store_id', idsToDelete);
-             // 2. Remover as lojas
              await supabase.from('stores').delete().in('id', idsToDelete);
          }
       }
 
-      // 5. Save Fetched Analytics Data
+      // ✅ CORREÇÃO 4: Analytics com upsert em vez de insert (evita erro 23505)
       if (fetchedAnalytics.length > 0) {
         try {
           console.log(`Salvando ${fetchedAnalytics.length} registros de analytics...`);
           
           const analyticsToInsert = fetchedAnalytics.map((visit: any) => {
             let mainDeviceId: number | null = null;
-            const deviceFields = ['device', 'device_id', 'source_id', 'camera_id'];
-            for (const f of deviceFields) {
-              if (visit[f] != null) {
-                const v = Number(visit[f]);
-                if (!isNaN(v)) { mainDeviceId = v; break; }
-              }
+            for (const f of ['device', 'device_id', 'source_id', 'camera_id']) {
+              if (visit[f] != null) { const v = Number(visit[f]); if (!isNaN(v)) { mainDeviceId = v; break; } }
             }
             if (mainDeviceId == null && Array.isArray(visit.devices) && visit.devices.length > 0) {
-              const v = Number(visit.devices[0]);
-              if (!isNaN(v)) mainDeviceId = v;
+              const v = Number(visit.devices[0]); if (!isNaN(v)) mainDeviceId = v;
             }
-
             const attrs: any = {
-              face_quality: visit.face_quality ?? null,
-              facial_hair: visit.facial_hair ?? null,
-              hair_color: visit.hair_color ?? null,
-              hair_type: visit.hair_type ?? null,
-              headwear: visit.headwear ?? null,
-              glasses: visit.glasses ?? null,
+              face_quality: visit.face_quality ?? null, facial_hair: visit.facial_hair ?? null,
+              hair_color: visit.hair_color ?? null, hair_type: visit.hair_type ?? null,
+              headwear: visit.headwear ?? null, glasses: visit.glasses ?? null,
             };
-
-            if (Array.isArray(visit.additional_atributes)) {
-              attrs.additional_attributes = visit.additional_atributes;
-            }
+            if (Array.isArray(visit.additional_atributes)) attrs.additional_attributes = visit.additional_atributes;
 
             return {
               client_id: clientId,
@@ -1206,52 +769,38 @@ export function Clients() {
             };
           });
 
-          const chunkSize = 100;
+          const chunkSize = 500;
           for (let i = 0; i < analyticsToInsert.length; i += chunkSize) {
             const chunk = analyticsToInsert.slice(i, i + chunkSize);
+            // ✅ upsert com ignoreDuplicates evita o erro 23505
             const { error: analyticsError } = await supabase
               .from('visitor_analytics')
-              .insert(chunk);
-            
-            if (analyticsError) console.error('Erro ao salvar chunk de analytics:', analyticsError);
+              .upsert(chunk, { onConflict: 'visit_uid', ignoreDuplicates: true });
+            if (analyticsError) console.error(`Erro ao upsert chunk ${i}–${i + chunkSize}:`, analyticsError);
           }
         } catch (analyticsErr) {
           console.error('Erro ao processar salvamento de analytics:', analyticsErr);
         }
       }
 
-      // VERIFICAÇÃO FINAL: Tentar ler o que acabou de ser salvo para garantir que o RLS permitiu
       const { count: storeCount, error: countError } = await supabase
-        .from('stores')
-        .select('*', { count: 'exact', head: true })
-        .eq('client_id', clientId);
+        .from('stores').select('*', { count: 'exact', head: true }).eq('client_id', clientId);
       
       if (countError) {
-         console.error('Erro fatal ao verificar lojas salvas:', countError);
          showToast(`Dados salvos, mas erro ao verificar: ${countError.message}`, 'error');
-      } else if (storeCount === 0 && editingStores.length > 0) {
-         console.warn('ALERTA: Dados foram "salvos" sem erro, mas o banco retornou 0 lojas. Possível bloqueio de RLS (Row Level Security).');
-         showToast('AVISO CRÍTICO: As lojas foram enviadas, mas o banco de dados não as retornou. Verifique as permissões (RLS) no Supabase.', 'error');
       } else {
          console.log(`Verificação pós-save: ${storeCount} lojas encontradas no banco.`);
       }
 
       setIsEditModalOpen(false);
-      await fetchClients(); // Garantir que a lista seja atualizada após salvar
+      await fetchClients();
       showToast('Alterações salvas com sucesso!');
     } catch (error: any) {
       console.error('Error saving client:', error);
-      
       let msg = error.message || 'Erro desconhecido ao salvar.';
-      
-      if (msg.includes('row-level security policy')) {
-        msg = 'Permissão negada (RLS). Execute o script SQL "supabase_fix_rls.sql" no seu painel Supabase.';
-      } else if (msg.includes('duplicate key')) {
-        msg = 'Já existe um registro com estes dados (Email ou ID duplicado).';
-      } else if (msg.includes('invalid input syntax for type uuid')) {
-        msg = 'ERRO DE ID: Este cliente possui um ID antigo ("1075") que não é compatível. Por favor, cancele e EXCLUA este cliente, depois crie um novo.';
-      }
-
+      if (msg.includes('row-level security policy')) msg = 'Permissão negada (RLS). Execute o script SQL no seu painel Supabase.';
+      else if (msg.includes('duplicate key')) msg = 'Já existe um registro com estes dados (Email ou ID duplicado).';
+      else if (msg.includes('invalid input syntax for type uuid')) msg = 'ERRO DE ID: ID antigo incompatível. Exclua e recrie o cliente.';
       showToast(msg, 'error');
     }
   };
@@ -1275,19 +824,11 @@ export function Clients() {
               className="bg-gray-900 border border-gray-800 text-white pl-10 pr-4 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 w-64 placeholder-gray-600"
             />
           </div>
-          <button 
-            onClick={fetchClients}
-            title="Atualizar Lista"
-            className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors border border-gray-700"
-          >
+          <button onClick={fetchClients} title="Atualizar Lista" className="p-2 bg-gray-800 hover:bg-gray-700 text-gray-300 rounded-lg transition-colors border border-gray-700">
             <Activity size={18} />
           </button>
-          <button 
-            onClick={handleNewClient}
-            className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-lg shadow-emerald-900/20"
-          >
-            <Plus size={18} />
-            Novo Cliente
+          <button onClick={handleNewClient} className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors shadow-lg shadow-emerald-900/20">
+            <Plus size={18} /> Novo Cliente
           </button>
         </div>
       </div>
@@ -1300,21 +841,14 @@ export function Clients() {
               <Building size={32} />
             </div>
             <h3 className="text-lg font-medium text-white mb-2">Nenhum cliente encontrado</h3>
-            <p className="text-gray-500 max-w-sm mx-auto mb-6">
-              Comece adicionando seu primeiro cliente para gerenciar lojas e câmeras.
-            </p>
-            <button 
-              onClick={handleNewClient}
-              className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg inline-flex items-center gap-2 transition-colors"
-            >
-              <Plus size={18} />
-              Adicionar Primeiro Cliente
+            <p className="text-gray-500 max-w-sm mx-auto mb-6">Comece adicionando seu primeiro cliente para gerenciar lojas e câmeras.</p>
+            <button onClick={handleNewClient} className="bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg inline-flex items-center gap-2 transition-colors">
+              <Plus size={18} /> Adicionar Primeiro Cliente
             </button>
           </div>
         ) : (
           clients.map((client) => (
           <div key={client.id} className="bg-gray-900 border border-gray-800 rounded-xl p-6 hover:border-gray-700 transition-all group relative flex flex-col gap-4">
-            
             <div className="w-full flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-14 h-14 rounded-2xl bg-gray-900 flex items-center justify-center text-white font-bold text-2xl shadow-inner overflow-hidden">
@@ -1329,7 +863,6 @@ export function Clients() {
                     <h3 className="font-bold text-white text-lg">{client.name}</h3>
                   </div>
                   <p className="text-sm text-gray-500 mt-1">{client.company}</p>
-                  
                   <div className="flex items-center gap-4 mt-3 text-sm text-gray-400">
                     <span className="flex items-center gap-1.5"><Mail size={14} /> {client.email}</span>
                     <span className="flex items-center gap-1.5"><Phone size={14} /> {client.phone}</span>
@@ -1340,52 +873,31 @@ export function Clients() {
               <div className="flex items-start gap-4 h-full">
                  <button 
                   onClick={() => setExpandedClient(expandedClient === client.id ? null : client.id)}
-                  className={`p-2 rounded-lg border transition-colors ${
-                    expandedClient === client.id 
-                      ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' 
-                      : 'border-gray-700 hover:bg-gray-800 text-gray-300'
-                  }`}
+                  className={`p-2 rounded-lg border transition-colors ${expandedClient === client.id ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'border-gray-700 hover:bg-gray-800 text-gray-300'}`}
                  >
                    {expandedClient === client.id ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
                  </button>
-
                  <button 
                   onClick={() => navigate(`/clientes/${client.id}/dashboard`)}
                   className="px-4 py-2 rounded-lg border border-gray-700 hover:bg-gray-800 text-gray-300 text-sm font-medium flex items-center gap-2 transition-colors whitespace-nowrap"
                  >
-                   <LayoutDashboard size={16} className="text-emerald-500" />
-                  Dashboard
+                   <LayoutDashboard size={16} className="text-emerald-500" /> Dashboard
                 </button>
-                 
                  <div className="relative">
-                  <button 
-                      onClick={() => setActiveMenu(activeMenu === client.id ? null : client.id)}
-                      className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-                  >
+                  <button onClick={() => setActiveMenu(activeMenu === client.id ? null : client.id)} className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors">
                       <Settings size={20} />
                   </button>
-                  
-                  {/* Dropdown Menu */}
                   {activeMenu === client.id && (
                       <div className="absolute right-0 top-12 w-48 bg-gray-900 border border-gray-800 rounded-lg shadow-xl z-10 overflow-hidden">
                       <div className="p-1">
-                          <button 
-                          onClick={() => handleEdit(client, 'details')}
-                          className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 hover:text-white rounded-md flex items-center gap-2"
-                          >
+                          <button onClick={() => handleEdit(client, 'details')} className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 hover:text-white rounded-md flex items-center gap-2">
                           <Edit size={16} /> Editar Cliente
                           </button>
-                          <button 
-                          onClick={() => handleEdit(client, 'api')}
-                          className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 hover:text-white rounded-md flex items-center gap-2"
-                          >
+                          <button onClick={() => handleEdit(client, 'api')} className="w-full text-left px-3 py-2 text-sm text-gray-300 hover:bg-gray-800 hover:text-white rounded-md flex items-center gap-2">
                           <LinkIcon size={16} /> Configurar APIs
                           </button>
                           <div className="h-px bg-gray-800 my-1"></div>
-                          <button 
-                            onClick={() => handleDeleteClient(client)}
-                            className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-900/20 rounded-md flex items-center gap-2"
-                          >
+                          <button onClick={() => handleDeleteClient(client)} className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-900/20 rounded-md flex items-center gap-2">
                           <Trash2 size={16} /> Excluir
                           </button>
                       </div>
@@ -1395,7 +907,6 @@ export function Clients() {
               </div>
             </div>
 
-            {/* Stores Expansion */}
             {expandedClient === client.id && (
               <div className="pt-4 border-t border-gray-800 animate-in slide-in-from-top-2 duration-200 w-full">
                 <h4 className="text-sm font-medium text-gray-400 mb-3 flex items-center gap-2">
@@ -1409,34 +920,23 @@ export function Clients() {
                     </div>
                   )}
                   {getClientStores(client.id).map(store => (
-                    <div 
-                      key={store.id}
-                      className="bg-gray-950 rounded-lg border border-gray-800 overflow-hidden transition-all"
-                    >
-                      <div 
-                        className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-900 transition-colors"
-                        onClick={() => setExpandedStore(expandedStore === store.id ? null : store.id)}
-                      >
+                    <div key={store.id} className="bg-gray-950 rounded-lg border border-gray-800 overflow-hidden transition-all">
+                      <div className="flex items-center justify-between p-3 cursor-pointer hover:bg-gray-900 transition-colors" onClick={() => setExpandedStore(expandedStore === store.id ? null : store.id)}>
                         <div className="flex items-center gap-4">
-                           <div className="w-8 h-8 rounded-lg bg-gray-900 flex items-center justify-center text-gray-500 group-hover:text-emerald-500 transition-colors">
+                           <div className="w-8 h-8 rounded-lg bg-gray-900 flex items-center justify-center text-gray-500">
                              <Building2 size={16} />
                            </div>
                            <div>
-                            <p className="text-sm font-medium text-white group-hover:text-emerald-400">{store.name}</p>
+                            <p className="text-sm font-medium text-white">{store.name}</p>
                             <p className="text-xs text-gray-500 flex items-center gap-1 mt-0.5">
                               <MapPin size={10} /> {store.city}
                             </p>
                            </div>
                         </div>
-                        
                         <div className="flex items-center gap-3">
                           <button 
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              navigate(`/clientes/${client.id}/dashboard`, { state: { initialView: 'store', storeId: store.id } });
-                            }}
+                            onClick={(e) => { e.stopPropagation(); navigate(`/clientes/${client.id}/dashboard`, { state: { initialView: 'store', storeId: store.id } }); }}
                             className="p-1.5 text-gray-500 hover:text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-colors"
-                            title="Ir para Dashboard"
                           >
                             <LayoutDashboard size={16} />
                           </button>
@@ -1444,13 +944,11 @@ export function Clients() {
                         </div>
                       </div>
 
-                      {/* Store Devices Expansion */}
                       {expandedStore === store.id && (
                         <div className="bg-gray-900/50 border-t border-gray-800 p-3 animate-in slide-in-from-top-2 duration-200">
                           <h5 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2 flex items-center gap-2 px-1">
-                            <Camera size={12} /> Dispositivos Conectados (Recebendo Dados)
+                            <Camera size={12} /> Dispositivos Conectados
                           </h5>
-                          
                           {store.devices.length > 0 ? (
                             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                               {store.devices.map(device => (
@@ -1458,22 +956,17 @@ export function Clients() {
                                   <div className="flex items-center gap-2">
                                     <div className={`w-2 h-2 rounded-full ${device.status === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'}`} />
                                     <div>
-                                      <p className="text-xs font-medium text-gray-300 group-hover/device:text-emerald-400 transition-colors">{device.name}</p>
+                                      <p className="text-xs font-medium text-gray-300">{device.name}</p>
                                       <p className="text-[10px] text-gray-600 font-mono">{device.macAddress}</p>
                                     </div>
                                   </div>
-                                  
                                   <div className="flex items-center gap-2">
                                     <span className="text-[10px] bg-gray-900 text-gray-500 px-1.5 py-0.5 rounded border border-gray-800 uppercase">
                                         {device.status === 'online' ? 'Capturando' : 'Offline'}
                                     </span>
                                     <button 
-                                        onClick={(e) => {
-                                        e.stopPropagation();
-                                        navigate(`/clientes/${client.id}/dashboard`, { state: { initialView: 'device', storeId: store.id, deviceId: device.id } });
-                                        }}
+                                        onClick={(e) => { e.stopPropagation(); navigate(`/clientes/${client.id}/dashboard`, { state: { initialView: 'device', storeId: store.id, deviceId: device.id } }); }}
                                         className="p-1.5 text-gray-500 hover:text-emerald-500 hover:bg-emerald-500/10 rounded-lg transition-colors opacity-0 group-hover/device:opacity-100"
-                                        title="Dashboard da Câmera"
                                     >
                                         <LayoutDashboard size={14} />
                                     </button>
@@ -1496,64 +989,23 @@ export function Clients() {
         )}
       </div>
 
-      {/* MODAL DE EDIÇÃO */}
+      {/* MODAL */}
       {isEditModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
           <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl animate-in zoom-in-95 duration-200">
             <div className="sticky top-0 bg-gray-900 border-b border-gray-800 z-10">
               <div className="p-6 flex items-center justify-between pb-4">
-                <h2 className="text-xl font-bold text-white">
-                  {selectedClient ? 'Editar Cliente' : 'Novo Cliente'}
-                </h2>
-                <button 
-                  onClick={() => setIsEditModalOpen(false)}
-                  className="text-gray-500 hover:text-white transition-colors"
-                >
-                  <X size={24} />
-                </button>
+                <h2 className="text-xl font-bold text-white">{selectedClient ? 'Editar Cliente' : 'Novo Cliente'}</h2>
+                <button onClick={() => setIsEditModalOpen(false)} className="text-gray-500 hover:text-white transition-colors"><X size={24} /></button>
               </div>
-              
-              {/* Tabs */}
               <div className="flex px-6 gap-6">
-                <button 
-                  onClick={() => setActiveTab('details')}
-                  className={`pb-3 text-sm font-medium transition-colors relative ${
-                    activeTab === 'details' 
-                      ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' 
-                      : 'text-gray-400 hover:text-gray-300'
-                  }`}
-                >
-                  Dados Gerais
-                </button>
-                <button 
-                  onClick={() => setActiveTab('permissions')}
-                  className={`pb-3 text-sm font-medium transition-colors relative ${
-                    activeTab === 'permissions' 
-                      ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' 
-                      : 'text-gray-400 hover:text-gray-300'
-                  }`}
-                >
-                  Permissões
-                </button>
-                <button 
-                  onClick={() => setActiveTab('api')}
-                  className={`pb-3 text-sm font-medium transition-colors relative ${
-                    activeTab === 'api' 
-                      ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' 
-                      : 'text-gray-400 hover:text-gray-300'
-                  }`}
-                >
-                  Configuração API
-                </button>
+                {(['details', 'permissions', 'api'] as const).map(tab => (
+                  <button key={tab} onClick={() => setActiveTab(tab)} className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === tab ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' : 'text-gray-400 hover:text-gray-300'}`}>
+                    {tab === 'details' ? 'Dados Gerais' : tab === 'permissions' ? 'Permissões' : 'Configuração API'}
+                  </button>
+                ))}
                 {editingStores.length > 0 && (
-                  <button 
-                    onClick={() => setActiveTab('stores')}
-                    className={`pb-3 text-sm font-medium transition-colors relative ${
-                      activeTab === 'stores' 
-                        ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' 
-                        : 'text-gray-400 hover:text-gray-300'
-                    }`}
-                  >
+                  <button onClick={() => setActiveTab('stores')} className={`pb-3 text-sm font-medium transition-colors relative ${activeTab === 'stores' ? 'text-emerald-500 after:absolute after:bottom-0 after:left-0 after:w-full after:h-0.5 after:bg-emerald-500' : 'text-gray-400 hover:text-gray-300'}`}>
                     Lojas Encontradas ({editingStores.length})
                   </button>
                 )}
@@ -1561,428 +1013,218 @@ export function Clients() {
             </div>
             
             <div className="p-6 space-y-6">
-              {/* Basic Info */}
               {activeTab === 'details' && (
                 <>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400">Nome *</label>
-                      <input 
-                        type="text" 
-                        value={formData.name}
-                        onChange={(e) => setFormData({...formData, name: e.target.value})}
-                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
-                      />
+                      <input type="text" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400">Email *</label>
-                      <input 
-                        type="email" 
-                        value={formData.email}
-                        onChange={(e) => setFormData({...formData, email: e.target.value})}
-                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
-                      />
+                      <input type="email" value={formData.email} onChange={(e) => setFormData({...formData, email: e.target.value})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400">Telefone</label>
-                      <input 
-                        type="text" 
-                        value={formData.phone}
-                        onChange={(e) => setFormData({...formData, phone: formatPhone(e.target.value)})}
-                        placeholder="(11) 99999-9999"
-                        maxLength={15}
-                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
-                      />
+                      <input type="text" value={formData.phone} onChange={(e) => setFormData({...formData, phone: formatPhone(e.target.value)})} placeholder="(11) 99999-9999" maxLength={15} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400">Empresa</label>
-                      <input 
-                        type="text" 
-                        value={formData.company}
-                        onChange={(e) => setFormData({...formData, company: e.target.value})}
-                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"
-                      />
+                      <input type="text" value={formData.company} onChange={(e) => setFormData({...formData, company: e.target.value})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400">Status</label>
-                      <select 
-                        value={formData.status}
-                        onChange={(e) => setFormData({...formData, status: e.target.value as any})}
-                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none"
-                      >
+                      <select value={formData.status} onChange={(e) => setFormData({...formData, status: e.target.value as any})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none">
                         <option value="active">Ativo</option>
                         <option value="inactive">Inativo</option>
                       </select>
                     </div>
                     <div className="space-y-2">
                       <label className="text-sm font-medium text-gray-400">Data de Entrada</label>
-                      <input 
-                        type="date" 
-                        value={formData.entryDate}
-                        onChange={(e) => setFormData({...formData, entryDate: e.target.value})}
-                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none"
-                      />
+                      <input type="date" value={formData.entryDate} onChange={(e) => setFormData({...formData, entryDate: e.target.value})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                   </div>
-
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-400">Logo da Empresa</label>
-                    <div className="relative group">
-                        <div className="w-full h-32 bg-gray-950 border border-gray-800 rounded-lg flex items-center justify-center overflow-hidden relative cursor-pointer hover:border-emerald-500 transition-colors">
-                          {logoPreview ? (
-                            <img src={logoPreview} alt="Preview" className="h-full object-contain p-2" />
-                          ) : (
-                            <div className="flex flex-col items-center text-gray-600">
-                              <Upload size={24} className="mb-2" />
-                              <span className="text-xs">Clique para fazer upload</span>
-                            </div>
-                          )}
-                          <input 
-                              type="file" 
-                              accept="image/*"
-                              onChange={(e) => {
-                                const file = e.target.files?.[0];
-                                if (file) {
-                                  setLogoFile(file);
-                                  setLogoPreview(URL.createObjectURL(file));
-                                }
-                              }}
-                              className="absolute inset-0 opacity-0 cursor-pointer"
-                          />
-                        </div>
+                    <div className="w-full h-32 bg-gray-950 border border-gray-800 rounded-lg flex items-center justify-center overflow-hidden relative cursor-pointer hover:border-emerald-500 transition-colors">
+                      {logoPreview ? <img src={logoPreview} alt="Preview" className="h-full object-contain p-2" /> : (
+                        <div className="flex flex-col items-center text-gray-600"><Upload size={24} className="mb-2" /><span className="text-xs">Clique para fazer upload</span></div>
+                      )}
+                      <input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) { setLogoFile(file); setLogoPreview(URL.createObjectURL(file)); } }} className="absolute inset-0 opacity-0 cursor-pointer" />
                     </div>
                     <p className="text-xs text-gray-500">Formatos aceitos: PNG, JPG, SVG (Máx. 2MB)</p>
                   </div>
-                  
                   <div className="space-y-2">
                     <label className="text-sm font-medium text-gray-400">Observações</label>
-                    <textarea 
-                        rows={3}
-                        value={formData.notes}
-                        onChange={(e) => setFormData({...formData, notes: e.target.value})}
-                        placeholder="Notas adicionais sobre o cliente..."
-                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none resize-none"
-                    />
+                    <textarea rows={3} value={formData.notes} onChange={(e) => setFormData({...formData, notes: e.target.value})} placeholder="Notas adicionais sobre o cliente..." className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none resize-none" />
                   </div>
                 </>
               )}
 
-              {/* Permissions Tab */}
               {activeTab === 'permissions' && (
                 <div className="border border-gray-800 rounded-xl bg-gray-950/50 overflow-hidden">
                   <div className="p-4 bg-gray-900/50 border-b border-gray-800">
-                    <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-2">
-                      <Shield size={16} /> Permissões de Acesso
-                    </h3>
+                    <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-2"><Shield size={16} /> Permissões de Acesso</h3>
                   </div>
-                  
                   <div className="p-2">
-                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
-                          <Eye size={20} />
+                    {[
+                      { key: 'view_dashboard', icon: Eye, label: 'Visualizar Dashboard', desc: 'Acesso aos gráficos e métricas' },
+                      { key: 'view_reports', icon: FileText, label: 'Visualizar Relatórios', desc: 'Acesso aos relatórios detalhados' },
+                      { key: 'view_analytics', icon: BarChart2, label: 'Visualizar Analytics', desc: 'Acesso às análises avançadas' },
+                      { key: 'export_data', icon: Download, label: 'Exportar Dados', desc: 'Permissão para baixar dados' },
+                      { key: 'manage_settings', icon: Settings, label: 'Gerenciar Configurações', desc: 'Alterar configurações do cliente' },
+                    ].map(({ key, icon: Icon, label, desc }) => (
+                      <div key={key} className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400"><Icon size={20} /></div>
+                          <div><p className="font-medium text-white text-sm">{label}</p><p className="text-xs text-gray-500">{desc}</p></div>
                         </div>
-                        <div>
-                          <p className="font-medium text-white text-sm">Visualizar Dashboard</p>
-                          <p className="text-xs text-gray-500">Acesso aos gráficos e métricas</p>
-                        </div>
+                        <Toggle checked={perms[key as keyof typeof perms]} onChange={() => togglePerm(key as keyof typeof perms)} />
                       </div>
-                      <Toggle checked={perms.view_dashboard} onChange={() => togglePerm('view_dashboard')} />
-                    </div>
-
-                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
-                          <FileText size={20} />
-                        </div>
-                        <div>
-                          <p className="font-medium text-white text-sm">Visualizar Relatórios</p>
-                          <p className="text-xs text-gray-500">Acesso aos relatórios detalhados</p>
-                        </div>
-                      </div>
-                      <Toggle checked={perms.view_reports} onChange={() => togglePerm('view_reports')} />
-                    </div>
-
-                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
-                          <BarChart2 size={20} />
-                        </div>
-                        <div>
-                          <p className="font-medium text-white text-sm">Visualizar Analytics</p>
-                          <p className="text-xs text-gray-500">Acesso às análises avançadas</p>
-                        </div>
-                      </div>
-                      <Toggle checked={perms.view_analytics} onChange={() => togglePerm('view_analytics')} />
-                    </div>
-
-                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
-                          <Download size={20} />
-                        </div>
-                        <div>
-                          <p className="font-medium text-white text-sm">Exportar Dados</p>
-                          <p className="text-xs text-gray-500">Permissão para baixar dados</p>
-                        </div>
-                      </div>
-                      <Toggle checked={perms.export_data} onChange={() => togglePerm('export_data')} />
-                    </div>
-
-                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
-                      <div className="flex items-center gap-4">
-                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
-                          <Settings size={20} />
-                        </div>
-                        <div>
-                          <p className="font-medium text-white text-sm">Gerenciar Configurações</p>
-                          <p className="text-xs text-gray-500">Alterar configurações do cliente</p>
-                        </div>
-                      </div>
-                      <Toggle checked={perms.manage_settings} onChange={() => togglePerm('manage_settings')} />
-                    </div>
+                    ))}
                   </div>
                 </div>
               )}
 
-              {/* API Config Section */}
               {activeTab === 'api' && (
                 <div className="border border-gray-800 rounded-xl p-5 bg-gray-950/50">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-2">
-                      <Key size={16} /> Configuração da API (DisplayForce.ai)
-                    </h3>
-                  </div>
-                  
+                  <h3 className="text-sm font-bold text-emerald-400 flex items-center gap-2 mb-4"><Key size={16} /> Configuração da API (DisplayForce.ai)</h3>
                   <div className="space-y-6">
-                    
-                    {/* Success Message Banner */}
                     {connectionSuccess && (
-                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-4 flex items-start gap-3 animate-in slide-in-from-top-2 duration-300">
+                      <div className="bg-emerald-500/10 border border-emerald-500/20 rounded-lg p-4 flex items-start gap-3">
                         <CheckCircle2 className="text-emerald-500 shrink-0 mt-0.5" size={20} />
                         <div>
                           <h4 className="font-bold text-emerald-400 text-sm">Conexão Estabelecida com Sucesso!</h4>
-                          <p className="text-emerald-500/70 text-xs mt-1">
-                            A API está respondendo corretamente. Os parâmetros de coleta foram validados.
-                            Você já pode salvar as configurações e cadastrar dispositivos nas lojas.
-                          </p>
+                          <p className="text-emerald-500/70 text-xs mt-1">API respondendo. Salve as configurações para confirmar.</p>
                         </div>
-                        <button 
-                          onClick={() => setConnectionSuccess(false)}
-                          className="ml-auto text-emerald-500/50 hover:text-emerald-400 transition-colors"
-                        >
-                          <X size={16} />
-                        </button>
+                        <button onClick={() => setConnectionSuccess(false)} className="ml-auto text-emerald-500/50 hover:text-emerald-400"><X size={16} /></button>
                       </div>
                     )}
 
-                    <div className="grid grid-cols-1 gap-4">
+                    <div className="space-y-4">
                       <div className="space-y-2">
                         <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Endereço da API (Base URL)</label>
                         <div className="relative">
-                            <input 
-                                type="text" 
-                                value={apiConfig.endpoint}
-                                onChange={(e) => setApiConfig({...apiConfig, endpoint: e.target.value})}
-                                placeholder="https://api.displayforce.ai"
-                                className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                            />
-                            <Server className="absolute right-3 top-2.5 text-gray-600" size={16} />
+                          <input type="text" value={apiConfig.endpoint} onChange={(e) => setApiConfig({...apiConfig, endpoint: e.target.value})} placeholder="https://api.displayforce.ai" className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none" />
+                          <Server className="absolute right-3 top-2.5 text-gray-600" size={16} />
                         </div>
                       </div>
-
                       <div className="grid grid-cols-2 gap-4">
                         <div className="space-y-2">
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Caminho das Pastas (Lojas)</label>
-                          <input 
-                              type="text" 
-                              value={apiConfig.folderEndpoint}
-                              onChange={(e) => setApiConfig({...apiConfig, folderEndpoint: e.target.value})}
-                              placeholder="/public/v1/device-folder/list"
-                              className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
-                          />
+                          <input type="text" value={apiConfig.folderEndpoint} onChange={(e) => setApiConfig({...apiConfig, folderEndpoint: e.target.value})} placeholder="/public/v1/device-folder/list" className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none" />
                         </div>
                         <div className="space-y-2">
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Caminho dos Dispositivos</label>
-                          <input 
-                              type="text" 
-                              value={apiConfig.deviceEndpoint}
-                              onChange={(e) => setApiConfig({...apiConfig, deviceEndpoint: e.target.value})}
-                              placeholder="/public/v1/device/list"
-                              className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
-                          />
+                          <input type="text" value={apiConfig.deviceEndpoint} onChange={(e) => setApiConfig({...apiConfig, deviceEndpoint: e.target.value})} placeholder="/public/v1/device/list" className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none" />
                         </div>
                         <div className="col-span-2 space-y-2">
                           <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Caminho dos Dados (Analytics)</label>
-                          <input 
-                              type="text" 
-                              value={apiConfig.analyticsEndpoint}
-                              onChange={(e) => setApiConfig({...apiConfig, analyticsEndpoint: e.target.value})}
-                              placeholder="/public/v1/analytics"
-                              className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none"
-                          />
+                          <input type="text" value={apiConfig.analyticsEndpoint} onChange={(e) => setApiConfig({...apiConfig, analyticsEndpoint: e.target.value})} placeholder="/public/v1/stats/visitor/list" className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 font-mono text-xs focus:ring-1 focus:ring-emerald-500 outline-none" />
                         </div>
                       </div>
-
                       <div className="space-y-2">
                         <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">X-API-Token</label>
                         <div className="relative">
-                            <input 
-                                type="text" 
-                                value={apiConfig.token}
-                                onChange={(e) => setApiConfig({...apiConfig, token: e.target.value})}
-                                placeholder="Insira seu token aqui"
-                                className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none"
-                            />
-                            <Lock className="absolute right-3 top-2.5 text-gray-600" size={16} />
+                          <input type="text" value={apiConfig.token} onChange={(e) => setApiConfig({...apiConfig, token: e.target.value})} placeholder="Insira o token do cliente aqui" className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none" />
+                          <Lock className="absolute right-3 top-2.5 text-gray-600" size={16} />
                         </div>
                       </div>
                     </div>
 
                     <div className="border-t border-gray-800 pt-4">
-                        <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 flex items-center gap-2">
-                            <FileText size={14} /> Parâmetros do Body (Coleta de Dados)
-                        </h4>
-                        
-                        <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-                            {/* Booleans */}
-                            <div className="space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-300">Rastreamento (Tracks)</span>
-                                    <Toggle checked={apiConfig.collectTracks} onChange={() => setApiConfig({...apiConfig, collectTracks: !apiConfig.collectTracks})} />
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-300">Qualidade Facial</span>
-                                    <Toggle checked={apiConfig.collectFaceQuality} onChange={() => setApiConfig({...apiConfig, collectFaceQuality: !apiConfig.collectFaceQuality})} />
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-300">Óculos</span>
-                                    <Toggle checked={apiConfig.collectGlasses} onChange={() => setApiConfig({...apiConfig, collectGlasses: !apiConfig.collectGlasses})} />
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-300">Barba/Bigode</span>
-                                    <Toggle checked={apiConfig.collectBeard} onChange={() => setApiConfig({...apiConfig, collectBeard: !apiConfig.collectBeard})} />
-                                </div>
+                      <h4 className="text-xs font-bold text-white uppercase tracking-wider mb-3 flex items-center gap-2"><FileText size={14} /> Parâmetros do Body (Coleta de Dados)</h4>
+                      <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+                        <div className="space-y-3">
+                          {[
+                            { key: 'collectTracks', label: 'Rastreamento (Tracks)' },
+                            { key: 'collectFaceQuality', label: 'Qualidade Facial' },
+                            { key: 'collectGlasses', label: 'Óculos' },
+                            { key: 'collectBeard', label: 'Barba/Bigode' },
+                          ].map(({ key, label }) => (
+                            <div key={key} className="flex items-center justify-between">
+                              <span className="text-sm text-gray-300">{label}</span>
+                              <Toggle checked={apiConfig[key as keyof typeof apiConfig] as boolean} onChange={() => setApiConfig({...apiConfig, [key]: !apiConfig[key as keyof typeof apiConfig]})} />
                             </div>
-
-                            <div className="space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-300">Cor do Cabelo</span>
-                                    <Toggle checked={apiConfig.collectHairColor} onChange={() => setApiConfig({...apiConfig, collectHairColor: !apiConfig.collectHairColor})} />
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-300">Tipo de Cabelo</span>
-                                    <Toggle checked={apiConfig.collectHairType} onChange={() => setApiConfig({...apiConfig, collectHairType: !apiConfig.collectHairType})} />
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-gray-300">Chapéu/Boné</span>
-                                    <Toggle checked={apiConfig.collectHeadwear} onChange={() => setApiConfig({...apiConfig, collectHeadwear: !apiConfig.collectHeadwear})} />
-                                </div>
-                            </div>
+                          ))}
                         </div>
-
-                        {/* Additional Attributes */}
-                        <div className="mt-4">
-                            <label className="text-[10px] text-gray-500 uppercase mb-2 block">Atributos Adicionais</label>
-                            <div className="flex flex-wrap gap-2">
-                                {['smile', 'pitch', 'yaw', 'x', 'y', 'height'].map(attr => (
-                                    <span key={attr} className="px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono">
-                                        {attr}
-                                    </span>
-                                ))}
+                        <div className="space-y-3">
+                          {[
+                            { key: 'collectHairColor', label: 'Cor do Cabelo' },
+                            { key: 'collectHairType', label: 'Tipo de Cabelo' },
+                            { key: 'collectHeadwear', label: 'Chapéu/Boné' },
+                          ].map(({ key, label }) => (
+                            <div key={key} className="flex items-center justify-between">
+                              <span className="text-sm text-gray-300">{label}</span>
+                              <Toggle checked={apiConfig[key as keyof typeof apiConfig] as boolean} onChange={() => setApiConfig({...apiConfig, [key]: !apiConfig[key as keyof typeof apiConfig]})} />
                             </div>
+                          ))}
                         </div>
+                      </div>
+                      <div className="mt-4">
+                        <label className="text-[10px] text-gray-500 uppercase mb-2 block">Atributos Adicionais</label>
+                        <div className="flex flex-wrap gap-2">
+                          {['smile', 'pitch', 'yaw', 'x', 'y', 'height'].map(attr => (
+                            <span key={attr} className="px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 text-xs font-mono">{attr}</span>
+                          ))}
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="pt-2">
-                      <button 
-                        onClick={handleTestConnection}
-                        disabled={apiStatus === 'testing'}
-                        className={`w-full py-3 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-all ${
-                          apiStatus === 'success' 
-                            ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20'
-                            : 'bg-gray-800 hover:bg-gray-700 text-white'
-                        }`}
-                      >
-                        {apiStatus === 'testing' ? (
-                          <>
-                            <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                            Conectando à DisplayForce.ai...
-                          </>
-                        ) : apiStatus === 'success' ? (
-                          <>
-                            <CheckCircle2 size={18} />
-                            Conexão Estabelecida
-                          </>
-                        ) : (
-                          <>
-                            <Activity size={18} />
-                            Testar Conexão e Sincronizar
-                          </>
-                        )}
-                      </button>
-
-                      {/* Feedback Visual da Sincronização */}
-                      {editingStores.length > 0 && apiStatus === 'success' && (
-                        <div className="mt-4 p-4 bg-emerald-900/20 border border-emerald-500/30 rounded-lg animate-in fade-in slide-in-from-top-2">
-                          <h4 className="text-emerald-400 font-bold text-sm mb-2 flex items-center gap-2">
-                            <CheckCircle2 size={16} /> Sincronização Automática Concluída
-                          </h4>
-                          <p className="text-xs text-gray-400 mb-3">
-                            Foram detectados e vinculados automaticamente através da API:
-                          </p>
-                          <div className="flex gap-4">
-                             <div className="bg-gray-900 px-3 py-2 rounded border border-gray-800 flex items-center gap-2">
-                               <Building2 size={14} className="text-gray-500" />
-                               <span className="text-white text-sm font-bold">{editingStores.length}</span>
-                               <span className="text-xs text-gray-500">Lojas</span>
-                             </div>
-                             <div className="bg-gray-900 px-3 py-2 rounded border border-gray-800 flex items-center gap-2">
-                               <Camera size={14} className="text-gray-500" />
-                               <span className="text-white text-sm font-bold">
-                                 {editingStores.reduce((acc, store) => acc + store.devices.length, 0)}
-                               </span>
-                               <span className="text-xs text-gray-500">Dispositivos</span>
-                             </div>
-                          </div>
-                        </div>
+                    <button 
+                      onClick={handleTestConnection}
+                      disabled={apiStatus === 'testing'}
+                      className={`w-full py-3 rounded-lg font-medium text-sm flex items-center justify-center gap-2 transition-all ${apiStatus === 'success' ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 'bg-gray-800 hover:bg-gray-700 text-white'}`}
+                    >
+                      {apiStatus === 'testing' ? (
+                        <><div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> Conectando à DisplayForce.ai...</>
+                      ) : apiStatus === 'success' ? (
+                        <><CheckCircle2 size={18} /> Conexão Estabelecida</>
+                      ) : (
+                        <><Activity size={18} /> Testar Conexão e Sincronizar</>
                       )}
-                    </div>
+                    </button>
+
+                    {editingStores.length > 0 && apiStatus === 'success' && (
+                      <div className="p-4 bg-emerald-900/20 border border-emerald-500/30 rounded-lg">
+                        <h4 className="text-emerald-400 font-bold text-sm mb-2 flex items-center gap-2"><CheckCircle2 size={16} /> Sincronização Concluída</h4>
+                        <div className="flex gap-4">
+                           <div className="bg-gray-900 px-3 py-2 rounded border border-gray-800 flex items-center gap-2">
+                             <Building2 size={14} className="text-gray-500" />
+                             <span className="text-white text-sm font-bold">{editingStores.length}</span>
+                             <span className="text-xs text-gray-500">Lojas</span>
+                           </div>
+                           <div className="bg-gray-900 px-3 py-2 rounded border border-gray-800 flex items-center gap-2">
+                             <Camera size={14} className="text-gray-500" />
+                             <span className="text-white text-sm font-bold">{editingStores.reduce((acc, s) => acc + s.devices.length, 0)}</span>
+                             <span className="text-xs text-gray-500">Dispositivos</span>
+                           </div>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
 
-              {/* Stores Tab (New) */}
               {activeTab === 'stores' && (
                 <div className="space-y-4">
                    <div className="bg-emerald-900/20 border border-emerald-500/30 rounded-lg p-4 mb-6">
-                      <h4 className="text-emerald-400 font-bold text-sm mb-2 flex items-center gap-2">
-                        <CheckCircle2 size={16} /> Dados Sincronizados
-                      </h4>
-                      <p className="text-sm text-gray-300">
-                        Abaixo estão as lojas e dispositivos encontrados na sua conta DisplayForce. 
-                        Clique em <b>Salvar Alterações</b> para confirmar a importação.
-                      </p>
+                      <h4 className="text-emerald-400 font-bold text-sm mb-2 flex items-center gap-2"><CheckCircle2 size={16} /> Dados Sincronizados</h4>
+                      <p className="text-sm text-gray-300">Abaixo estão as lojas e dispositivos encontrados na sua conta DisplayForce. Clique em <b>Salvar Alterações</b> para confirmar.</p>
                    </div>
-
                    <div className="grid grid-cols-1 gap-3">
                      {editingStores.map((store, idx) => (
                        <div key={store.id || idx} className="bg-gray-950 border border-gray-800 rounded-lg p-4">
                          <div className="flex items-center justify-between mb-3">
                            <div className="flex items-center gap-3">
-                             <div className="w-8 h-8 rounded bg-gray-900 flex items-center justify-center text-gray-500">
-                               <Building2 size={16} />
-                             </div>
+                             <div className="w-8 h-8 rounded bg-gray-900 flex items-center justify-center text-gray-500"><Building2 size={16} /></div>
                              <div>
                                <h4 className="font-bold text-white text-sm">{store.name}</h4>
                                <p className="text-xs text-gray-500">ID: {store.id.startsWith('new-store') ? 'Novo (Será gerado)' : store.id}</p>
                              </div>
                            </div>
-                           <span className="text-xs bg-gray-900 text-gray-400 px-2 py-1 rounded border border-gray-800">
-                             {store.devices.length} Dispositivos
-                           </span>
+                           <span className="text-xs bg-gray-900 text-gray-400 px-2 py-1 rounded border border-gray-800">{store.devices.length} Dispositivos</span>
                          </div>
-                         
                          {store.devices.length > 0 ? (
                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pl-11">
                              {store.devices.map((device, dIdx) => (
@@ -2003,58 +1245,33 @@ export function Clients() {
                    </div>
                 </div>
               )}
-
             </div>
 
             <div className="p-6 border-t border-gray-800 flex justify-end gap-3 bg-gray-900 sticky bottom-0 z-10">
-              <button 
-                onClick={() => setIsEditModalOpen(false)}
-                className="px-4 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 transition-colors"
-              >
-                Cancelar
-              </button>
-              <button 
-                onClick={handleSave}
-                className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium shadow-lg shadow-emerald-900/20 transition-colors"
-              >
-                Salvar Alterações
-              </button>
+              <button onClick={() => setIsEditModalOpen(false)} className="px-4 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 transition-colors">Cancelar</button>
+              <button onClick={handleSave} className="px-6 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium shadow-lg shadow-emerald-900/20 transition-colors">Salvar Alterações</button>
             </div>
-
           </div>
         </div>
       )}
 
-      {/* Overlay to close menus */}
-      {activeMenu && (
-        <div className="fixed inset-0 z-0" onClick={() => setActiveMenu(null)} />
-      )}
+      {activeMenu && <div className="fixed inset-0 z-0" onClick={() => setActiveMenu(null)} />}
 
-      {/* TOAST NOTIFICATION */}
       {toast && (
         <div className="fixed top-6 right-6 z-[100] animate-in slide-in-from-right-10 duration-300">
-          <div className={`flex items-center gap-4 px-5 py-4 rounded-2xl shadow-2xl border ${
-            toast.type === 'success' 
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500 shadow-emerald-500/10' 
-              : 'bg-red-500/10 border-red-500/20 text-red-500 shadow-red-500/10'
-          } backdrop-blur-xl bg-gray-900/95`}>
-            <div className={`p-2 rounded-full ${
-              toast.type === 'success' ? 'bg-emerald-500/20' : 'bg-red-500/20'
-            }`}>
+          <div className={`flex items-center gap-4 px-5 py-4 rounded-2xl shadow-2xl border ${toast.type === 'success' ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500' : 'bg-red-500/10 border-red-500/20 text-red-500'} backdrop-blur-xl bg-gray-900/95`}>
+            <div className={`p-2 rounded-full ${toast.type === 'success' ? 'bg-emerald-500/20' : 'bg-red-500/20'}`}>
               {toast.type === 'success' ? <CheckCircle2 size={24} /> : <ShieldAlert size={24} />}
             </div>
             <div>
               <h4 className="font-bold text-base">{toast.type === 'success' ? 'Sucesso' : 'Erro'}</h4>
               <p className="text-sm opacity-90 text-gray-300">{toast.message}</p>
             </div>
-            <button onClick={() => setToast(null)} className="ml-2 p-1 rounded-lg hover:bg-white/10 transition-colors text-gray-400 hover:text-white">
-              <X size={18} />
-            </button>
+            <button onClick={() => setToast(null)} className="ml-2 p-1 rounded-lg hover:bg-white/10 transition-colors text-gray-400 hover:text-white"><X size={18} /></button>
           </div>
         </div>
       )}
 
-      {/* DELETE CONFIRMATION MODAL */}
       {deleteConfirmation.isOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
           <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-md shadow-2xl animate-in zoom-in-95 duration-200 overflow-hidden">
@@ -2068,22 +1285,12 @@ export function Clients() {
                   <p className="text-sm text-gray-400">Esta ação é irreversível.</p>
                 </div>
               </div>
-              
               <p className="text-gray-300 text-sm mb-6 bg-gray-800/50 p-3 rounded-lg border border-gray-800">
                 Tem certeza que deseja excluir o cliente <span className="font-bold text-white">{deleteConfirmation.clientName}</span> e todos os seus dados associados?
               </p>
-              
               <div className="flex gap-3 justify-end">
-                <button 
-                  onClick={() => setDeleteConfirmation({ isOpen: false, clientId: null, clientName: '' })}
-                  className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800 rounded-lg transition-colors"
-                >
-                  Cancelar
-                </button>
-                <button 
-                  onClick={confirmDelete}
-                  className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg shadow-lg shadow-red-900/20 transition-all flex items-center gap-2"
-                >
+                <button onClick={() => setDeleteConfirmation({ isOpen: false, clientId: null, clientName: '' })} className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white hover:bg-gray-800 rounded-lg transition-colors">Cancelar</button>
+                <button onClick={confirmDelete} className="px-4 py-2 text-sm font-medium text-white bg-red-600 hover:bg-red-700 rounded-lg shadow-lg shadow-red-900/20 transition-all flex items-center gap-2">
                   <Trash2 size={16} /> Confirmar Exclusão
                 </button>
               </div>
