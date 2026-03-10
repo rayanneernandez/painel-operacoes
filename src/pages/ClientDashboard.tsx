@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
-  Globe, Activity, Clock, Building2, ChevronRight, ChevronDown,
+  Globe, Clock, Building2, ChevronRight, ChevronDown,
   LayoutGrid, Users, BarChart2, Image, Upload, Calendar
 } from 'lucide-react';
 
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 import supabase from '../lib/supabase';
+
+// ── Module-level rebuild lock ─────────────────────────────────────────────────
+// useRef resets on every remount (React StrictMode mounts twice in dev).
+// This Set lives outside the component so it survives remounts.
+const _rebuilding = new Set<string>(); // key = `${client_id}:${startDay}:${endDay}`
 
 type CameraType = {
   id: string; name: string; status: 'online' | 'offline';
@@ -66,6 +71,7 @@ export function ClientDashboard() {
   const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
   const [avgVisitorsPerDay, setAvgVisitorsPerDay] = useState(0);
   const [avgVisitSeconds, setAvgVisitSeconds] = useState(0);
+  const [avgAge, setAvgAge] = useState<number | null>(null);
   const [genderStats, setGenderStats] = useState<{ label: string; value: number }[]>([]);
   const [attributeStats, setAttributeStats] = useState<{ label: string; value: number }[]>([]);
   const [ageStats, setAgeStats] = useState<{ age: string; m: number; f: number }[]>([]);
@@ -105,6 +111,30 @@ export function ClientDashboard() {
     setTotalVisitors(rollup.total_visitors ?? 0);
     setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
     setAvgVisitSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
+
+    const agePctForAvg: Record<string, number> = rollup.age_pyramid_percent ?? {};
+    const midpoints: Record<string, number> = {
+      '0-9': 4.5,
+      '10-17': 13.5,
+      '18-24': 21,
+      '25-34': 29.5,
+      '35-44': 39.5,
+      '45-54': 49.5,
+      '55-64': 59.5,
+      '65-74': 69.5,
+      '75+': 80,
+    };
+    let wSum = 0;
+    let pSum = 0;
+    Object.entries(agePctForAvg).forEach(([bucket, pct]) => {
+      const mp = midpoints[bucket];
+      if (mp === undefined) return;
+      const p = Number(pct);
+      if (!Number.isFinite(p) || p <= 0) return;
+      wSum += mp * p;
+      pSum += p;
+    });
+    setAvgAge(pSum > 0 ? Number((wSum / pSum).toFixed(1)) : null);
 
     const vpd: Record<string, number> = rollup.visitors_per_day ?? {};
     const days = [0, 0, 0, 0, 0, 0, 0];
@@ -158,7 +188,7 @@ export function ClientDashboard() {
     return true;
   }
 
-  // ── Load data: use rollup if available, otherwise trigger background rebuild ─
+  // ── Load data: read rollup from DB (instant), rebuild if missing ─────────────
   const loadData = useCallback(async () => {
     if (!id) return;
     setIsLoadingData(true);
@@ -169,7 +199,7 @@ export function ClientDashboard() {
       const startDay = startIso.slice(0, 10);
       const endDay   = endIso.slice(0, 10);
 
-      // 1. Try to find an existing valid rollup in DB (instant)
+      // 1. Try rollup from DB first (instant)
       const { data: rollups } = await supabase
         .from('visitor_analytics_rollups')
         .select('*')
@@ -189,52 +219,56 @@ export function ClientDashboard() {
         return;
       }
 
-      // 2. No rollup — show zeros immediately so UI is not blocked,
-      //    then trigger rebuild in background (does NOT lock the sync button).
+      // 2. No rollup — unblock UI immediately with zeros
       console.log('[Dashboard] Sem rollup — acionando rebuild em background...');
       setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-      setAvgVisitorsPerDay(0); setAvgVisitSeconds(0);
+      setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAge(null);
       setGenderStats([]); setAttributeStats([]); setAgeStats([]);
-      setIsLoadingData(false); // ✅ unblock UI immediately
+      setIsLoadingData(false);
 
-      // Fire-and-forget rebuild — updates dashboard when done
-      setSyncMessage('Reconstruindo dados do banco...');
-      fetch('/api/sync-analytics', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_id: id,
-          start: startIso,
-          end: endIso,
-          rebuild_rollup: true,
-          ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
-        }),
-      })
-        .then((r) => r.ok ? r.json() : null)
-        .then((json) => {
-          if (json?.dashboard) {
-            console.log(`[Dashboard] Rebuild concluído ✅ (${json.dashboard.total_visitors} visitantes)`);
-            applyRollup({
-              total_visitors:         json.dashboard.total_visitors,
-              avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
-              avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-              visitors_per_day:       json.dashboard.visitors_per_day,
-              visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
-              gender_percent:         json.dashboard.gender_percent,
-              attributes_percent:     json.dashboard.attributes_percent,
-              age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-            });
-            setSyncMessage(`✅ ${json.dashboard.total_visitors.toLocaleString()} visitantes carregados.`);
-          } else {
-            setSyncMessage('');
-          }
-        })
-        .catch((err) => {
-          console.warn('[Dashboard] Rebuild falhou:', err);
-          setSyncMessage('');
+      // ✅ Module-level lock — survives React StrictMode double-mount
+      const rebuildKey = `${id}:${startDay}:${endDay}`;
+      if (_rebuilding.has(rebuildKey)) return;
+      _rebuilding.add(rebuildKey);
+      setSyncMessage('Calculando dados do banco...');
+
+      try {
+        const resp = await fetch('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: id,
+            start: startIso,
+            end: endIso,
+            rebuild_rollup: true,
+            ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
+          }),
         });
+        const json = resp.ok ? await resp.json() : null;
+        if (json?.dashboard) {
+          console.log(`[Dashboard] Rebuild ✅ ${json.dashboard.total_visitors} visitantes`);
+          applyRollup({
+            total_visitors:         json.dashboard.total_visitors,
+            avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
+            avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+            visitors_per_day:       json.dashboard.visitors_per_day,
+            visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
+            gender_percent:         json.dashboard.gender_percent,
+            attributes_percent:     json.dashboard.attributes_percent,
+            age_pyramid_percent:    json.dashboard.age_pyramid_percent,
+          });
+          setSyncMessage(`✅ ${json.dashboard.total_visitors.toLocaleString()} visitantes carregados.`);
+        } else {
+          setSyncMessage('');
+        }
+      } catch (e) {
+        console.warn('[Dashboard] Rebuild falhou:', e);
+        setSyncMessage('');
+      } finally {
+        _rebuilding.delete(rebuildKey);
+      }
 
-      return; // ✅ return immediately — rebuild runs in background
+      return;
 
     } catch (err) {
       console.error('[Dashboard] Erro ao carregar dados:', err);
@@ -335,6 +369,7 @@ export function ClientDashboard() {
     ]);
     if (latest) setLastUpdate(latest);
   }
+  void processRawRows;
 
   // ── Sync from API → DB (backend does all the work) ──────────────────────────
   const syncFromApi = useCallback(async (silent = false) => {
@@ -383,23 +418,49 @@ export function ClientDashboard() {
 
         if (json?.done === true || json?.next_offset == null) {
           offset = null;
-          const displayTotal = totalInDB > 0 ? totalInDB : totalFetched;
-          setSyncMessage(`✅ ${displayTotal.toLocaleString()} registros sincronizados.`);
+          setSyncMessage(`Calculando totais...`);
 
-          if (json?.dashboard) {
-            applyRollup({
-              total_visitors:         json.dashboard.total_visitors,
-              avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
-              avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-              visitors_per_day:       json.dashboard.visitors_per_day,
-              visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
-              gender_percent:         json.dashboard.gender_percent,
-              attributes_percent:     json.dashboard.attributes_percent,
-              age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-            });
+          // ✅ Rebuild rollup after sync — but only if not already rebuilding
+          const _startDay = selectedStartDate.toISOString().slice(0, 10);
+          const _endDay = selectedEndDate.toISOString().slice(0, 10);
+          const rebuildKey2 = `${id}:${_startDay}:${_endDay}`;
+          if (_rebuilding.has(rebuildKey2)) {
+            setSyncMessage(`✅ Sincronização concluída.`);
           } else {
+          try {
+            const rebuildResp = await fetch('/api/sync-analytics', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                client_id: id,
+                start: selectedStartDate.toISOString(),
+                end: selectedEndDate.toISOString(),
+                rebuild_rollup: true,
+                ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
+              }),
+            });
+            const rebuildJson = rebuildResp.ok ? await rebuildResp.json() : null;
+            if (rebuildJson?.dashboard) {
+              applyRollup({
+                total_visitors:         rebuildJson.dashboard.total_visitors,
+                avg_visitors_per_day:   rebuildJson.dashboard.avg_visitors_per_day,
+                avg_visit_time_seconds: rebuildJson.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+                visitors_per_day:       rebuildJson.dashboard.visitors_per_day,
+                visitors_per_hour_avg:  rebuildJson.dashboard.visitors_per_hour_avg,
+                gender_percent:         rebuildJson.dashboard.gender_percent,
+                attributes_percent:     rebuildJson.dashboard.attributes_percent,
+                age_pyramid_percent:    rebuildJson.dashboard.age_pyramid_percent,
+              });
+              setSyncMessage(`✅ ${rebuildJson.dashboard.total_visitors.toLocaleString()} visitantes sincronizados.`);
+            } else {
+              setSyncMessage(`✅ ${totalFetched.toLocaleString()} registros importados.`);
+              await loadData();
+            }
+          } catch {
+            setSyncMessage(`✅ Sincronização concluída.`);
             await loadData();
           }
+          } // end else _rebuilding
         } else {
           offset = Number(json.next_offset);
           const displayTotal = totalInDB > 0 ? totalInDB : totalFetched;
@@ -417,28 +478,23 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  // ── On mount / filter change: load DB first, then sync ──────────────────────
+  // ── On mount / filter change: load from DB/rollup only ──────────────────────
+  // ✅ NO auto-sync: syncFromApi is only called when user clicks "Sincronizar"
+  // This prevents 429 Too Many Requests on the external API.
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      await loadData();
-      if (!cancelled) {
-        syncFromApi(true);
-      }
-    })();
-    return () => { cancelled = true; };
+    loadData();
   }, [loadData]);
 
-  // ── Auto-refresh every 5 min ──────────────────────────────────────────────
+  // ── Auto-refresh: only reload rollup from DB every 5 min (no external API calls) ──
   useEffect(() => {
     if (!id) return;
     const t = setInterval(() => {
       if (!syncingRef.current && document.visibilityState === 'visible') {
-        syncFromApi(true);
+        loadData(); // reads rollup from DB only — no external API
       }
     }, 5 * 60 * 1000);
     return () => clearInterval(t);
-  }, [id, syncFromApi]);
+  }, [id, loadData]);
 
   // ── Fetch client info, stores, api config ─────────────────────────────────
   useEffect(() => {
@@ -516,7 +572,7 @@ export function ClientDashboard() {
     { label: 'Total Visitantes', value: totalVisitors.toLocaleString(), icon: Users },
     { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(), icon: BarChart2 },
     { label: 'Tempo Médio Visita', value: formatDuration(avgVisitSeconds), icon: Clock },
-    { label: 'Taxa Conversão', value: '0%', icon: Activity },
+    { label: 'Idade Média', value: avgAge == null ? '-' : `${avgAge.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} anos`, icon: Users },
   ];
 
   const clientName = clientData?.name || 'Carregando...';
@@ -659,7 +715,7 @@ export function ClientDashboard() {
               disabled={isSyncing}
               className="flex items-center justify-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-500 transition-colors w-full sm:w-auto disabled:opacity-60"
             >
-              <Activity size={16} className={isSyncing ? 'animate-pulse' : ''} />
+              <Upload size={16} className={isSyncing ? 'animate-pulse' : ''} />
               <span className="text-sm">{isSyncing ? 'Sincronizando...' : 'Sincronizar'}</span>
             </button>
           </div>

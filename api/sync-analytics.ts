@@ -291,9 +291,14 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   };
 }
 
+// Server-side lock: prevents concurrent rebuild_rollup for the same client+period
+// (Vercel functions share memory within the same instance)
+const _serverRebuilding = new Set<string>();
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") return bad(res, 405, { error: "Method Not Allowed" });
+
 
     const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup } = (req.body as any) ?? {};
 
@@ -356,52 +361,116 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const deviceNums = Array.isArray(devices) ? (devices as any[]).map(Number).filter(Number.isFinite) : [];
 
-    // ── rebuild_rollup: read ALL rows from DB in pages, build rollup, return ─────
-    // This path NEVER calls the external API — it only reads existing DB data.
-    // Safe to call anytime without risk of hitting API rate limits.
+    // ── rebuild_rollup: uses SQL function (SECURITY DEFINER) — bypasses RLS ─────
+    // The SQL function build_visitor_rollup() runs as postgres owner, ignoring RLS.
+    // It aggregates all data server-side in one query — no row pagination needed.
+    // Create the function first by running create_rollup_function.sql in Supabase.
     if (rebuild_rollup === true) {
-      console.log(`[rebuild_rollup] Iniciando para client=${client_id} período ${rangeStart} → ${rangeEnd}`);
-      const existingRows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
-      console.log(`[rebuild_rollup] Total lido do banco: ${existingRows.length}`);
+      const lockKey = `${client_id}:${rangeStart}:${rangeEnd}`;
 
-      if (existingRows.length > 0) {
-        const rollupRow = buildRollup(existingRows, client_id, rangeStart, rangeEnd);
-        const { error: rollupErr } = await supabase
+      // If another request is already rebuilding for same client+period, return early
+      if (_serverRebuilding.has(lockKey)) {
+        console.log(`[rebuild_rollup] Já em andamento para client=${client_id}, ignorando chamada duplicada`);
+        // Return the existing rollup from DB if available
+        const { data: existing } = await supabase
           .from("visitor_analytics_rollups")
-          .upsert(rollupRow, { onConflict: "client_id,start,end" });
-        if (rollupErr) console.error("[rebuild_rollup] Erro ao salvar rollup:", rollupErr);
-        else console.log(`[rebuild_rollup] Rollup salvo ✅ total_visitors=${rollupRow.total_visitors}`);
-
-        return ok(res, {
-          message: "Rollup recalculado do banco",
-          start: rangeStart, end: rangeEnd,
-          externalFetched: 0,
-          raw_upserted_new: 0,
-          total_in_db: existingRows.length,
-          next_offset: null,
-          done: true,
-          dashboard: {
-            total_visitors: rollupRow.total_visitors,
-            avg_visitors_per_day: rollupRow.avg_visitors_per_day,
-            visitors_per_day: rollupRow.visitors_per_day,
-            visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
-            gender_percent: rollupRow.gender_percent,
-            attributes_percent: rollupRow.attributes_percent,
-            age_pyramid_percent: rollupRow.age_pyramid_percent,
-            avg_times_seconds: {
-              avg_visit_time_seconds: rollupRow.avg_visit_time_seconds,
-              avg_dwell_time_seconds: rollupRow.avg_dwell_time_seconds,
+          .select("*")
+          .eq("client_id", client_id)
+          .order("updated_at", { ascending: false })
+          .limit(1);
+        if (existing?.[0]) {
+          const r = existing[0];
+          return ok(res, {
+            message: "Rebuild em andamento — retornando rollup existente",
+            start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0,
+            total_in_db: r.total_visitors, next_offset: null, done: true,
+            dashboard: {
+              total_visitors: r.total_visitors, avg_visitors_per_day: r.avg_visitors_per_day,
+              visitors_per_day: r.visitors_per_day, visitors_per_hour_avg: r.visitors_per_hour_avg,
+              gender_percent: r.gender_percent, attributes_percent: r.attributes_percent,
+              age_pyramid_percent: r.age_pyramid_percent,
+              avg_times_seconds: { avg_visit_time_seconds: r.avg_visit_time_seconds, avg_dwell_time_seconds: null },
             },
-          },
-          stored_rollup: !rollupErr,
+            stored_rollup: true,
+          });
+        }
+        return ok(res, { message: "Rebuild em andamento", done: false, next_offset: null });
+      }
+
+      _serverRebuilding.add(lockKey);
+      console.log(`[rebuild_rollup] Chamando função SQL para client=${client_id}`);
+
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
+        p_client_id: client_id,
+        p_start:     rangeStart,
+        p_end:       rangeEnd,
+      });
+
+      if (rpcErr) {
+        console.error("[rebuild_rollup] RPC error:", rpcErr);
+        _serverRebuilding.delete(lockKey);
+        return bad(res, 500, { error: "Erro ao calcular rollup via SQL", details: rpcErr });
+      }
+
+      const stats = rpcData as any;
+      const totalVisitors = Number(stats?.total_visitors ?? 0);
+      console.log(`[rebuild_rollup] Total via SQL: ${totalVisitors}`);
+
+      if (totalVisitors === 0) {
+        return ok(res, {
+          message: "Sem dados no banco para o período informado",
+          start: rangeStart, end: rangeEnd,
+          externalFetched: 0, raw_upserted_new: 0,
+          total_in_db: 0, next_offset: null, done: true,
+          dashboard: null, stored_rollup: false,
         });
       }
+
+      // Build rollup row from SQL results and save to cache table
+      const daysInRange = Math.max(1, Math.ceil((Date.parse(rangeEnd) - Date.parse(rangeStart)) / 86400000));
+      const rollupRow = {
+        client_id,
+        start: rangeStart,
+        end:   rangeEnd,
+        total_visitors:           totalVisitors,
+        avg_visitors_per_day:     stats.avg_visitors_per_day ?? 0,
+        visitors_per_day:         stats.visitors_per_day ?? {},
+        visitors_per_hour_avg:    stats.visitors_per_hour_avg ?? {},
+        age_pyramid_percent:      stats.age_pyramid_percent ?? {},
+        gender_percent:           stats.gender_percent ?? {},
+        attributes_percent:       stats.attributes_percent ?? {},
+        avg_visit_time_seconds:   stats.avg_visit_time_seconds ?? null,
+        avg_dwell_time_seconds:   null,
+        avg_contact_time_seconds: null,
+        updated_at: new Date().toISOString(),
+      };
+
+      const { error: saveErr } = await supabase
+        .from("visitor_analytics_rollups")
+        .upsert(rollupRow, { onConflict: "client_id,start,end" });
+      if (saveErr) console.error("[rebuild_rollup] Erro ao salvar rollup:", saveErr);
+      else console.log(`[rebuild_rollup] Rollup salvo ✅ total_visitors=${totalVisitors}`);
+
+      _serverRebuilding.delete(lockKey);
       return ok(res, {
-        message: "Sem dados no banco para o período informado",
+        message: "Rollup recalculado via SQL",
         start: rangeStart, end: rangeEnd,
         externalFetched: 0, raw_upserted_new: 0,
-        total_in_db: 0, next_offset: null, done: true,
-        dashboard: null, stored_rollup: false,
+        total_in_db: totalVisitors, next_offset: null, done: true,
+        dashboard: {
+          total_visitors:       totalVisitors,
+          avg_visitors_per_day: rollupRow.avg_visitors_per_day,
+          visitors_per_day:     rollupRow.visitors_per_day,
+          visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
+          gender_percent:       rollupRow.gender_percent,
+          attributes_percent:   rollupRow.attributes_percent,
+          age_pyramid_percent:  rollupRow.age_pyramid_percent,
+          avg_times_seconds: {
+            avg_visit_time_seconds: rollupRow.avg_visit_time_seconds,
+            avg_dwell_time_seconds: null,
+          },
+        },
+        stored_rollup: !saveErr,
       });
     }
 
@@ -483,28 +552,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const next_offset = offset === 0 ? null : offset;
     const done = next_offset === null;
 
-    // ── If no new data from API, still build rollup from existing DB rows ─────
+    // ── If no new data from API, use SQL RPC to rebuild rollup from DB ──────────
     if (combined.length === 0) {
-      const existingRows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
-      if (existingRows.length > 0) {
-        const rollupRow = buildRollup(existingRows, client_id, rangeStart, rangeEnd);
-        await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict: "client_id,start,end" });
-        return ok(res, {
-          message: "Sem dados novos na API — rollup recalculado dos dados existentes",
-          start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0,
-          total_in_db: existingRows.length, next_offset: null, done: true,
-          dashboard: {
-            total_visitors: rollupRow.total_visitors,
-            avg_visitors_per_day: rollupRow.avg_visitors_per_day,
-            visitors_per_day: rollupRow.visitors_per_day,
-            visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
-            gender_percent: rollupRow.gender_percent,
-            attributes_percent: rollupRow.attributes_percent,
-            age_pyramid_percent: rollupRow.age_pyramid_percent,
-            avg_times_seconds: { avg_visit_time_seconds: rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds: rollupRow.avg_dwell_time_seconds },
-          },
-          stored_rollup: true,
-        });
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
+        p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd,
+      });
+      if (!rpcErr && rpcData) {
+        const stats = rpcData as any;
+        const totalVisitors = Number(stats?.total_visitors ?? 0);
+        if (totalVisitors > 0) {
+          const rollupRow = {
+            client_id, start: rangeStart, end: rangeEnd,
+            total_visitors: totalVisitors,
+            avg_visitors_per_day: stats.avg_visitors_per_day ?? 0,
+            visitors_per_day: stats.visitors_per_day ?? {},
+            visitors_per_hour_avg: stats.visitors_per_hour_avg ?? {},
+            age_pyramid_percent: stats.age_pyramid_percent ?? {},
+            gender_percent: stats.gender_percent ?? {},
+            attributes_percent: stats.attributes_percent ?? {},
+            avg_visit_time_seconds: stats.avg_visit_time_seconds ?? null,
+            avg_dwell_time_seconds: null, avg_contact_time_seconds: null,
+            updated_at: new Date().toISOString(),
+          };
+          await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict: "client_id,start,end" });
+          return ok(res, {
+            message: "Sem dados novos na API — rollup recalculado via SQL",
+            start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0,
+            total_in_db: totalVisitors, next_offset: null, done: true,
+            dashboard: {
+              total_visitors: totalVisitors,
+              avg_visitors_per_day: rollupRow.avg_visitors_per_day,
+              visitors_per_day: rollupRow.visitors_per_day,
+              visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
+              gender_percent: rollupRow.gender_percent,
+              attributes_percent: rollupRow.attributes_percent,
+              age_pyramid_percent: rollupRow.age_pyramid_percent,
+              avg_times_seconds: { avg_visit_time_seconds: rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds: null },
+            },
+            stored_rollup: true,
+          });
+        }
       }
       return ok(res, { message: "Sem dados no período informado", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
     }
@@ -520,39 +607,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       else upserted += data?.length ?? 0;
     }
 
-    // ── Read ALL rows from DB (paginated) for accurate rollup ─────────────────
-    // ✅ Only rebuild rollup when this is the final page (done=true) to avoid
-    // partial rollups being saved and cached by the dashboard.
-    let rollupRow: ReturnType<typeof buildRollup> | null = null;
-    let rollupErr: any = null;
-
-    if (done) {
-      const allRows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
-      console.log(`[Rollup] Linhas no banco para o período: ${allRows.length}`);
-      rollupRow = buildRollup(allRows, client_id, rangeStart, rangeEnd);
-      const { error: re } = await supabase.from("visitor_analytics_rollups")
-        .upsert(rollupRow, { onConflict: "client_id,start,end" });
-      rollupErr = re;
-      if (rollupErr) console.error("Rollup save error:", rollupErr);
-    }
-
+    // ── After upserting new rows, return done status ─────────────────────────
+    // ✅ We do NOT rebuild the rollup here — the dashboard will call rebuild_rollup
+    // separately after all pages are done. This avoids double DB reads and timeouts.
     return ok(res, {
       message: done ? "Sincronização concluída" : "Sincronização parcial — continue chamando",
       start: rangeStart, end: rangeEnd,
       externalFetched: combined.length, raw_upserted_new: upserted,
-      total_in_db: rollupRow?.total_visitors ?? null,
+      total_in_db: null,
       next_offset, done,
-      dashboard: rollupRow ? {
-        total_visitors: rollupRow.total_visitors,
-        avg_visitors_per_day: rollupRow.avg_visitors_per_day,
-        visitors_per_day: rollupRow.visitors_per_day,
-        visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
-        gender_percent: rollupRow.gender_percent,
-        attributes_percent: rollupRow.attributes_percent,
-        age_pyramid_percent: rollupRow.age_pyramid_percent,
-        avg_times_seconds: { avg_visit_time_seconds: rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds: rollupRow.avg_dwell_time_seconds },
-      } : null,
-      stored_rollup: rollupRow ? !rollupErr : false,
+      dashboard: null,
+      stored_rollup: false,
     });
   } catch (err: any) {
     console.error("Erro inesperado:", err);

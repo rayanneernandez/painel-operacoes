@@ -1,4 +1,4 @@
-import supabase from '../lib/supabase';
+import supabase from '@/lib/supabase';
 
 export type LogAction = 'LOGIN' | 'CREATE' | 'UPDATE' | 'DELETE' | 'VIEW';
 export type LogScope = 'network' | 'store' | 'user' | 'system';
