@@ -144,9 +144,9 @@ export function Reports() {
                 onChange={(e) => setSelectedStore(e.target.value)}
                 className="bg-gray-950 border border-gray-800 text-white rounded-lg px-4 py-2 outline-none focus:border-indigo-500 min-w-[200px]"
               >
-                <option value="" disabled className="bg-white text-gray-900">Selecione uma loja...</option>
+                <option value="" disabled style={{ backgroundColor: '#111827', color: '#9CA3AF' }}>Selecione uma loja...</option>
                 {stores.map(store => (
-                  <option key={store.id} value={store.name} className="bg-white text-gray-900">{store.name}</option>
+                  <option key={store.id} value={store.name} style={{ backgroundColor: '#111827', color: 'white' }}>{store.name}</option>
                 ))}
               </select>
             </div>

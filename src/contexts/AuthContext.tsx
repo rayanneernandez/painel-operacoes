@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import supabase from '../lib/supabase';
 import { AuthUser, UserRole } from '../types';
+import { logService } from '../services/logService';
 
 interface AuthContextType {
   user: AuthUser | null;
@@ -19,7 +20,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const savedUser = localStorage.getItem('auth_user');
     if (savedUser) {
-      setUser(JSON.parse(savedUser));
+      const parsed = JSON.parse(savedUser);
+      // Ensure permissions exist for clients if missing in cache
+      if (parsed.role === 'client' && !parsed.permissions) {
+        parsed.permissions = {
+          view_dashboard: true,
+          view_reports: false,
+          view_analytics: false,
+          export_data: false,
+          manage_settings: false
+        };
+      }
+      setUser(parsed);
     }
     setIsLoading(false);
   }, []);
@@ -44,12 +56,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       // Map Supabase user to AuthUser type
+      const defaultPermissions = {
+        view_dashboard: true,
+        view_reports: false,
+        view_analytics: false,
+        export_data: false,
+        manage_settings: false
+      };
+
+      // Se for admin, tem tudo. Se for cliente, usa o que tá no banco ou default.
+      const userPermissions = data.role === 'admin' 
+        ? {
+            view_dashboard: true,
+            view_reports: true,
+            view_analytics: true,
+            export_data: true,
+            manage_settings: true
+          }
+        : { ...defaultPermissions, ...(data.permissions || {}) };
+
       const newUser: AuthUser = {
         id: data.id,
         name: data.name,
         email: data.email,
         role: data.role as UserRole, // Ensure database role matches 'admin' | 'client'
-        clientId: data.client_id || undefined
+        clientId: data.client_id || undefined,
+        permissions: userPermissions
       };
 
       setUser(newUser);
@@ -60,6 +92,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         .from('users')
         .update({ last_login: new Date().toISOString() })
         .eq('id', data.id);
+
+      // Log Login Action
+      await logService.logAction(
+        data.email,
+        'LOGIN',
+        `Usuário ${data.email} realizou login com sucesso.`,
+        'network',
+        'Sistema',
+        { userId: data.id, role: data.role }
+      );
 
     } catch (err) {
       console.error('Login error:', err);

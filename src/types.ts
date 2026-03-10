@@ -82,4 +82,11 @@ export type AuthUser = {
   email: string;
   role: UserRole;
   clientId?: string; // If role is client
+  permissions?: {
+    view_dashboard: boolean;
+    view_reports: boolean;
+    view_analytics: boolean;
+    export_data: boolean;
+    manage_settings: boolean;
+  };
 };

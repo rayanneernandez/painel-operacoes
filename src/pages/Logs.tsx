@@ -1,18 +1,52 @@
-import { useState } from 'react';
-import { History, Search, Filter, Globe, Building2, ArrowRight, ShieldCheck, ShieldAlert, Clock, Download } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { History, Search, Filter, Globe, Building2, ArrowRight, ShieldCheck, ShieldAlert, Clock, Download, RefreshCw } from 'lucide-react';
+import { logService } from '../services/logService';
+import supabase from '../lib/supabase';
 
 export function Logs() {
   const [scope, setScope] = useState<'network' | 'store'>('network');
   const [selectedStore, setSelectedStore] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const stores: { id: string; name: string }[] = [];
+  const [stores, setStores] = useState<{ id: string; name: string }[]>([]);
 
-  // Mock data for logs
-  const allLogs: any[] = [];
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  const fetchData = async () => {
+    setLoading(true);
+    try {
+      // 1. Fetch Logs
+      const data = await logService.fetchLogs();
+      // Map to UI format
+      const mappedLogs = data.map((l: any) => ({
+        id: l.id,
+        user: l.user_email || 'Sistema',
+        action: l.description || l.action,
+        status: 'success', // Assume success for stored logs
+        store: l.target || (l.scope === 'network' ? 'Rede Global' : 'Loja'),
+        time: new Date(l.created_at).toLocaleString('pt-BR'),
+        ip: l.ip_address || '::1',
+        scope: l.scope
+      }));
+      setLogs(mappedLogs);
+
+      // 2. Fetch Stores for filter
+      const { data: storesData } = await supabase.from('stores').select('id, name');
+      if (storesData) setStores(storesData);
+
+    } catch (error) {
+      console.error('Erro ao buscar logs:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Filter logs based on scope and selected store
-  const filteredLogs = allLogs.filter(log => {
+  const filteredLogs = logs.filter(log => {
     // Text search filter
     const matchesSearch = log.user.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           log.action.toLowerCase().includes(searchTerm.toLowerCase());
@@ -42,6 +76,12 @@ export function Logs() {
           <p className="text-gray-400">Monitore as atividades de login e segurança em tempo real</p>
         </div>
         <div className="flex gap-3">
+          <button 
+            onClick={fetchData} 
+            className="bg-gray-800 hover:bg-gray-700 text-white font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors"
+          >
+            <RefreshCw size={18} className={loading ? "animate-spin" : ""} />
+          </button>
           <button className="bg-gray-800 hover:bg-gray-700 text-white font-medium px-4 py-2 rounded-lg flex items-center gap-2 transition-colors">
             <Download size={18} />
           </button>
@@ -82,11 +122,11 @@ export function Logs() {
               <select 
                 value={selectedStore}
                 onChange={(e) => setSelectedStore(e.target.value)}
-                className="bg-gray-950 border border-gray-800 text-white rounded-lg px-4 py-2 outline-none focus:border-indigo-500 min-w-[200px]"
+                className="bg-gray-950 border border-gray-800 text-white rounded-lg px-4 py-2 outline-none focus:border-orange-500 min-w-[200px]"
               >
-                <option value="" disabled className="bg-gray-950 text-gray-500">Selecione uma loja...</option>
+                <option value="" disabled style={{ backgroundColor: '#111827', color: '#9CA3AF' }}>Selecione uma loja...</option>
                 {stores.map(store => (
-                  <option key={store.id} value={store.name} className="bg-gray-950 text-white">{store.name}</option>
+                  <option key={store.id} value={store.name} style={{ backgroundColor: '#111827', color: 'white' }}>{store.name}</option>
                 ))}
               </select>
             </div>

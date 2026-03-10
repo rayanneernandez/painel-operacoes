@@ -1,6 +1,7 @@
-// pages/api/sync-analytics.ts
-// Vercel/Next API Route: Puxa dados da DisplayForce, grava RAW no Supabase e gera agregados do dashboard
-import type { NextApiRequest, NextApiResponse } from "next";
+// /api/sync-analytics.ts
+// Vercel Function: Puxa dados da DisplayForce, grava RAW no Supabase e gera agregados do dashboard
+
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { supabaseAdmin as supabase } from "../src/lib/supabaseAdmin";
 
@@ -21,11 +22,13 @@ type ClientApiConfig = {
   collect_headwear?: boolean;
 };
 
-function ok(res: NextApiResponse, data: any) {
-  res.status(200).json(data);
+function ok(res: VercelResponse, data: any) {
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(200).json(data);
 }
-function bad(res: NextApiResponse, status: number, data: any) {
-  res.status(status).json(data);
+function bad(res: VercelResponse, status: number, data: any) {
+  res.setHeader("Cache-Control", "no-store");
+  return res.status(status).json(data);
 }
 
 function sha256(input: string) {
@@ -47,8 +50,6 @@ function safeNumber(x: any): number | null {
 
 /**
  * Tenta inferir timestamps/duração sem depender 100% do formato.
- * - Preferência: start/end -> duração
- * - Fallbacks comuns: duration, duration_seconds, visit_time, dwell_time, contact_time
  */
 function extractTimes(visit: any): {
   startTs: string | null;
@@ -95,22 +96,19 @@ function extractTimes(visit: any): {
 }
 
 function normalizeGenderFromSex(visit: any): number {
-  // Você disse: gênero vem de "sex"
-  // Mantendo numérico: 1 male, 2 female, 0 unknown (ajuste se a DisplayForce usar outro padrão)
+  // 1 male, 2 female, 0 unknown
   if (typeof visit.sex === "number") return visit.sex;
   if (typeof visit.sex === "string") {
     const s = visit.sex.toLowerCase();
     if (s === "male" || s === "m" || s === "1") return 1;
     if (s === "female" || s === "f" || s === "2") return 2;
   }
-  // fallback
   if (visit.gender === "male") return 1;
   if (visit.gender === "female") return 2;
   return 0;
 }
 
 function bucketAge(age: number): string {
-  // pirâmide por faixa (em %)
   if (age < 0) return "unknown";
   if (age <= 9) return "0-9";
   if (age <= 17) return "10-17";
@@ -132,18 +130,58 @@ function percentMap(countMap: Record<string, number>, total: number) {
   return out;
 }
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+// ----- Normalização dos atributos (DisplayForce pode vir boolean, string, number) -----
+
+function toBool(val: any): boolean | null {
+  if (typeof val === "boolean") return val;
+  if (typeof val === "number") return val === 1 ? true : val === 0 ? false : null;
+  if (typeof val === "string") {
+    const s = val.trim().toLowerCase();
+    if (["true", "yes", "y", "1", "on"].includes(s)) return true;
+    if (["false", "no", "n", "0", "off"].includes(s)) return false;
+  }
+  return null;
+}
+
+function facialHairToBool(val: any): boolean | null {
+  // exemplos comuns: "shaved", "beard", "mustache", "none", boolean
+  const b = toBool(val);
+  if (b !== null) return b;
+
+  if (typeof val === "string") {
+    const s = val.trim().toLowerCase();
+    if (["shaved", "none", "no", "false", "0"].includes(s)) return false;
+    // qualquer descrição != shaved/none -> considera "tem"
+    if (s.length > 0) return true;
+  }
+  return null;
+}
+
+function headwearToBool(val: any): boolean | null {
+  // exemplos: "no", "yes", "cap", "hat", boolean
+  const b = toBool(val);
+  if (b !== null) return b;
+
+  if (typeof val === "string") {
+    const s = val.trim().toLowerCase();
+    if (["no", "none", "false", "0"].includes(s)) return false;
+    if (s.length > 0) return true;
+  }
+  return null;
+}
+
+export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") return bad(res, 405, { error: "Method Not Allowed" });
 
-    const { client_id, start, end, devices, auth } = req.body ?? {};
+    const { client_id, start, end, devices, auth } = (req.body as any) ?? {};
 
-    // Se você quiser travar com senha do painel:
-    // Ex: enviar { auth: "painel@2026*" } no body ou Header Authorization
+    // Auth opcional
     const authHeader = req.headers.authorization;
-    const providedAuth = authHeader?.startsWith("Bearer ")
-      ? authHeader.slice("Bearer ".length)
-      : auth;
+    const providedAuth =
+      typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+        ? authHeader.slice("Bearer ".length)
+        : auth;
 
     if (providedAuth && providedAuth !== "painel@2026*") {
       return bad(res, 401, { error: "Não autorizado" });
@@ -180,23 +218,30 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     }
 
     const cfg = apiCfg as ClientApiConfig;
-    const baseUrl = cfg.api_endpoint || "https://api.displayforce.ai";
-    const analyticsPath = cfg.analytics_endpoint || "/public/v1/stats/visitor/list";
+    const baseUrl = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
+    const analyticsPath = (cfg.analytics_endpoint || "/public/v1/stats/visitor/list").startsWith("/")
+      ? cfg.analytics_endpoint || "/public/v1/stats/visitor/list"
+      : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`;
     const analyticsUrl = `${baseUrl}${analyticsPath}`;
 
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+    };
+
+    // Preferência: header custom -> X-API-Token
     if (cfg.custom_header_key && cfg.custom_header_value) {
       headers[cfg.custom_header_key] = cfg.custom_header_value;
     } else if (cfg.api_key) {
-      headers["X-API-Token"] = cfg.api_key;
+      headers["X-API-Token"] = String(cfg.api_key).trim();
     }
 
     const now = new Date();
     const defaultStart = cfg.collection_start || new Date("2024-01-01T00:00:00Z").toISOString();
     const defaultEnd = cfg.collection_end || now.toISOString();
 
-    const rangeStart = (start || defaultStart) as string;
-    const rangeEnd = (end || defaultEnd) as string;
+    const rangeStart = String(start || defaultStart);
+    const rangeEnd = String(end || defaultEnd);
 
     const baseBody: any = {
       start: rangeStart,
@@ -215,7 +260,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       baseBody.devices = devices;
     }
 
-    // 2) Paginar na DisplayForce (mínimo de chamadas)
+    // 2) Paginar na DisplayForce
     const limit = 1000;
     let offset = 0;
     let total = 0;
@@ -223,6 +268,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     while (true) {
       const bodyPayload = { ...baseBody, limit, offset };
+
       const resp = await fetch(analyticsUrl, {
         method: "POST",
         headers,
@@ -243,6 +289,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
       if (pagePayload.length < limit || combined.length >= total) break;
       offset += limit;
+
+      // segurança para evitar loops infinitos
+      if (offset > 2_000_000) break;
     }
 
     if (combined.length === 0) {
@@ -251,8 +300,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         start: rangeStart,
         end: rangeEnd,
         totalFetched: 0,
-        inserted: 0,
-        rollup: null,
+        raw_upserted_new: 0,
+        dashboard: null,
+        stored_rollup: false,
       });
     }
 
@@ -288,10 +338,12 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         headwear: visit.headwear ?? null,
       };
 
-      // UID para evitar duplicidade (mesmo se rodar sync várias vezes)
+      // UID para evitar duplicidade
       const uidPayload = {
         client_id,
         device_id: deviceId,
+        session_id: visit.session_id ?? null,
+        visitor_id: visit.visitor_id ?? null,
         start: startTs ?? null,
         end: endTs ?? null,
         age: visit.age ?? null,
@@ -303,7 +355,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         visit_uid,
         client_id,
         device_id: deviceId,
-        timestamp: startTs, // início do evento/visita
+        timestamp: startTs, // início
         end_timestamp: endTs,
         age: typeof visit.age === "number" ? Math.round(visit.age) : null,
         gender: normalizeGenderFromSex(visit),
@@ -316,7 +368,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     });
 
     let upserted = 0;
-    const chunkSize = 200;
+    const chunkSize = 500;
 
     for (let i = 0; i < toUpsert.length; i += chunkSize) {
       const chunk = toUpsert.slice(i, i + chunkSize);
@@ -333,12 +385,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       }
     }
 
-    // 4) Gerar agregados DO DASHBOARD usando os dados já puxados (sem novas chamadas na DisplayForce)
-
-    // Total visitantes
+    // 4) Agregados do dashboard (combinado = o que veio da API nessa execução)
     const totalVisitors = combined.length;
 
-    // Datas do período para média por dia
     const startMs = Date.parse(rangeStart);
     const endMs = Date.parse(rangeEnd);
     const daysInRange =
@@ -346,13 +395,10 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         ? Math.max(1, Math.ceil((endMs - startMs + 1) / (24 * 60 * 60 * 1000)))
         : 1;
 
-    // Visitantes por dia (contagem) e média por dia
     const perDayCount: Record<string, number> = {};
-    // Visitantes por hora (total) -> depois vira média por hora no período
     const perHourTotal: Record<string, number> = {};
     for (let h = 0; h < 24; h++) perHourTotal[String(h)] = 0;
 
-    // Idade (faixa) e gênero
     const ageCounts: Record<string, number> = {
       "0-9": 0,
       "10-17": 0,
@@ -365,11 +411,9 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       "75+": 0,
       unknown: 0,
     };
-    let ageTotalValid = 0;
 
     const genderCounts: Record<string, number> = { male: 0, female: 0, unknown: 0 };
 
-    // Atributos (percentual sobre os que têm valor conhecido)
     const attrCounts: Record<string, Record<string, number>> = {
       glasses: { true: 0, false: 0, unknown: 0 },
       facial_hair: { true: 0, false: 0, unknown: 0 },
@@ -377,13 +421,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       hair_color: {},
       hair_type: {},
     };
+
     let glassesKnown = 0;
     let facialHairKnown = 0;
     let headwearKnown = 0;
     let hairColorKnown = 0;
     let hairTypeKnown = 0;
 
-    // Médias de tempo separadas
     let sumVisitTime = 0;
     let cntVisitTime = 0;
 
@@ -396,13 +440,13 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     for (const visit of combined) {
       const { startTs, visitTimeSeconds, dwellTimeSeconds, contactTimeSeconds } = extractTimes(visit);
 
-      // dia/hora
       if (startTs) {
         const d = new Date(startTs);
         if (!Number.isNaN(d.getTime())) {
           const dayKey = asISODateUTC(d);
           perDayCount[dayKey] = (perDayCount[dayKey] ?? 0) + 1;
 
+          // UTC (pra não variar por fuso)
           const hour = d.getUTCHours();
           perHourTotal[String(hour)] = (perHourTotal[String(hour)] ?? 0) + 1;
         }
@@ -412,37 +456,36 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       if (typeof visit.age === "number" && Number.isFinite(visit.age)) {
         const b = bucketAge(Math.round(visit.age));
         ageCounts[b] = (ageCounts[b] ?? 0) + 1;
-        ageTotalValid += 1;
       } else {
         ageCounts.unknown += 1;
       }
 
-      // gênero via sex
+      // gênero
       const g = normalizeGenderFromSex(visit);
       if (g === 1) genderCounts.male += 1;
       else if (g === 2) genderCounts.female += 1;
       else genderCounts.unknown += 1;
 
-      // atributos
-      const gl = visit.glasses;
-      if (typeof gl === "boolean") {
-        attrCounts.glasses[String(gl)] += 1;
+      // atributos normalizados
+      const glb = toBool(visit.glasses);
+      if (glb !== null) {
+        attrCounts.glasses[String(glb)] += 1;
         glassesKnown += 1;
       } else {
         attrCounts.glasses.unknown += 1;
       }
 
-      const fh = visit.facial_hair;
-      if (typeof fh === "boolean") {
-        attrCounts.facial_hair[String(fh)] += 1;
+      const fhb = facialHairToBool(visit.facial_hair);
+      if (fhb !== null) {
+        attrCounts.facial_hair[String(fhb)] += 1;
         facialHairKnown += 1;
       } else {
         attrCounts.facial_hair.unknown += 1;
       }
 
-      const hw = visit.headwear;
-      if (typeof hw === "boolean") {
-        attrCounts.headwear[String(hw)] += 1;
+      const hwb = headwearToBool(visit.headwear);
+      if (hwb !== null) {
+        attrCounts.headwear[String(hwb)] += 1;
         headwearKnown += 1;
       } else {
         attrCounts.headwear.unknown += 1;
@@ -477,24 +520,21 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     const avgVisitorsPerDay = Number((totalVisitors / daysInRange).toFixed(2));
 
-    // Média por hora = total daquela hora / número de dias do período
     const perHourAvg: Record<string, number> = {};
     for (let h = 0; h < 24; h++) {
       const key = String(h);
       perHourAvg[key] = Number(((perHourTotal[key] ?? 0) / daysInRange).toFixed(2));
     }
 
-    // Pirâmide etária em % (sobre total visitantes)
     const agePercent = percentMap(ageCounts, totalVisitors);
-
-    // Gênero em %
     const genderPercent = percentMap(genderCounts, totalVisitors);
 
-    // Atributos em %
     const attributesPercent = {
       glasses: glassesKnown > 0 ? percentMap({ true: attrCounts.glasses.true, false: attrCounts.glasses.false }, glassesKnown) : {},
       facial_hair:
-        facialHairKnown > 0 ? percentMap({ true: attrCounts.facial_hair.true, false: attrCounts.facial_hair.false }, facialHairKnown) : {},
+        facialHairKnown > 0
+          ? percentMap({ true: attrCounts.facial_hair.true, false: attrCounts.facial_hair.false }, facialHairKnown)
+          : {},
       headwear:
         headwearKnown > 0 ? percentMap({ true: attrCounts.headwear.true, false: attrCounts.headwear.false }, headwearKnown) : {},
       hair_color: hairColorKnown > 0 ? percentMap(attrCounts.hair_color, hairColorKnown) : {},
@@ -505,7 +545,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     const avgDwellTimeSeconds = cntDwellTime > 0 ? Number((sumDwellTime / cntDwellTime).toFixed(2)) : null;
     const avgContactTimeSeconds = cntContactTime > 0 ? Number((sumContactTime / cntContactTime).toFixed(2)) : null;
 
-    // 5) Salvar snapshot do rollup (upsert)
+    // 5) Salvar rollup
     const rollupRow = {
       client_id,
       start: rangeStart,
@@ -529,8 +569,6 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     if (rollupErr) console.error("Erro ao salvar rollup:", rollupErr);
 
-    // 6) Resposta pronta pro dashboard
-    // Você pediu para “tirar contato”: então devolvo também sem contato em um bloco “dashboard”
     return ok(res, {
       message: "Sincronização concluída",
       start: rangeStart,
@@ -540,15 +578,15 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
       dashboard: {
         total_visitors: totalVisitors,
         avg_visitors_per_day: avgVisitorsPerDay,
-        visitors_per_day: perDayCount, // para gráfico diário
-        visitors_per_hour_avg: perHourAvg, // para gráfico por hora (média no período)
-        age_pyramid_percent: agePercent, // pirâmide em %
-        gender_percent: genderPercent, // gênero em %
-        attributes_percent: attributesPercent, // óculos/barba/boné + tipo/cor de cabelo em %
+        visitors_per_day: perDayCount,
+        visitors_per_hour_avg: perHourAvg,
+        age_pyramid_percent: agePercent,
+        gender_percent: genderPercent,
+        attributes_percent: attributesPercent,
         avg_times_seconds: {
           avg_visit_time_seconds: avgVisitTimeSeconds,
           avg_dwell_time_seconds: avgDwellTimeSeconds,
-          // avg_contact_time_seconds propositalmente omitido do “dashboard” se você quer tirar contato
+          // avg_contact_time_seconds omitido aqui se você não quer mostrar
         },
       },
       stored_rollup: !rollupErr,

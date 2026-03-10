@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, CheckCircle2, Activity, Camera, ShieldAlert } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
+import { logService } from '../services/logService';
 import supabase from '../lib/supabase';
 const ENV_DF_TOKEN = (import.meta.env.VITE_DISPLAYFORCE_TOKEN as string | undefined) || '';
 
@@ -29,6 +31,7 @@ type Client = {
   color: string;
   stores?: Store[];
   logo_url?: string;
+  entry_date?: string;
 };
 
 type Device = {
@@ -52,6 +55,7 @@ type Store = {
 
 export function Clients() {
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [activeMenu, setActiveMenu] = useState<string | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
@@ -70,7 +74,8 @@ export function Clients() {
     status: 'active' as 'active' | 'inactive' | 'pending',
     plan: 'basic' as 'enterprise' | 'pro' | 'basic',
     notes: '',
-    logo_url: ''
+    logo_url: '',
+    entryDate: ''
   });
 
   const [logoFile, setLogoFile] = useState<File | null>(null);
@@ -104,8 +109,8 @@ export function Clients() {
 
   // State for managing stores in the modal
   const [editingStores, setEditingStores] = useState<Store[]>([]);
-  const [newStoreName, setNewStoreName] = useState('');
-  const [newStoreCity, setNewStoreCity] = useState('');
+  // const [newStoreName, setNewStoreName] = useState('');
+  // const [newStoreCity, setNewStoreCity] = useState('');
 
   // Toast State
   const [toast, setToast] = useState<{ message: string, type: 'success' | 'error' } | null>(null);
@@ -116,7 +121,7 @@ export function Clients() {
   };
 
   // State for manual device addition
-  const [newDeviceName, setNewDeviceName] = useState('');
+  // const [newDeviceName, setNewDeviceName] = useState('');
 
   // Data for client stores
   const getClientStores = (clientId: string): Store[] => {
@@ -127,26 +132,49 @@ export function Clients() {
   const fetchClients = async () => {
     try {
       setLoading(true);
-      const { data: clientsData, error } = await supabase
+      const { data: clientsData, error: clientsError } = await supabase
         .from('clients')
         .select('*');
 
-      const { data: storesData } = await supabase
+      const { data: storesData, error: storesError } = await supabase
         .from('stores')
-        .select('id, name, city, client_id');
+        .select('id, name, city, client_id')
+        .range(0, 9999);
 
-      const { data: devicesData } = await supabase
-        .from('devices')
-        .select('id, name, type, mac_address, status, store_id');
+      if (storesData) {
+        console.log(`DEBUG: Total de lojas carregadas do banco: ${storesData.length}`);
+      }
       
-      if (error) throw error;
+      const { data: devicesData, error: devicesError } = await supabase
+        .from('devices')
+        .select('id, name, type, mac_address, status, store_id')
+        .range(0, 9999);
+      
+      if (clientsError) throw clientsError;
+      if (storesError) console.error('Error fetching stores:', storesError);
+      if (devicesError) console.error('Error fetching devices:', devicesError);
 
       if (clientsData) {
         const devicesByStore: Record<string, any[]> = {};
         (devicesData || []).forEach((d: any) => {
           const sid = d.store_id;
           if (!devicesByStore[sid]) devicesByStore[sid] = [];
-          devicesByStore[sid].push({ id: d.id, name: d.name, type: d.type, macAddress: d.mac_address, status: d.status });
+          
+          // PREVENIR DUPLICIDADE NA EXIBIÇÃO:
+          // Verificar se já existe dispositivo com este MAC nesta loja
+          const exists = devicesByStore[sid].some(
+             (existing: any) => existing.macAddress === d.mac_address
+          );
+
+          if (!exists) {
+              devicesByStore[sid].push({ 
+                  id: d.id, 
+                  name: d.name, 
+                  type: d.type, 
+                  macAddress: d.mac_address, 
+                  status: d.status 
+              });
+          }
         });
 
         const storesByClient: Record<string, any[]> = {};
@@ -371,22 +399,13 @@ export function Clients() {
         // Encontrar dispositivos que pertencem a esta pasta (Loja)
         // A API retorna 'parent_id' no dispositivo que deve bater com o 'id' da pasta
         // IMPORTANTE: Converter para String para evitar erro de tipo (number vs string)
-        // TAMBÉM: Verificar parent_ids para encontrar dispositivos em subpastas
         const storeDevices = devices
           .filter((device: any) => {
              const fId = String(folder.id);
              const dParentId = device.parent_id ? String(device.parent_id) : 'undefined';
              
-             const directMatch = dParentId === fId;
-             // Verificar se a pasta é um ancestral do dispositivo (para subpastas)
-             const ancestorMatch = Array.isArray(device.parent_ids) && device.parent_ids.some((pid: any) => String(pid) === fId);
-             
-             // Debug específico se falhar
-             if (directMatch || ancestorMatch) {
-                 // console.log(`Device ${device.name} vinculado a Loja ${folder.name}`);
-             }
-
-             return directMatch || ancestorMatch;
+             // STRICT MATCH: Only assign device to its direct parent folder to prevent duplicates
+             return dParentId === fId;
           })
           .map((device: any) => ({
             id: String(device.id), // ID do dispositivo não é usado no insert (gera novo UUID)
@@ -471,7 +490,8 @@ export function Clients() {
       status: client.status,
       plan: client.plan,
       notes: '',
-      logo_url: client.logo_url || ''
+      logo_url: client.logo_url || '',
+      entryDate: client.entry_date ? new Date(client.entry_date).toISOString().split('T')[0] : (client.createdAt ? new Date(client.createdAt).toISOString().split('T')[0] : '')
     });
     setLogoPreview(client.logo_url || null);
     setLogoFile(null);
@@ -511,6 +531,58 @@ export function Clients() {
     setConnectionSuccess(false);
     setFetchedAnalytics([]);
 
+    // Fetch latest stores from DB to ensure we have the most up-to-date list
+    // This prevents stale state from overwriting data or causing "empty" saves
+    // Using simple query first to avoid complex join issues if any
+    
+    // 1. Fetch Stores first (without join to avoid FK errors)
+    const { data: latestStores, error: storesError } = await supabase
+      .from('stores')
+      .select('id, name, city')
+      .eq('client_id', client.id);
+
+    if (storesError) {
+      console.error('Erro ao buscar lojas atualizadas:', storesError);
+      showToast('Aviso: Não foi possível carregar as lojas atuais.', 'error');
+    }
+
+    const stores = latestStores || [];
+    const devicesByStore: Record<string, any[]> = {};
+
+    // 2. Fetch Devices separately if we have stores
+    if (stores.length > 0) {
+        const storeIds = stores.map((s: any) => s.id);
+        const { data: devicesData, error: devicesError } = await supabase
+            .from('devices')
+            .select('id, name, type, mac_address, status, store_id')
+            .in('store_id', storeIds);
+            
+        if (devicesError) {
+            console.error('Erro ao buscar dispositivos:', devicesError);
+        } else if (devicesData) {
+            // Group devices by store_id
+            devicesData.forEach((d: any) => {
+                if (!devicesByStore[d.store_id]) devicesByStore[d.store_id] = [];
+                devicesByStore[d.store_id].push(d);
+            });
+        }
+    }
+
+    const formattedStores: Store[] = stores.map((s: any) => ({
+      id: s.id,
+      name: s.name,
+      city: s.city,
+      devices: (devicesByStore[s.id] || []).map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        type: d.type,
+        macAddress: d.mac_address, // Map from DB column
+        status: d.status
+      }))
+    }));
+
+    setEditingStores(formattedStores);
+    
     // Fetch permissions
     const { data: permData } = await supabase
       .from('client_permissions')
@@ -560,7 +632,7 @@ export function Clients() {
     }
 
     setActiveTab(initialTab);
-    setEditingStores(client.stores || []);
+    // setEditingStores(client.stores || []); // Removed: We now fetch fresh data above
     setIsEditModalOpen(true);
     setActiveMenu(null);
   };
@@ -575,7 +647,8 @@ export function Clients() {
       status: 'active',
       plan: 'basic',
       notes: '',
-      logo_url: ''
+      logo_url: '',
+      entryDate: new Date().toISOString().split('T')[0]
     });
     setLogoFile(null);
     setLogoPreview(null);
@@ -613,6 +686,8 @@ export function Clients() {
     setFetchedAnalytics([]);
   };
 
+  // Unused functions for manual store management - commented out to clear warnings
+  /*
   const handleAddStore = () => {
     if (!newStoreName || !newStoreCity) return;
     const newStore: Store = {
@@ -628,10 +703,6 @@ export function Clients() {
 
   const handleRemoveStore = async (storeId: string) => {
     if (!storeId.startsWith('new-store')) {
-       // Delete from DB immediately or wait for save?
-       // For better UX/Consistency with "Save" button, we should probably mark for deletion or delete on Save.
-       // But the current logic for other items is "Save" button.
-       // However, to keep it simple and effective:
        try {
          const { error } = await supabase.from('stores').delete().eq('id', storeId);
          if (error) throw error;
@@ -655,7 +726,7 @@ export function Clients() {
       id: `new-device-${Date.now()}`,
       name: newDeviceName,
       type: 'camera',
-      macAddress: '', // Não obrigatório
+      macAddress: '', 
       status: 'online'
     };
 
@@ -677,6 +748,7 @@ export function Clients() {
       return store;
     }));
   };
+  */
 
   const [deleteConfirmation, setDeleteConfirmation] = useState<{
     isOpen: boolean;
@@ -783,7 +855,8 @@ export function Clients() {
         company: formData.company,
         status: formData.status,
         notes: formData.notes,
-        logo_url: logoUrl
+        logo_url: logoUrl,
+        entry_date: formData.entryDate ? new Date(formData.entryDate + 'T12:00:00').toISOString() : new Date().toISOString()
       };
 
       let clientData: any = null;
@@ -798,12 +871,25 @@ export function Clients() {
             company: formData.company,
             status: formData.status,
             notes: formData.notes,
-            logo_url: logoUrl
+            logo_url: logoUrl,
+            entry_date: formData.entryDate ? new Date(formData.entryDate + 'T12:00:00').toISOString() : undefined
           })
           .eq('id', selectedClient.id)
           .select()
           .single();
         clientData = data; clientError = error;
+
+        // Log Update
+        if (!clientError && user?.email) {
+          await logService.logAction(
+            user.email,
+            'UPDATE',
+            `Atualizou cliente: ${formData.name}`,
+            'network',
+            formData.name,
+            { clientId: selectedClient.id, changes: formData }
+          );
+        }
       } else {
         const { data, error } = await supabase
           .from('clients')
@@ -811,6 +897,18 @@ export function Clients() {
           .select()
           .single();
         clientData = data; clientError = error;
+
+        // Log Create
+        if (!clientError && user?.email) {
+          await logService.logAction(
+            user.email,
+            'CREATE',
+            `Criou novo cliente: ${formData.name}`,
+            'network',
+            formData.name,
+            { clientId: data.id }
+          );
+        }
       }
 
       if (clientError) throw clientError;
@@ -841,23 +939,23 @@ export function Clients() {
         client_id: clientId,
         environment: apiConfig.environment,
         auth_method: apiConfig.authMethod,
-        api_endpoint: 'https://api.displayforce.ai',
-        folder_endpoint: '/public/v1/device-folder/list',
-        device_endpoint: '/public/v1/device/list',
-        analytics_endpoint: '/public/v1/stats/visitor/list',
-        api_key: apiConfig.token,
-        custom_header_key: apiConfig.customHeaderKey,
-        custom_header_value: apiConfig.customHeaderValue,
-        documentation_url: apiConfig.docUrl,
+        api_endpoint: (apiConfig.endpoint || 'https://api.displayforce.ai').trim(),
+        folder_endpoint: (apiConfig.folderEndpoint || '/public/v1/device-folder/list').trim(),
+        device_endpoint: (apiConfig.deviceEndpoint || '/public/v1/device/list').trim(),
+        analytics_endpoint: (apiConfig.analyticsEndpoint || '/public/v1/stats/visitor/list').trim(),
+        api_key: (apiConfig.token || '').trim(),
+        custom_header_key: (apiConfig.customHeaderKey || '').trim(),
+        custom_header_value: (apiConfig.customHeaderValue || '').trim(),
+        documentation_url: (apiConfig.docUrl || '').trim(),
         collection_start: apiConfig.collectionStart || null,
         collection_end: apiConfig.collectionEnd || null,
-        collect_tracks: apiConfig.collectTracks,
-        collect_face_quality: apiConfig.collectFaceQuality,
-        collect_glasses: apiConfig.collectGlasses,
-        collect_beard: apiConfig.collectBeard,
-        collect_hair_color: apiConfig.collectHairColor,
-        collect_hair_type: apiConfig.collectHairType,
-        collect_headwear: apiConfig.collectHeadwear
+        collect_tracks: !!apiConfig.collectTracks,
+        collect_face_quality: !!apiConfig.collectFaceQuality,
+        collect_glasses: !!apiConfig.collectGlasses,
+        collect_beard: !!apiConfig.collectBeard,
+        collect_hair_color: !!apiConfig.collectHairColor,
+        collect_hair_type: !!apiConfig.collectHairType,
+        collect_headwear: !!apiConfig.collectHeadwear
       };
       const { data: apiUpd, error: apiUpdErr } = await supabase
         .from('client_api_configs')
@@ -896,61 +994,173 @@ export function Clients() {
 
       // 4. Save Stores & Devices
       
-      // PREVENIR DUPLICIDADE:
-      // Primeiro, identificar quais lojas DEVEM permanecer (as que estão na lista editingStores e possuem ID válido)
-      const validStoreIds = editingStores
-          .map(s => s.id)
-          .filter(id => !id.startsWith('new-store'));
-
-      // Buscar IDs de lojas existentes no banco para este cliente
-      const { data: currentDbStores } = await supabase
+      console.log('Iniciando salvamento de lojas. Total para salvar:', editingStores.length);
+      
+      // PREVENIR DUPLICIDADE E ID CHURN (SMART MATCH):
+      // Buscar TODAS lojas existentes no banco para este cliente (ID e NOME)
+      const { data: dbStoresData, error: dbStoresErr } = await supabase
           .from('stores')
-          .select('id')
+          .select('id, name')
           .eq('client_id', clientId);
 
-      if (currentDbStores) {
-          // Identificar lojas que estão no banco mas NÃO estão na lista atual (devem ser excluídas)
-          const idsToDelete = currentDbStores
-              .map(s => s.id)
-              .filter(id => !validStoreIds.includes(id));
+      if (dbStoresErr) {
+        console.error('Erro crítico ao buscar lojas existentes:', dbStoresErr);
+        throw new Error(`Falha ao verificar lojas existentes: ${dbStoresErr.message}`);
+      }
+
+      const dbStores = dbStoresData || [];
+      
+      // DEDUPLICAÇÃO DE BANCO (Aggressive Cleanup)
+      // Identificar duplicatas no banco (mesmo nome) e marcar para exclusão
+      const uniqueDbStoresMap = new Map<string, string>(); // Name -> ID to keep
+      const duplicateDbIds = new Set<string>();
+
+      dbStores.forEach(s => {
+          const normName = s.name.trim().toLowerCase();
+          if (uniqueDbStoresMap.has(normName)) {
+              // Já temos uma loja com esse nome. Marcar esta para exclusão.
+              duplicateDbIds.add(s.id);
+          } else {
+              uniqueDbStoresMap.set(normName, s.id);
+          }
+      });
+
+      if (duplicateDbIds.size > 0) {
+          console.warn(`Detectadas ${duplicateDbIds.size} lojas duplicadas no banco. Removendo...`);
+          const dupIds = Array.from(duplicateDbIds);
+          await supabase.from('devices').delete().in('store_id', dupIds);
+          await supabase.from('stores').delete().in('id', dupIds);
           
-          if (idsToDelete.length > 0) {
-              console.log('Removendo lojas obsoletas/duplicadas:', idsToDelete);
-              await supabase.from('stores').delete().in('id', idsToDelete);
+          // Remover do array em memória para não atrapalhar o resto da lógica
+          for (let i = dbStores.length - 1; i >= 0; i--) {
+              if (duplicateDbIds.has(dbStores[i].id)) {
+                  dbStores.splice(i, 1);
+              }
           }
       }
 
+      const validStoreIds = new Set<string>(); // IDs que confirmamos que devem existir/ser mantidos
+      
       for (const store of editingStores) {
-        const storeId = store.id.startsWith('new-store')
-          ? (typeof crypto !== 'undefined' && (crypto as any).randomUUID ? (crypto as any).randomUUID() : `${Date.now()}-${Math.random()}`)
-          : store.id;
+          let storeIdToUse = store.id;
+          let isNew = false;
+          const storeNameNorm = store.name.trim().toLowerCase();
 
-        const { data: storeData, error: storeError } = await supabase
-          .from('stores')
-          .upsert({
-             id: storeId,
-             client_id: clientId,
-             name: store.name,
-             city: store.city || 'Não informada'
-          })
-          .select()
-          .single();
-          
-        if (storeError) throw storeError;
-        
-        // Delete existing devices to sync
-        await supabase.from('devices').delete().eq('store_id', storeData.id);
-        
-        if (store.devices.length > 0) {
-            const devicesToInsert = store.devices.map(d => ({
-                store_id: storeData.id,
-                name: d.name,
-                type: d.type,
-                mac_address: d.macAddress,
-                status: d.status
-            }));
-            await supabase.from('devices').insert(devicesToInsert);
-        }
+          // Se for ID temporário ou não for UUID válido, tentar achar match por nome
+          if (storeIdToUse.startsWith('new-store') || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(storeIdToUse)) {
+             // Tentar match no mapa de únicos
+             const existingId = uniqueDbStoresMap.get(storeNameNorm);
+             
+             if (existingId) {
+                 storeIdToUse = existingId;
+                 console.log(`SmartMatch: Loja "${store.name}" usará ID existente ${storeIdToUse}`);
+             } else {
+                 isNew = true;
+                 // Gerar UUID v4 válido se não existir
+                 storeIdToUse = crypto.randomUUID(); 
+                 console.log(`Nova Loja: "${store.name}" terá novo ID ${storeIdToUse}`);
+             }
+          } else {
+             // Se já tem UUID válido, verificar se realmente existe no banco (e se não foi deletado como duplicata)
+             const exists = dbStores.some(s => s.id === storeIdToUse);
+             if (!exists) {
+                 // Se o ID não existe (ou foi deletado), tentar recuperar pelo nome
+                 const recoveredId = uniqueDbStoresMap.get(storeNameNorm);
+                 if (recoveredId) {
+                     storeIdToUse = recoveredId;
+                     console.log(`Recuperação: ID original inválido, usando ID existente para "${store.name}": ${storeIdToUse}`);
+                 } else {
+                    console.warn(`Aviso: Loja ${storeIdToUse} não encontrada no banco. Será recriada.`);
+                 }
+             }
+          }
+
+          validStoreIds.add(storeIdToUse);
+
+          // Salvar/Atualizar a Loja
+          const { error: storeUpsertError } = await supabase
+            .from('stores')
+            .upsert({
+              id: storeIdToUse,
+              client_id: clientId,
+              name: store.name,
+              city: store.city
+            });
+
+          if (storeUpsertError) {
+             console.error(`Erro ao salvar loja ${store.name}:`, storeUpsertError);
+             showToast(`Erro ao salvar loja ${store.name}: ${storeUpsertError.message}`, 'error');
+             continue; // Pula dispositivos se a loja falhou
+          }
+
+          // Salvar Dispositivos da Loja
+          if (store.devices && store.devices.length > 0) {
+             // 1. Buscar dispositivos existentes no banco para esta loja (para reaproveitar IDs e evitar duplicatas)
+             const { data: existingDevs } = await supabase
+                .from('devices')
+                .select('id, mac_address')
+                .eq('store_id', storeIdToUse);
+
+             const devMap = new Map<string, string>(); // mac_address -> id
+             if (existingDevs) {
+                 existingDevs.forEach((d: any) => {
+                     if (d.mac_address) devMap.set(d.mac_address, d.id);
+                 });
+             }
+
+             const devicesToUpsert = store.devices.map(d => {
+               // Tentar encontrar ID existente pelo mac_address (ID externo)
+               const existingId = devMap.get(d.macAddress);
+               
+               // Se já tem ID válido (veio do banco), usa. 
+               // Se não, tenta achar pelo macAddress.
+               // Se não, gera novo.
+               const idToUse = (d.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(d.id)) 
+                   ? d.id 
+                   : (existingId || crypto.randomUUID());
+
+               return {
+                 id: idToUse,
+                 store_id: storeIdToUse,
+                 name: d.name,
+                 type: d.type,
+                 mac_address: d.macAddress,
+                 status: d.status
+               };
+             });
+
+             // Deduplicar payload (caso a API retorne duplicados)
+             const uniquePayload: any[] = [];
+             const seenMacs = new Set();
+             for (const dev of devicesToUpsert) {
+                 if (!seenMacs.has(dev.mac_address)) {
+                     seenMacs.add(dev.mac_address);
+                     uniquePayload.push(dev);
+                 }
+             }
+
+             const { error: devError } = await supabase
+               .from('devices')
+               .upsert(uniquePayload);
+             
+             if (devError) console.error(`Erro ao salvar dispositivos da loja ${store.name}:`, devError);
+          }
+      }
+
+      // Remover lojas que não estão mais na lista (Clean Up)
+      // CUIDADO: Só remover se realmente tivermos processado alguma loja com sucesso
+      if (validStoreIds.size > 0) {
+         const idsToDelete = dbStores
+           .filter(s => !validStoreIds.has(s.id))
+           .map(s => s.id);
+         
+         if (idsToDelete.length > 0) {
+             console.log('Removendo lojas obsoletas:', idsToDelete);
+             // 1. Remover dispositivos dessas lojas
+             await supabase.from('devices').delete().in('store_id', idsToDelete);
+             // 2. Remover as lojas
+             await supabase.from('stores').delete().in('id', idsToDelete);
+         }
       }
 
       // 5. Save Fetched Analytics Data
@@ -1008,6 +1218,22 @@ export function Clients() {
         } catch (analyticsErr) {
           console.error('Erro ao processar salvamento de analytics:', analyticsErr);
         }
+      }
+
+      // VERIFICAÇÃO FINAL: Tentar ler o que acabou de ser salvo para garantir que o RLS permitiu
+      const { count: storeCount, error: countError } = await supabase
+        .from('stores')
+        .select('*', { count: 'exact', head: true })
+        .eq('client_id', clientId);
+      
+      if (countError) {
+         console.error('Erro fatal ao verificar lojas salvas:', countError);
+         showToast(`Dados salvos, mas erro ao verificar: ${countError.message}`, 'error');
+      } else if (storeCount === 0 && editingStores.length > 0) {
+         console.warn('ALERTA: Dados foram "salvos" sem erro, mas o banco retornou 0 lojas. Possível bloqueio de RLS (Row Level Security).');
+         showToast('AVISO CRÍTICO: As lojas foram enviadas, mas o banco de dados não as retornou. Verifique as permissões (RLS) no Supabase.', 'error');
+      } else {
+         console.log(`Verificação pós-save: ${storeCount} lojas encontradas no banco.`);
       }
 
       setIsEditModalOpen(false);
@@ -1128,8 +1354,8 @@ export function Clients() {
                   className="px-4 py-2 rounded-lg border border-gray-700 hover:bg-gray-800 text-gray-300 text-sm font-medium flex items-center gap-2 transition-colors whitespace-nowrap"
                  >
                    <LayoutDashboard size={16} className="text-emerald-500" />
-                   Painel
-                 </button>
+                  Dashboard
+                </button>
                  
                  <div className="relative">
                   <button 
@@ -1387,6 +1613,15 @@ export function Clients() {
                         <option value="active">Ativo</option>
                         <option value="inactive">Inativo</option>
                       </select>
+                    </div>
+                    <div className="space-y-2">
+                      <label className="text-sm font-medium text-gray-400">Data de Entrada</label>
+                      <input 
+                        type="date" 
+                        value={formData.entryDate}
+                        onChange={(e) => setFormData({...formData, entryDate: e.target.value})}
+                        className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none"
+                      />
                     </div>
                   </div>
 

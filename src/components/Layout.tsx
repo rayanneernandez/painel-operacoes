@@ -13,6 +13,7 @@ import {
   Moon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import globaliaLogo from '../assets/globalia.png';
 
 export function Layout() {
   const location = useLocation();
@@ -37,13 +38,50 @@ export function Layout() {
   }, []);
 
   const menuItems = [
-    { icon: LayoutDashboard, label: 'Visão Geral', path: '/dashboard' },
-    { icon: Users, label: 'Clientes', path: '/clientes' },
-    { icon: Shield, label: 'Usuários', path: '/usuarios' },
-    { icon: History, label: 'Logs de Acesso', path: '/logs' },
-    { icon: FileText, label: 'Relatórios', path: '/relatorios' },
-    { icon: Settings, label: 'Configurações', path: '/configuracoes' },
+    { 
+      icon: LayoutDashboard, 
+      label: 'Visão Geral', 
+      // Se for cliente, manda pro dashboard dele. Se for admin, manda pro geral.
+      path: user?.role === 'client' && user?.clientId 
+        ? `/clientes/${user.clientId}/dashboard` 
+        : '/dashboard',
+      show: user?.role === 'admin' || (user?.permissions?.view_dashboard ?? true)
+    },
+    { 
+      icon: Users, 
+      label: 'Clientes', 
+      path: '/clientes',
+      show: user?.role === 'admin' 
+    },
+    { 
+      icon: Shield, 
+      label: 'Usuários', 
+      path: '/usuarios',
+      show: user?.role === 'admin' 
+    },
+    { 
+      icon: History, 
+      label: 'Logs de Acesso', 
+      path: '/logs',
+      show: user?.role === 'admin' 
+    },
+    { 
+      icon: FileText, 
+      label: 'Relatórios', 
+      path: '/relatorios',
+      // Garante que só aparece se a permissão for explicitamente true
+      show: user?.role === 'admin' || (user?.permissions?.view_reports ?? false)
+    },
+    { 
+      icon: Settings, 
+      label: 'Configurações', 
+      path: '/configuracoes',
+      show: user?.role === 'admin' || (user?.permissions?.manage_settings ?? false)
+    },
   ];
+
+  // Filtro rigoroso: remove itens undefined ou false
+  const visibleMenuItems = menuItems.filter(item => !!item.show);
 
   return (
     <div className="flex h-screen bg-gray-50 dark:bg-gray-950 text-gray-900 dark:text-gray-100 overflow-hidden font-sans transition-colors duration-300">
@@ -52,14 +90,13 @@ export function Layout() {
         {/* Logo Area */}
         <div className="p-6 flex items-center gap-3">
           <div>
-            <h1 className="font-bold text-lg leading-none text-gray-900 dark:text-white">Global IA</h1>
-            <span className="text-xs text-gray-500">Painel de Operações</span>
+            <img src={globaliaLogo} alt="Global IA" className="h-8 w-auto mb-1" />
           </div>
         </div>
 
         {/* Navigation */}
         <nav className="flex-1 px-4 py-4 space-y-1">
-          {menuItems.map((item) => {
+          {visibleMenuItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname.startsWith(item.path);
             

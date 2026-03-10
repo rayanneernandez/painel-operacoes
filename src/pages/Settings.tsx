@@ -2,9 +2,7 @@ import { useState, useEffect } from 'react';
 import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2 } from 'lucide-react';
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
-
-// Mock Clients for selection
-const MOCK_CLIENTS: { id: string; name: string }[] = [];
+import supabase from '../lib/supabase';
 
 export function Settings() {
   // Dashboard Config State
@@ -12,10 +10,27 @@ export function Settings() {
   const [availableWidgets, setAvailableWidgets] = useState<WidgetType[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
   
+  // Clients State
+  const [clients, setClients] = useState<{ id: string; name: string }[]>([]);
+
   // Scope and View Mode
   const [selectedScope, setSelectedScope] = useState<string>('global'); // 'global' or client ID
   const [dashboardView, setDashboardView] = useState<'edit' | 'preview'>('edit');
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    // Fetch Clients for Dropdown
+    const fetchClients = async () => {
+      try {
+        const { data, error } = await supabase.from('clients').select('id, name').order('name');
+        if (error) throw error;
+        setClients(data || []);
+      } catch (error) {
+        console.error('Erro ao buscar clientes:', error);
+      }
+    };
+    fetchClients();
+  }, []);
 
   useEffect(() => {
     // Load config based on scope
@@ -144,7 +159,7 @@ export function Settings() {
                   className="bg-transparent text-white font-medium focus:outline-none min-w-[150px]"
                 >
                   <option value="global">Padrão Global</option>
-                  {MOCK_CLIENTS.map(client => (
+                  {clients.map(client => (
                     <option key={client.id} value={client.id}>{client.name}</option>
                   ))}
                 </select>
@@ -253,7 +268,7 @@ export function Settings() {
                 <div className="mb-6 flex items-center justify-between border-b border-gray-800 pb-4">
                   <h3 className="text-lg font-bold text-white flex items-center gap-2">
                      <Monitor size={20} className="text-emerald-500" />
-                     Pré-visualização: {selectedScope === 'global' ? 'Global' : MOCK_CLIENTS.find(c => c.id === selectedScope)?.name}
+                     Pré-visualização: {selectedScope === 'global' ? 'Global' : clients.find(c => c.id === selectedScope)?.name}
                   </h3>
                   <div className="flex items-center gap-2 text-xs text-gray-400">
                     <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"/>

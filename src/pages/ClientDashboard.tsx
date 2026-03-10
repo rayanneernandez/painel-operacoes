@@ -16,7 +16,6 @@ import {
   Image,
   Upload,
   Calendar,
-  Settings,
   AlertCircle
 } from 'lucide-react';
 import { 
@@ -29,8 +28,7 @@ import {
 } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 
-// Mock Data para Clientes (Simulando API) - REMOVIDO
-// const CLIENT_DATA: Record<string, { name: string; logo?: string }> = {};
+// (Dados carregados via Supabase e DisplayForce API)
 
 // Tipos para a hierarquia
 type CameraType = {
@@ -70,6 +68,7 @@ type ClientApiConfig = {
 };
 
 import supabase from '../lib/supabase';
+const ENV_DF_TOKEN = (import.meta.env.VITE_DISPLAYFORCE_TOKEN as string | undefined) || '';
 
 export function ClientDashboard() {
   const { id } = useParams();
@@ -89,34 +88,231 @@ export function ClientDashboard() {
   // Configuração de API do Cliente (DisplayForce)
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
-  // Filtro de Data (fim)
-  const [selectedStartDate, setSelectedStartDate] = useState<Date>(new Date('2025-01-01T00:00:00Z'));
-  const [selectedEndDate, setSelectedEndDate] = useState<Date>(new Date('2025-12-31T23:59:59Z'));
+  // Filtro de Data (fim) - Padrão: Últimos 7 dias (para evitar sobrecarga/erro 502)
+  const [selectedStartDate, setSelectedStartDate] = useState<Date>(() => {
+    const now = new Date();
+    now.setDate(now.getDate() - 7); // Últimos 7 dias
+    now.setHours(0, 0, 0, 0); // Início do dia
+    return now;
+  });
+  const [selectedEndDate, setSelectedEndDate] = useState<Date>(() => {
+    const now = new Date();
+    now.setHours(23, 59, 59, 999);
+    return now; // Hoje
+  });
   const [showDatePicker, setShowDatePicker] = useState(false);
 
-  // Estado para Analytics (dados vindos da API)
+  // Estado para Analytics
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncProgress, setSyncProgress] = useState(0);
 
-  const [dailyStats, setDailyStats] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
-  const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
+  // Estados de Métricas
   const [totalVisitors, setTotalVisitors] = useState(0);
-  const [ageStats, setAgeStats] = useState<any[]>([]);
-  const [genderStats, setGenderStats] = useState<any[]>([]);
-  const [attributeStats, setAttributeStats] = useState<{ label: string; value: number }[]>([]);
-  const [avgVisitSeconds, setAvgVisitSeconds] = useState(0);
+  const [dailyStats, setDailyStats] = useState<number[]>([0,0,0,0,0,0,0]);
+  const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
   const [avgVisitorsPerDay, setAvgVisitorsPerDay] = useState(0);
+  const [avgVisitSeconds, setAvgVisitSeconds] = useState(0);
+  const [genderStats, setGenderStats] = useState<{ label: string, value: number }[]>([]);
+  const [attributeStats, setAttributeStats] = useState<{ label: string, value: number }[]>([]);
+  const [ageStats, setAgeStats] = useState<{ age: string, m: number, f: number }[]>([]);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
   const [refreshTick, setRefreshTick] = useState(0);
 
-  useEffect(() => {
-    async function fetchAnalytics() {
-      if (!id) return;
-      try {
-        const now = new Date();
-        const defaultStart = new Date(now.getFullYear() - 1, 0, 1).toISOString();
-        const endDate = new Date(selectedEndDate);
-        endDate.setHours(23, 59, 59, 999);
-        const startIso = selectedStartDate ? new Date(selectedStartDate).toISOString() : (apiConfig?.collection_start || defaultStart);
-        const endIso = apiConfig?.collection_end || endDate.toISOString();
+  // --- FUNÇÕES DE CARGA E SINCRONIZAÇÃO (API -> DB -> UI) ---
+
+  // 1. Processamento Centralizado (UI Update)
+  function processAnalyticsData(rows: any[]) {
+      const days = [0,0,0,0,0,0,0];
+      const hours = new Array(24).fill(0);
+      const genderCount = { male: 0, female: 0 };
+      let totalDur = 0; let durCount = 0;
+      const ageMap: Record<string, { m: number, f: number }> = { '18-': { m:0,f:0 }, '18-24': { m:0,f:0 }, '25-34': { m:0,f:0 }, '35-44': { m:0,f:0 }, '45-54': { m:0,f:0 }, '55-64': { m:0,f:0 }, '65+': { m:0,f:0 } };
+      let attrGlasses = 0, attrBeard = 0, attrMask = 0, attrHeadwear = 0;
+      
+      let latest: Date | null = null;
+      
+      rows.forEach((visit:any) => {
+          // Normalização de campos (DB vs API)
+          const startVal = visit.start || visit.timestamp;
+          if (!startVal) return;
+
+          const date = new Date(startVal);
+          if (!isNaN(date.getTime())) {
+              if (!latest || date > latest) latest = date;
+              const day = date.getDay();
+              const adjustedDay = day === 0 ? 6 : day - 1;
+              days[adjustedDay]++;
+              const hour = date.getHours();
+              hours[hour]++;
+          }
+
+          // Duração
+          const startDt = date;
+          const endDt = visit.end ? new Date(visit.end) : null;
+          if (endDt && !isNaN(startDt.getTime()) && !isNaN(endDt.getTime()) && endDt > startDt) {
+              totalDur += (endDt.getTime() - startDt.getTime())/1000;
+              durCount++;
+          }
+
+          // Gênero
+          // API: 1/male, 2/female. DB: 1/2
+          const sex = visit.sex || visit.gender;
+          const isMale = sex === 1 || sex === 'male';
+          const isFemale = sex === 2 || sex === 'female';
+          if (isMale) genderCount.male++;
+          if (isFemale) genderCount.female++;
+
+          // Idade
+          const ageValue = typeof visit.age === 'number' ? visit.age : 0;
+          let ageGroup = '18-';
+          if (ageValue >= 18 && ageValue <= 24) ageGroup = '18-24';
+          else if (ageValue >= 25 && ageValue <= 34) ageGroup = '25-34';
+          else if (ageValue >= 35 && ageValue <= 44) ageGroup = '35-44';
+          else if (ageValue >= 45 && ageValue <= 54) ageGroup = '45-54';
+          else if (ageValue >= 55 && ageValue <= 64) ageGroup = '55-64';
+          else if (ageValue >= 65) ageGroup = '65+';
+
+          if (isMale) ageMap[ageGroup].m++;
+          if (isFemale) ageMap[ageGroup].f++;
+
+          // Atributos
+          const attrs = visit.attributes || visit; 
+          
+          const hasGlasses = attrs.glasses === true || attrs.glasses === 1 || (Array.isArray(attrs.glasses) && attrs.glasses.length > 0);
+          if (hasGlasses) attrGlasses++;
+          
+          const facialHair = attrs.facial_hair;
+          if (facialHair && facialHair !== 'none') attrBeard++;
+          
+          const mask = attrs.mask || attrs.has_mask;
+          if (mask) attrMask++;
+          
+          const headwear = attrs.headwear;
+          if (headwear && headwear !== 'none') attrHeadwear++;
+      });
+
+      const totalProcessed = rows.length;
+      setTotalVisitors(totalProcessed);
+      setDailyStats([...days]);
+      setHourlyStats([...hours]);
+      
+      const dayCount = Math.max(1, Math.floor((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1);
+      setAvgVisitorsPerDay(Math.round(totalProcessed / dayCount));
+      setAvgVisitSeconds(durCount ? Math.round(totalDur / durCount) : 0);
+      
+      setGenderStats([{ label: 'Masculino', value: genderCount.male }, { label: 'Feminino', value: genderCount.female }]);
+      
+      const base = Math.max(totalProcessed, 1);
+      setAttributeStats([
+          { label: 'Óculos', value: base ? Math.round((attrGlasses / base) * 100) : 0 },
+          { label: 'Barba', value: base ? Math.round((attrBeard / base) * 100) : 0 },
+          { label: 'Máscara', value: base ? Math.round((attrMask / base) * 100) : 0 },
+          { label: 'Chapéu/Boné', value: base ? Math.round((attrHeadwear / base) * 100) : 0 }
+      ]);
+      
+      setAgeStats([
+          { age: '65+', m: Math.round((ageMap['65+'].m / base) * 100), f: Math.round((ageMap['65+'].f / base) * 100) },
+          { age: '55-64', m: Math.round((ageMap['55-64'].m / base) * 100), f: Math.round((ageMap['55-64'].f / base) * 100) },
+          { age: '45-54', m: Math.round((ageMap['45-54'].m / base) * 100), f: Math.round((ageMap['45-54'].f / base) * 100) },
+          { age: '35-44', m: Math.round((ageMap['35-44'].m / base) * 100), f: Math.round((ageMap['35-44'].f / base) * 100) },
+          { age: '25-34', m: Math.round((ageMap['25-34'].m / base) * 100), f: Math.round((ageMap['25-34'].f / base) * 100) },
+          { age: '18-24', m: Math.round((ageMap['18-24'].m / base) * 100), f: Math.round((ageMap['18-24'].f / base) * 100) },
+          { age: '18-', m: Math.round((ageMap['18-'].m / base) * 100), f: Math.round((ageMap['18-'].f / base) * 100) }
+      ]);
+
+      if (latest) setLastUpdate(latest);
+  }
+
+  // 2. Carregar do Banco
+  async function loadFromDb() {
+    if (!id) return;
+    try {
+      const startIso = selectedStartDate.toISOString();
+      const endIso = selectedEndDate.toISOString();
+
+      console.log('[Dashboard] Loading data from Supabase...', { startIso, endIso });
+
+      let query = supabase
+        .from('visitor_analytics')
+        .select('*')
+        .eq('client_id', id)
+        .gte('timestamp', startIso)
+        .lte('timestamp', endIso)
+        .limit(150000);
+
+      // Filtros de View
+      if (view === 'store' && selectedStore) {
+          const deviceIds = selectedStore.cameras
+            .map(c => Number((c as any).macAddress))
+            .filter(n => !isNaN(n));
+            
+          if (deviceIds.length > 0) {
+              query = query.in('device_id', deviceIds);
+          } else {
+              query = query.in('device_id', [-1]); // Sem devices -> retorno vazio
+          }
+      } else if (view === 'camera' && selectedCamera) {
+          const n = Number((selectedCamera as any).macAddress);
+          if (!isNaN(n)) {
+              query = query.eq('device_id', n);
+          } else {
+              query = query.in('device_id', [-1]);
+          }
+      }
+
+      const { data, error } = await query;
+
+      if (error) throw error;
+
+      if (data && data.length > 0) {
+        console.log(`[Dashboard] Loaded ${data.length} records from DB.`);
+        processAnalyticsData(data.map(d => ({
+            ...d.raw_data,
+            start: d.timestamp,
+            age: d.age,
+            sex: d.gender === 1 ? 'male' : (d.gender === 2 ? 'female' : 'unknown'),
+            attributes: d.attributes
+        })));
+      } else {
+        console.log('[Dashboard] No data in DB for this period.');
+        setTotalVisitors(0);
+        setDailyStats([0,0,0,0,0,0,0]);
+        setHourlyStats(new Array(24).fill(0));
+        setAvgVisitorsPerDay(0);
+        setAvgVisitSeconds(0);
+        setGenderStats([]);
+        setAttributeStats([]);
+        setAgeStats([]);
+      }
+    } catch (err) {
+      console.error('Error loading from DB:', err);
+    }
+  }
+
+  // 3. Sincronizar (API -> DB)
+  async function syncFromApiToDb() {
+    if (!id || !apiConfig) return;
+    setIsSyncing(true);
+    setSyncProgress(0);
+
+    try {
+        const isDev = import.meta.env.DEV;
+        const baseUrl = isDev ? '/api-proxy' : (apiConfig?.api_endpoint || 'https://api.displayforce.ai');
+        const path = apiConfig?.analytics_endpoint || '/public/v1/stats/visitor/list';
+        const url = `${baseUrl}${path}`;
+        
+        const key = apiConfig?.api_key ? String(apiConfig.api_key).trim() : null;
+        const envToken = ENV_DF_TOKEN ? ENV_DF_TOKEN.trim() : '';
+        const tokenToUse = key || envToken;
+
+        const baseHeaders: Record<string, string> = { 
+          'Content-Type': 'application/json', 
+          'Accept': 'application/json' 
+        };
+        if (tokenToUse) {
+           baseHeaders['Authorization'] = `Bearer ${tokenToUse}`;
+           baseHeaders['X-API-Token'] = tokenToUse;
+        }
 
         let deviceIds: number[] | null = null;
         if (view === 'store' && selectedStore) {
@@ -126,187 +322,74 @@ export function ClientDashboard() {
           if (!isNaN(n)) deviceIds = [n];
         }
 
-        const isDev = import.meta.env.DEV;
-        if (!isDev) {
-          const srvResp = await fetch('/api/sync-analytics', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer painel@2026*' },
-            body: JSON.stringify({ client_id: id, start: startIso, end: endIso, devices: deviceIds || [] })
-          });
-          if (srvResp.ok) {
-            const srv = await srvResp.json();
-            const d = srv.dashboard || {};
-            setTotalVisitors(Number(d.total_visitors || 0));
-            setAvgVisitorsPerDay(Number(d.avg_visitors_per_day || 0));
-            const perHour = d.visitors_per_hour_avg || {};
-            setHourlyStats(Array.from({ length: 24 }, (_, h) => Number(perHour[String(h)] || 0)));
-            const perDay = d.visitors_per_day || {};
-            const week = [0,0,0,0,0,0,0];
-            Object.keys(perDay).forEach(k => { const dd = new Date(`${k}T00:00:00Z`); const day = dd.getUTCDay(); const idx = day === 0 ? 6 : day - 1; week[idx] += Number(perDay[k] || 0); });
-            setDailyStats(week);
-            const g = d.gender_percent || {};
-            setGenderStats([{ label: 'Masculino', value: Number(g.male || 0) }, { label: 'Feminino', value: Number(g.female || 0) }]);
-            const attrs = d.attributes_percent || {};
-            const pctTrue = (obj:any) => Math.round(Number(obj?.true || obj?.['true'] || 0));
-            setAttributeStats([
-              { label: 'Óculos', value: pctTrue(attrs.glasses) },
-              { label: 'Barba', value: pctTrue(attrs.facial_hair) },
-              { label: 'Chapéu/Boné', value: pctTrue(attrs.headwear) },
-              { label: 'Máscara', value: 0 }
-            ]);
-            setAvgVisitSeconds(Number(d.avg_times_seconds?.avg_visit_time_seconds || 0));
-            setLastUpdate(new Date());
-            return;
-          }
-        }
-        // 2) Fallback direto na API externa (dev)
-        const baseUrl = isDev ? '/api-proxy' : (apiConfig?.api_endpoint || 'https://api.displayforce.ai');
-        const path = apiConfig?.analytics_endpoint || '/public/v1/stats/visitor/list';
-        const url = `${baseUrl}${path}`;
-        const key = apiConfig?.api_key ? String(apiConfig.api_key) : null;
-        const baseHeaders = { 'Content-Type': 'application/json', 'Accept': 'application/json' } as Record<string,string>;
-        const headerVariants: Record<string,string>[] = [];
-        if (apiConfig?.custom_header_key && apiConfig?.custom_header_value) {
-          headerVariants.push({ ...baseHeaders, [String(apiConfig.custom_header_key)]: String(apiConfig.custom_header_value) });
-        } else if (key) {
-          headerVariants.push({ ...baseHeaders, 'X-API-Token': key });
-          headerVariants.push({ ...baseHeaders, 'Authorization': `Bearer ${key}` });
-        }
-        if (import.meta.env.DEV) {
-          const devKey = localStorage.getItem('df_api_token');
-          const devHKey = localStorage.getItem('df_auth_header_key');
-          const devHVal = localStorage.getItem('df_auth_header_value');
-          if (devHKey && devHVal) {
-            headerVariants.unshift({ ...baseHeaders, [String(devHKey)]: String(devHVal) });
-          } else if (devKey) {
-            headerVariants.unshift({ ...baseHeaders, 'Authorization': `Bearer ${String(devKey)}` });
-            headerVariants.unshift({ ...baseHeaders, 'X-API-Token': String(devKey) });
-          }
-        }
-        if (headerVariants.length === 0) headerVariants.push(baseHeaders);
-
         const pageSize = 1000;
         let offset = 0;
-        const allRows: any[] = [];
-        let chosenHeaders: Record<string,string> | null = null;
+        let totalFetched = 0;
+        const allFetchedRows: any[] = [];
+
         for (;;) {
-          const body: any = { start: startIso, end: endIso, limit: pageSize, offset, fields: ['start','end','age','sex','device','devices','face_quality','facial_hair','hair_color','hair_type','headwear','glasses','additional_attributes'] };
+          const body: any = { 
+            start: selectedStartDate.toISOString(), 
+            end: selectedEndDate.toISOString(), 
+            limit: pageSize, 
+            offset, 
+            fields: ['start','end','age','sex','device','devices','face_quality','facial_hair','hair_color','hair_type','headwear','glasses','additional_attributes'] 
+          };
           if (deviceIds && deviceIds.length > 0) body.devices = deviceIds;
 
-          let rows: any[] = [];
-          const tryHeaders: Record<string,string>[] = chosenHeaders ? [chosenHeaders as Record<string,string>] : headerVariants;
-          for (const h of tryHeaders) {
-            // Tenta POST
-            let resp = await fetch(url, { method: 'POST', headers: h, body: JSON.stringify(body) });
-            if (resp.ok) {
-              const json = await resp.json();
-              rows = json.payload || json.data || [];
-              chosenHeaders = h;
-              break;
-            }
-            // Endpoint é POST-only; não usar GET fallback
-            
-            if (resp.status !== 401 && resp.status !== 403) {
-              console.warn('API externa erro:', resp.status, await resp.text());
-              rows = [];
-              break;
-            } else {
-              const hk = Object.keys(h).find(x => x.toLowerCase() !== 'content-type' && x.toLowerCase() !== 'accept') || '';
-              console.warn('Falha de auth', resp.status, hk);
-            }
-          }
-
+          const resp = await fetch(url, { method: 'POST', headers: baseHeaders, body: JSON.stringify(body) });
+          if (!resp.ok) break;
+          
+          const json = await resp.json();
+          const rows = json.payload || json.data || [];
           if (!Array.isArray(rows) || rows.length === 0) break;
-          allRows.push(...rows);
+
+          allFetchedRows.push(...rows);
+          totalFetched += rows.length;
+          setSyncProgress(totalFetched);
+
+          // Salvar em Batch no Supabase
+          const dbPayload = rows.map((r: any) => ({
+             client_id: id,
+             device_id: r.device || (r.devices && r.devices[0]) || 0,
+             timestamp: r.start,
+             age: typeof r.age === 'number' ? r.age : null,
+             gender: typeof r.sex === 'number' ? r.sex : (r.sex === 'male' ? 1 : (r.sex === 'female' ? 2 : 0)),
+             attributes: {
+                 glasses: r.glasses,
+                 facial_hair: r.facial_hair,
+                 mask: r.mask || r.has_mask,
+                 headwear: r.headwear
+             },
+             raw_data: r
+          }));
+
+          const { error } = await supabase.from('visitor_analytics').upsert(dbPayload, { onConflict: 'client_id,timestamp,device_id' }); 
+          if (error) console.error('Error saving batch to DB:', error);
+
           if (rows.length < pageSize) break;
           offset += pageSize;
-          if (offset > 200000) break;
+          if (offset > 1000000) break; // Limite de segurança aumentado para 1M
         }
+        
+        console.log(`[Sync] Finished. Total synced: ${totalFetched}`);
+        
+        // Atualizar UI com dados novos
+        processAnalyticsData(allFetchedRows);
 
-        const combined = allRows.map((v:any) => ({ timestamp: v.start, age: typeof v.age === 'number' ? Math.round(v.age) : null, gender: typeof v.sex === 'number' ? v.sex : 0, raw_data: v }));
-        void 0;
-
-        let latest: Date | null = null;
-        combined.forEach((row:any) => { const t = new Date(row.timestamp || row.raw_data?.start); if (!isNaN(t.getTime())) { if (!latest || t > latest) latest = t; } });
-        setLastUpdate(latest);
-
-        const days = [0,0,0,0,0,0,0];
-        const hours = new Array(24).fill(0);
-        const genderCount = { male: 0, female: 0 };
-        let totalDur = 0; let durCount = 0;
-        const ageMap: Record<string, { m: number, f: number }> = { '18-': { m:0,f:0 }, '18-24': { m:0,f:0 }, '25-34': { m:0,f:0 }, '35-44': { m:0,f:0 }, '45-54': { m:0,f:0 }, '55-64': { m:0,f:0 }, '65+': { m:0,f:0 } };
-        let attrGlasses = 0, attrBeard = 0, attrMask = 0, attrHeadwear = 0;
-
-        combined.forEach((visit:any) => {
-          const baseTimestamp = visit.timestamp || visit.raw_data?.start;
-          const date = new Date(baseTimestamp);
-          if (!isNaN(date.getTime())) { const day = date.getDay(); const adjustedDay = day === 0 ? 6 : day - 1; days[adjustedDay]++; const hour = date.getHours(); hours[hour]++; }
-          const startDt = new Date(visit.raw_data?.start || visit.timestamp);
-          const endDt = new Date(visit.raw_data?.end || visit.timestamp);
-          if (!isNaN(startDt.getTime()) && !isNaN(endDt.getTime()) && endDt > startDt) { totalDur += (endDt.getTime() - startDt.getTime())/1000; durCount++; }
-          const sex = visit.gender ?? visit.raw_data?.sex; const isMale = sex === 1 || sex === 'male'; const isFemale = sex === 2 || sex === 'female'; if (isMale) genderCount.male++; if (isFemale) genderCount.female++;
-          const ageValue = typeof visit.age === 'number' ? visit.age : (visit.raw_data?.age ?? 0); const age = typeof ageValue === 'number' ? ageValue : 0;
-          let ageGroup = '18-'; if (age >= 18 && age <= 24) ageGroup = '18-24'; else if (age >= 25 && age <= 34) ageGroup = '25-34'; else if (age >= 35 && age <= 44) ageGroup = '35-44'; else if (age >= 45 && age <= 54) ageGroup = '45-54'; else if (age >= 55 && age <= 64) ageGroup = '55-64'; else if (age >= 65) ageGroup = '65+';
-          if (isMale) ageMap[ageGroup].m++; if (isFemale) ageMap[ageGroup].f++;
-          const raw = visit.raw_data || {};
-          const hasGlasses = raw.glasses === true || raw.glasses === 1 || raw.glasses === '1' || (Array.isArray(raw.glasses) && raw.glasses.length > 0); if (hasGlasses) attrGlasses++;
-          const facialHair = raw.facial_hair; if (facialHair && facialHair !== 'none') attrBeard++;
-          const mask = raw.mask || raw.has_mask || raw.mask_on; if (mask) attrMask++;
-          const headwear = raw.headwear; if (headwear && headwear !== 'none') attrHeadwear++;
-        });
-
-        setAvgVisitSeconds(durCount ? Math.round(totalDur / durCount) : 0);
-        setDailyStats(days);
-        setHourlyStats(hours);
-        const dayCount = Math.max(1, Math.floor((new Date(endIso).getTime() - new Date(startIso).getTime()) / 86400000) + 1);
-        const totalCombined = combined.length;
-        setAvgVisitorsPerDay(dayCount ? Math.round(totalCombined / dayCount) : totalCombined);
-        setTotalVisitors(totalCombined);
-        setGenderStats([{ label: 'Masculino', value: genderCount.male }, { label: 'Feminino', value: genderCount.female }]);
-        const base = Math.max(totalCombined, 1);
-        setAttributeStats([
-          { label: 'Óculos', value: base ? Math.round((attrGlasses / base) * 100) : 0 },
-          { label: 'Barba', value: base ? Math.round((attrBeard / base) * 100) : 0 },
-          { label: 'Máscara', value: base ? Math.round((attrMask / base) * 100) : 0 },
-          { label: 'Chapéu/Boné', value: base ? Math.round((attrHeadwear / base) * 100) : 0 }
-        ]);
-        // Persistir rollup básico no Supabase (best-effort)
-        try {
-          if (!isDev) {
-            const perHourAvgObj = Object.fromEntries(hours.map((v, i) => [String(i), v]));
-            await supabase.from('visitor_analytics_rollups').upsert({
-              client_id: id,
-              start: startIso,
-              end: endIso,
-              total_visitors: totalCombined,
-              avg_visitors_per_day: dayCount ? Math.round(totalCombined / dayCount) : totalCombined,
-              visitors_per_day: { seg: days[0], ter: days[1], qua: days[2], qui: days[3], sex: days[4], sab: days[5], dom: days[6] },
-              visitors_per_hour_avg: perHourAvgObj,
-              updated_at: new Date().toISOString(),
-            });
-          }
-        } catch(e) { /* ignore RLS */ }
-        setAgeStats([
-          { age: '65+', m: Math.round((ageMap['65+'].m / base) * 100), f: Math.round((ageMap['65+'].f / base) * 100) },
-          { age: '55-64', m: Math.round((ageMap['55-64'].m / base) * 100), f: Math.round((ageMap['55-64'].f / base) * 100) },
-          { age: '45-54', m: Math.round((ageMap['45-54'].m / base) * 100), f: Math.round((ageMap['45-54'].f / base) * 100) },
-          { age: '35-44', m: Math.round((ageMap['35-44'].m / base) * 100), f: Math.round((ageMap['35-44'].f / base) * 100) },
-          { age: '25-34', m: Math.round((ageMap['25-34'].m / base) * 100), f: Math.round((ageMap['25-34'].f / base) * 100) },
-          { age: '18-24', m: Math.round((ageMap['18-24'].m / base) * 100), f: Math.round((ageMap['18-24'].f / base) * 100) },
-          { age: '18-', m: Math.round((ageMap['18-'].m / base) * 100), f: Math.round((ageMap['18-'].f / base) * 100) }
-        ]);
-      } catch (err) {
-        console.error('Erro inesperado ao buscar analytics (API externa):', err);
-        void 0;
-        setDailyStats([0,0,0,0,0,0,0]);
-        setHourlyStats(new Array(24).fill(0));
-        setTotalVisitors(0);
-        setGenderStats([]);
-        setAgeStats([]);
-      }
+    } catch (err) {
+        console.error('Sync error:', err);
+    } finally {
+        setIsSyncing(false);
     }
-    fetchAnalytics();
-  }, [id, view, selectedStore, selectedCamera, selectedStartDate, selectedEndDate, apiConfig, refreshTick]);
+  }
+
+  useEffect(() => {
+    loadFromDb();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, view, selectedStore?.id, selectedCamera?.id, selectedStartDate, selectedEndDate, refreshTick]);
+
+
 
   useEffect(() => {
     async function fetchClientAndStores() {
@@ -452,6 +535,7 @@ export function ClientDashboard() {
 
   // Handlers de Navegação
   const syncNow = async () => {
+    await syncFromApiToDb();
     setRefreshTick(t => t + 1);
   };
 
@@ -533,14 +617,14 @@ export function ClientDashboard() {
           )}
         </div>
 
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-6">
+        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+          <div className="flex items-center gap-4 sm:gap-6">
             {/* Área da Logo */}
-            <div className="h-24 min-w-[100px] flex items-center justify-center overflow-hidden group relative cursor-pointer">
+            <div className="h-16 w-16 sm:h-24 sm:min-w-[100px] flex items-center justify-center overflow-hidden group relative cursor-pointer">
               {clientLogo ? (
                 <img src={clientLogo} alt="Logo Cliente" className="h-full w-auto object-contain" />
               ) : (
-                <div className="flex flex-col items-center justify-center text-gray-700 group-hover:text-gray-500 transition-colors w-20 h-20 bg-gray-900 border border-gray-800 rounded-xl">
+                <div className="flex flex-col items-center justify-center text-gray-700 group-hover:text-gray-500 transition-colors w-16 h-16 sm:w-20 sm:h-20 bg-gray-900 border border-gray-800 rounded-xl">
                   <Image size={24} />
                   <div className="absolute inset-0 bg-black/80 flex flex-col items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity rounded-xl">
                     <Upload size={16} className="text-white mb-1" />
@@ -551,7 +635,7 @@ export function ClientDashboard() {
             </div>
 
             <div>
-              <h1 className="text-2xl font-bold text-white flex items-center gap-2">
+              <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2">
                 {view === 'network' ? <Globe className="text-emerald-500" /> : 
                  view === 'store' ? <Building2 className="text-blue-500" /> : 
                  <Video className="text-purple-500" />}
@@ -559,7 +643,7 @@ export function ClientDashboard() {
                  view === 'store' ? selectedStore?.name : 
                  selectedCamera?.name}
               </h1>
-              <p className="text-gray-400 mt-1">
+              <p className="text-sm sm:text-base text-gray-400 mt-1">
                 {view === 'network' ? `Monitorando ${stores.length} lojas nesta rede` : 
                  view === 'store' ? `${selectedStore?.address} - ${selectedStore?.city}` : 
                  'Feed ao vivo e histórico de eventos'}
@@ -568,11 +652,11 @@ export function ClientDashboard() {
           </div>
 
           {/* Filters Section */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
              {/* Store Filter */}
-             <div className="relative">
+             <div className="relative w-full sm:w-auto">
                <select 
-                  className="bg-gray-900 border border-gray-800 text-white pl-10 pr-8 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-sm min-w-[180px]"
+                  className="bg-gray-900 border border-gray-800 text-white pl-10 pr-8 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-sm w-full sm:min-w-[180px]"
                   onChange={(e) => {
                      const storeId = e.target.value;
                      if (storeId === 'all') {
@@ -581,29 +665,31 @@ export function ClientDashboard() {
                        const store = stores.find(s => s.id === storeId);
                        if (store) goToStore(store);
                      }
-                  }}
-                  value={view === 'network' ? 'all' : selectedStore?.id || 'all'}
+                   }}
+                  value={view === 'network' ? 'all' : selectedStore?.id || ''}
                >
-                  <option value="all">Todas as Lojas</option>
-                  {stores.map(store => (
-                    <option key={store.id} value={store.id}>{store.name}</option>
-                  ))}
+                 <option value="all" style={{ backgroundColor: '#111827', color: 'white' }}>Rede Global</option>
+                 {stores.map(store => (
+                   <option key={store.id} value={store.id} style={{ backgroundColor: '#111827', color: 'white' }}>{store.name}</option>
+                 ))}
                </select>
                <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
                <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
              </div>
 
              {/* Date Filter */}
-             <div className="relative">
-               <button onClick={() => setShowDatePicker(!showDatePicker)} className="flex items-center gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors">
-                 <Calendar size={16} className="text-gray-500" />
-                 <span className="text-sm">Período: {new Date(selectedStartDate).toLocaleDateString('pt-BR')} → {new Date(selectedEndDate).toLocaleDateString('pt-BR')}</span>
+             <div className="relative w-full sm:w-auto">
+               <button onClick={() => setShowDatePicker(!showDatePicker)} className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors">
+                 <div className="flex items-center gap-2">
+                    <Calendar size={16} className="text-gray-500" />
+                    <span className="text-sm">Período: {new Date(selectedStartDate).toLocaleDateString('pt-BR')} → {new Date(selectedEndDate).toLocaleDateString('pt-BR')}</span>
+                 </div>
                  <ChevronDown size={14} className="text-gray-500" />
                </button>
                {showDatePicker && (
-                <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl">
-                  <div className="flex items-end gap-3">
-                    <div>
+                <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl right-0 w-full sm:w-auto">
+                  <div className="flex flex-col sm:flex-row items-end gap-3">
+                    <div className="w-full sm:w-auto">
                       <label className="block text-xs text-gray-400">Início</label>
                 
                 
@@ -619,8 +705,7 @@ export function ClientDashboard() {
                         className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
                       />
                     </div>
-                    <span className="text-gray-500">→</span>
-                    <div>
+                    <div className="w-full sm:w-auto">
                       <label className="block text-xs text-gray-400">Fim</label>
                       <input
                         type="date"
@@ -629,39 +714,29 @@ export function ClientDashboard() {
                           const d = new Date(e.target.value + 'T00:00:00');
                           if (!isNaN(d.getTime())) setSelectedEndDate(d);
                         }}
-                        className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
+                        className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
                       />
                     </div>
-                    <button onClick={() => setShowDatePicker(false)} className="px-3 py-2 bg-emerald-600 text-white rounded-md">Aplicar</button>
+                    <button onClick={() => setShowDatePicker(false)} className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md">Aplicar</button>
                   </div>
                 </div>
               )}
              </div>
 
              {lastUpdate && (
-               <div className="text-xs text-gray-500 hidden md:block">
+               <div className="text-xs text-gray-500 hidden xl:block">
                  Última atualização: {lastUpdate.toLocaleString('pt-BR')}
                </div>
              )}
 
-             {/* Config Button */}
-             <button 
-               onClick={() => navigate(`/clientes/${id}/dashboard-config`)}
-               className="flex items-center gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors"
-               title="Configurar Dashboard"
-             >
-               <Settings size={16} className="text-gray-500" />
-               <span className="text-sm hidden md:inline">Configurar</span>
-             </button>
-
              {/* Sync Button */}
              <button 
                onClick={syncNow}
-               className="flex items-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-500 transition-colors"
+               className="flex items-center justify-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-500 transition-colors w-full sm:w-auto"
                title="Sincronizar Agora"
              >
                <Activity size={16} />
-               <span className="text-sm hidden md:inline">Sincronizar</span>
+               <span className="text-sm">Sincronizar</span>
              </button>
           </div>
         </div>
@@ -723,7 +798,6 @@ export function ClientDashboard() {
                <div className="col-span-full text-center py-20 text-gray-500">
                  <LayoutGrid size={48} className="mx-auto mb-4 opacity-20" />
                  <p>Nenhum widget configurado para este dashboard.</p>
-                 <button onClick={() => navigate(`/clientes/${id}/dashboard-config`)} className="text-emerald-500 hover:underline mt-2 text-sm">Configurar agora</button>
                </div>
              )}
           </div>
