@@ -158,7 +158,7 @@ export function ClientDashboard() {
     return true;
   }
 
-  // ── Load data: use rollup if fresh, otherwise rebuild from DB immediately ────
+  // ── Load data: use rollup if available, otherwise trigger background rebuild ─
   const loadData = useCallback(async () => {
     if (!id) return;
     setIsLoadingData(true);
@@ -169,7 +169,7 @@ export function ClientDashboard() {
       const startDay = startIso.slice(0, 10);
       const endDay   = endIso.slice(0, 10);
 
-      // 1. Try to find an existing valid rollup
+      // 1. Try to find an existing valid rollup in DB (instant)
       const { data: rollups } = await supabase
         .from('visitor_analytics_rollups')
         .select('*')
@@ -189,12 +189,17 @@ export function ClientDashboard() {
         return;
       }
 
-      // 2. No rollup found — ask the backend to rebuild from all DB rows immediately.
-      //    This is fast because it runs server-side (no browser pagination needed).
-      console.log('[Dashboard] Sem rollup — reconstruindo do banco via API...');
-      setSyncMessage('Carregando dados do banco...');
+      // 2. No rollup — show zeros immediately so UI is not blocked,
+      //    then trigger rebuild in background (does NOT lock the sync button).
+      console.log('[Dashboard] Sem rollup — acionando rebuild em background...');
+      setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
+      setAvgVisitorsPerDay(0); setAvgVisitSeconds(0);
+      setGenderStats([]); setAttributeStats([]); setAgeStats([]);
+      setIsLoadingData(false); // ✅ unblock UI immediately
 
-      const resp = await fetch('/api/sync-analytics', {
+      // Fire-and-forget rebuild — updates dashboard when done
+      setSyncMessage('Reconstruindo dados do banco...');
+      fetch('/api/sync-analytics', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -204,34 +209,32 @@ export function ClientDashboard() {
           rebuild_rollup: true,
           ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
         }),
-      });
+      })
+        .then((r) => r.ok ? r.json() : null)
+        .then((json) => {
+          if (json?.dashboard) {
+            console.log(`[Dashboard] Rebuild concluído ✅ (${json.dashboard.total_visitors} visitantes)`);
+            applyRollup({
+              total_visitors:         json.dashboard.total_visitors,
+              avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
+              avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+              visitors_per_day:       json.dashboard.visitors_per_day,
+              visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
+              gender_percent:         json.dashboard.gender_percent,
+              attributes_percent:     json.dashboard.attributes_percent,
+              age_pyramid_percent:    json.dashboard.age_pyramid_percent,
+            });
+            setSyncMessage(`✅ ${json.dashboard.total_visitors.toLocaleString()} visitantes carregados.`);
+          } else {
+            setSyncMessage('');
+          }
+        })
+        .catch((err) => {
+          console.warn('[Dashboard] Rebuild falhou:', err);
+          setSyncMessage('');
+        });
 
-      if (resp.ok) {
-        const json = await resp.json();
-        if (json?.dashboard) {
-          console.log(`[Dashboard] Rollup reconstruído ✅ (${json.dashboard.total_visitors} visitantes)`);
-          applyRollup({
-            total_visitors:         json.dashboard.total_visitors,
-            avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
-            avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-            visitors_per_day:       json.dashboard.visitors_per_day,
-            visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
-            gender_percent:         json.dashboard.gender_percent,
-            attributes_percent:     json.dashboard.attributes_percent,
-            age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-          });
-          setSyncMessage(`✅ ${json.dashboard.total_visitors.toLocaleString()} visitantes carregados.`);
-          setIsLoadingData(false);
-          return;
-        }
-      }
-
-      // 3. Last resort fallback: show zeros if everything fails
-      console.warn('[Dashboard] Rebuild falhou — sem dados para exibir.');
-      setSyncMessage('');
-      setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-      setAvgVisitorsPerDay(0); setAvgVisitSeconds(0);
-      setGenderStats([]); setAttributeStats([]); setAgeStats([]);
+      return; // ✅ return immediately — rebuild runs in background
 
     } catch (err) {
       console.error('[Dashboard] Erro ao carregar dados:', err);

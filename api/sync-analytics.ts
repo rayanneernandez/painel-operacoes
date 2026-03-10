@@ -141,22 +141,40 @@ function buildAndDeduplicateRows(combined: any[], client_id: string) {
 }
 
 // ── Read ALL rows from DB for client+period using pagination ─────────────────
-// ✅ PAGE=1000: Supabase caps responses at 1000 rows regardless of .range() size.
-//    We paginate manually and use count:"exact" on the first call to know the total.
+// Supabase PostgREST caps at 1000 rows per request (max_rows setting).
+// Strategy:
+//   1. First call uses HEAD request with count=exact to get total without fetching data
+//   2. Then paginate in chunks of 1000 until all rows are fetched
 async function fetchAllDBRows(client_id: string, rangeStart: string, rangeEnd: string, deviceNums: number[]): Promise<any[]> {
   const PAGE = 1000;
+
+  // Step 1: Get exact count via HEAD (no data transfer, very fast)
+  let knownTotal: number | null = null;
+  try {
+    let countQ = supabase
+      .from("visitor_analytics")
+      .select("*", { count: "exact", head: true })
+      .eq("client_id", client_id)
+      .gte("timestamp", rangeStart)
+      .lte("timestamp", rangeEnd);
+    if (deviceNums.length > 0) countQ = countQ.in("device_id", deviceNums);
+    const { count, error: countErr } = await countQ;
+    if (!countErr && typeof count === "number") {
+      knownTotal = count;
+      console.log(`[fetchAllDBRows] Total no banco (HEAD): ${knownTotal}`);
+    }
+  } catch (e) {
+    console.warn("[fetchAllDBRows] HEAD count falhou, paginando sem total conhecido:", e);
+  }
+
+  // Step 2: Paginate and fetch all rows
   const all: any[] = [];
   let from = 0;
-  let knownTotal: number | null = null;
 
   while (true) {
-    // First page: request exact count so we know when to stop
-    const selectArgs = from === 0
-      ? ["visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds", { count: "exact" as const }]
-      : ["visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds"];
-
-    let q = (supabase.from("visitor_analytics") as any)
-      .select(...selectArgs)
+    let q = supabase
+      .from("visitor_analytics")
+      .select("visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds")
       .eq("client_id", client_id)
       .gte("timestamp", rangeStart)
       .lte("timestamp", rangeEnd)
@@ -164,23 +182,20 @@ async function fetchAllDBRows(client_id: string, rangeStart: string, rangeEnd: s
       .range(from, from + PAGE - 1);
     if (deviceNums.length > 0) q = q.in("device_id", deviceNums);
 
-    const { data, error, count } = await q;
-    if (error) { console.error(`fetchAllDBRows error at offset ${from}:`, error); break; }
+    const { data, error } = await q;
+    if (error) { console.error(`[fetchAllDBRows] Erro na página offset=${from}:`, error); break; }
     if (!data || data.length === 0) break;
 
-    if (from === 0 && typeof count === "number") {
-      knownTotal = count;
-      console.log(`[fetchAllDBRows] Total no banco: ${knownTotal}`);
-    }
-
     all.push(...data);
+    console.log(`[fetchAllDBRows] Lidos ${all.length}${knownTotal ? ` / ${knownTotal}` : ""} (página offset=${from})`);
 
+    // Stop conditions
     if (knownTotal !== null && all.length >= knownTotal) break;
     if (data.length < PAGE) break;
     from += PAGE;
   }
 
-  console.log(`[fetchAllDBRows] Lidos ${all.length} / ${knownTotal ?? "?"} registros`);
+  console.log(`[fetchAllDBRows] ✅ Total final: ${all.length} registros`);
   return all;
 }
 
@@ -333,21 +348,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const combined: any[] = [];
     const startedAt = Date.now();
 
-    // ✅ FIX: force_full_sync gets much more time (55s) to paginate the full dataset.
-    // Normal background syncs get 8s per invocation (paginated across multiple calls).
-    const MAX_MS    = force_full_sync ? 55000 : 8000;
-    const MAX_PAGES = force_full_sync ? 2000 : 120;
+    // MAX_MS must stay well under Vercel's 30s function timeout.
+    // Normal sync: 6s per call (frontend retries with next_offset until done=true).
+    // force_full_sync: 20s — used only for manual "Sincronizar" button clicks.
+    const MAX_MS    = force_full_sync ? 20000 : 6000;
+    const MAX_PAGES = force_full_sync ? 500 : 50;
 
     const deviceNums = Array.isArray(devices) ? (devices as any[]).map(Number).filter(Number.isFinite) : [];
 
+    // ── rebuild_rollup: read ALL rows from DB in pages, build rollup, return ─────
+    // This path NEVER calls the external API — it only reads existing DB data.
+    // Safe to call anytime without risk of hitting API rate limits.
     if (rebuild_rollup === true) {
+      console.log(`[rebuild_rollup] Iniciando para client=${client_id} período ${rangeStart} → ${rangeEnd}`);
       const existingRows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
+      console.log(`[rebuild_rollup] Total lido do banco: ${existingRows.length}`);
+
       if (existingRows.length > 0) {
         const rollupRow = buildRollup(existingRows, client_id, rangeStart, rangeEnd);
         const { error: rollupErr } = await supabase
           .from("visitor_analytics_rollups")
           .upsert(rollupRow, { onConflict: "client_id,start,end" });
-        if (rollupErr) console.error("Rollup save error:", rollupErr);
+        if (rollupErr) console.error("[rebuild_rollup] Erro ao salvar rollup:", rollupErr);
+        else console.log(`[rebuild_rollup] Rollup salvo ✅ total_visitors=${rollupRow.total_visitors}`);
+
         return ok(res, {
           message: "Rollup recalculado do banco",
           start: rangeStart, end: rangeEnd,
@@ -364,12 +388,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             gender_percent: rollupRow.gender_percent,
             attributes_percent: rollupRow.attributes_percent,
             age_pyramid_percent: rollupRow.age_pyramid_percent,
-            avg_times_seconds: { avg_visit_time_seconds: rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds: rollupRow.avg_dwell_time_seconds },
+            avg_times_seconds: {
+              avg_visit_time_seconds: rollupRow.avg_visit_time_seconds,
+              avg_dwell_time_seconds: rollupRow.avg_dwell_time_seconds,
+            },
           },
           stored_rollup: !rollupErr,
         });
       }
-      return ok(res, { message: "Sem dados no período informado", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
+      return ok(res, {
+        message: "Sem dados no banco para o período informado",
+        start: rangeStart, end: rangeEnd,
+        externalFetched: 0, raw_upserted_new: 0,
+        total_in_db: 0, next_offset: null, done: true,
+        dashboard: null, stored_rollup: false,
+      });
     }
 
     // ✅ FIX: track the pagination total from the API to know when we are truly done.
