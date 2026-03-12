@@ -4,7 +4,6 @@ import {
   Globe, Clock, Building2, ChevronRight, ChevronDown,
   LayoutGrid, Users, BarChart2, Image, Upload, Calendar
 } from 'lucide-react';
-
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 import supabase from '../lib/supabase';
@@ -19,12 +18,10 @@ type CameraType = {
   type: 'dome' | 'bullet' | 'ptz'; resolution: '1080p' | '4k';
   lastEvent?: string; macAddress?: string;
 };
-
 type StoreType = {
   id: string; name: string; address: string; city: string;
   status: 'online' | 'offline'; cameras: CameraType[];
 };
-
 type ClientApiConfig = {
   api_endpoint: string; analytics_endpoint: string; api_key: string;
   custom_header_key?: string | null; custom_header_value?: string | null;
@@ -47,9 +44,9 @@ export function ClientDashboard() {
   const [clientData, setClientData] = useState<{ name: string; logo?: string } | null>(null);
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
+  // ── Data padrão = HOJE ──────────────────────────────────────────────────────
   const [selectedStartDate, setSelectedStartDate] = useState<Date>(() => {
     const now = new Date();
-    now.setUTCDate(now.getUTCDate() - 7);
     now.setUTCHours(0, 0, 0, 0);
     return now;
   });
@@ -76,7 +73,6 @@ export function ClientDashboard() {
   const [attributeStats, setAttributeStats] = useState<{ label: string; value: number }[]>([]);
   const [ageStats, setAgeStats] = useState<{ age: string; m: number; f: number }[]>([]);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
   const [isLoadingConfig, setIsLoadingConfig] = useState(true);
   const [isLoadingData, setIsLoadingData] = useState(false);
@@ -114,25 +110,16 @@ export function ClientDashboard() {
 
     const agePctForAvg: Record<string, number> = rollup.age_pyramid_percent ?? {};
     const midpoints: Record<string, number> = {
-      '0-9': 4.5,
-      '10-17': 13.5,
-      '18-24': 21,
-      '25-34': 29.5,
-      '35-44': 39.5,
-      '45-54': 49.5,
-      '55-64': 59.5,
-      '65-74': 69.5,
-      '75+': 80,
+      '0-9': 4.5, '10-17': 13.5, '18-24': 21, '25-34': 29.5,
+      '35-44': 39.5, '45-54': 49.5, '55-64': 59.5, '65-74': 69.5, '75+': 80,
     };
-    let wSum = 0;
-    let pSum = 0;
+    let wSum = 0, pSum = 0;
     Object.entries(agePctForAvg).forEach(([bucket, pct]) => {
       const mp = midpoints[bucket];
       if (mp === undefined) return;
       const p = Number(pct);
       if (!Number.isFinite(p) || p <= 0) return;
-      wSum += mp * p;
-      pSum += p;
+      wSum += mp * p; pSum += p;
     });
     setAvgAge(pSum > 0 ? Number((wSum / pSum).toFixed(1)) : null);
 
@@ -183,12 +170,38 @@ export function ClientDashboard() {
       ageMap[label].f += Math.round(Number(pct) / 2);
     });
     setAgeStats(ageOrder.map((age) => ({ age, m: ageMap[age]?.m ?? 0, f: ageMap[age]?.f ?? 0 })));
-
     setLastUpdate(new Date());
     return true;
   }
 
-  // ── Load data: read rollup from DB (instant), rebuild if missing ─────────────
+  // ── Salva rollup no cache do banco (faz próxima consulta ser instantânea) ───
+  async function saveRollupToCache(stats: any, startIso: string, endIso: string) {
+    if (!id) return;
+    const { error } = await supabase.from('visitor_analytics_rollups').upsert({
+      client_id: id,
+      start: startIso,
+      end: endIso,
+      total_visitors:           stats.total_visitors,
+      avg_visitors_per_day:     stats.avg_visitors_per_day,
+      visitors_per_day:         stats.visitors_per_day,
+      visitors_per_hour_avg:    stats.visitors_per_hour_avg,
+      age_pyramid_percent:      stats.age_pyramid_percent,
+      gender_percent:           stats.gender_percent,
+      attributes_percent:       stats.attributes_percent,
+      avg_visit_time_seconds:   stats.avg_visit_time_seconds ?? null,
+      avg_dwell_time_seconds:   null,
+      avg_contact_time_seconds: null,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'client_id,start,end' });
+    if (error) console.warn('[Dashboard] Erro ao salvar rollup no cache:', error);
+    else console.log('[Dashboard] Rollup salvo no cache ✅ — próxima consulta será instantânea');
+  }
+
+  // ── Load data ────────────────────────────────────────────────────────────────
+  // Ordem de prioridade:
+  //   1. Rollup salvo no banco (instantâneo, <100ms)
+  //   2. RPC build_visitor_rollup direto no Supabase (1-3s, sem passar pela Vercel)
+  //   3. Fallback: /api/sync-analytics com rebuild_rollup=true (caso RPC falhe)
   const loadData = useCallback(async () => {
     if (!id) return;
     setIsLoadingData(true);
@@ -199,54 +212,88 @@ export function ClientDashboard() {
       const startDay = startIso.slice(0, 10);
       const endDay   = endIso.slice(0, 10);
 
-      // 1. Try rollup from DB first (instant)
+      // ── 1. Busca rollup salvo no banco ─────────────────────────────────────
+      // Aceita qualquer rollup cujo período contenha o intervalo solicitado.
+      // Ex: se já calculou 04/03→12/03 e pede de novo, encontra e retorna na hora.
       const { data: rollups } = await supabase
         .from('visitor_analytics_rollups')
         .select('*')
         .eq('client_id', id)
         .gte('start', `${startDay}T00:00:00`)
-        .lte('start', `${startDay}T23:59:59.999Z`)
-        .gte('end',   `${endDay}T00:00:00`)
+        .lte('end',   `${endDay}T23:59:59.999Z`)
         .order('updated_at', { ascending: false })
         .limit(1);
 
       const rollup = rollups?.[0] ?? null;
-
       if (rollup) {
-        console.log(`[Dashboard] Rollup carregado ✅ (${rollup.total_visitors} visitantes)`);
+        console.log(`[Dashboard] ✅ Rollup do banco (${rollup.total_visitors} visitantes)`);
         applyRollup(rollup);
         setIsLoadingData(false);
         return;
       }
 
-      // 2. No rollup — unblock UI immediately with zeros
-      console.log('[Dashboard] Sem rollup — acionando rebuild em background...');
-      setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
+      // ── 2. Sem rollup — zera UI imediatamente e recalcula ──────────────────
+      console.log('[Dashboard] Sem rollup — recalculando...');
+      setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]);
+      setHourlyStats(new Array(24).fill(0));
       setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAge(null);
       setGenderStats([]); setAttributeStats([]); setAgeStats([]);
       setIsLoadingData(false);
 
-      // ✅ Module-level lock — survives React StrictMode double-mount
       const rebuildKey = `${id}:${startDay}:${endDay}`;
       if (_rebuilding.has(rebuildKey)) return;
       _rebuilding.add(rebuildKey);
-      setSyncMessage('Calculando dados do banco...');
+      setSyncMessage('Calculando dados...');
 
       try {
+        // ── 2a. RPC direto no Supabase (mais rápido, sem timeout da Vercel) ──
+        const { data: rpcData, error: rpcErr } = await supabase.rpc('build_visitor_rollup', {
+          p_client_id: id,
+          p_start: startIso,
+          p_end:   endIso,
+        });
+
+        if (!rpcErr && rpcData) {
+          const stats = rpcData as any;
+          const total = Number(stats?.total_visitors ?? 0);
+
+          if (total > 0) {
+            applyRollup({
+              total_visitors:         stats.total_visitors,
+              avg_visitors_per_day:   stats.avg_visitors_per_day,
+              avg_visit_time_seconds: stats.avg_visit_time_seconds ?? 0,
+              visitors_per_day:       stats.visitors_per_day,
+              visitors_per_hour_avg:  stats.visitors_per_hour_avg,
+              gender_percent:         stats.gender_percent,
+              attributes_percent:     stats.attributes_percent,
+              age_pyramid_percent:    stats.age_pyramid_percent,
+            });
+            setSyncMessage(`✅ ${total.toLocaleString()} visitantes`);
+            // Salva no cache — próxima consulta do mesmo período será instantânea
+            saveRollupToCache(stats, startIso, endIso);
+          } else {
+            setSyncMessage('Sem dados para o período selecionado');
+            setTimeout(() => setSyncMessage(''), 3000);
+          }
+          return;
+        }
+
+        // ── 2b. Fallback: /api/sync-analytics (caso RPC não esteja disponível) ──
+        console.warn('[Dashboard] RPC falhou, usando fallback via API:', rpcErr);
         const resp = await fetch('/api/sync-analytics', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             client_id: id,
             start: startIso,
-            end: endIso,
+            end:   endIso,
             rebuild_rollup: true,
             ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
           }),
         });
         const json = resp.ok ? await resp.json() : null;
         if (json?.dashboard) {
-          console.log(`[Dashboard] Rebuild ✅ ${json.dashboard.total_visitors} visitantes`);
+          console.log(`[Dashboard] Rebuild via API ✅ ${json.dashboard.total_visitors} visitantes`);
           applyRollup({
             total_visitors:         json.dashboard.total_visitors,
             avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
@@ -261,14 +308,13 @@ export function ClientDashboard() {
         } else {
           setSyncMessage('');
         }
+
       } catch (e) {
-        console.warn('[Dashboard] Rebuild falhou:', e);
+        console.warn('[Dashboard] Erro no rebuild:', e);
         setSyncMessage('');
       } finally {
         _rebuilding.delete(rebuildKey);
       }
-
-      return;
 
     } catch (err) {
       console.error('[Dashboard] Erro ao carregar dados:', err);
@@ -278,7 +324,7 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, view, selectedStore?.id, selectedCamera?.id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  // ── processRawRows (fallback when no rollup exists) ──────────────────────────
+  // ── processRawRows (mantido como referência, não usado no fluxo principal) ──
   function processRawRows(rows: any[]) {
     const days = [0, 0, 0, 0, 0, 0, 0];
     const hours = new Array(24).fill(0);
@@ -291,11 +337,9 @@ export function ClientDashboard() {
     let attrGlasses = 0, attrBeard = 0, attrMask = 0, attrHeadwear = 0;
     const uniqueVisitors = new Set<string>();
     let latest: Date | null = null;
-
     rows.forEach((visit: any) => {
       const startVal = visit.start || visit.timestamp;
       if (!startVal) return;
-
       const date = new Date(startVal);
       if (!isNaN(date.getTime())) {
         if (!latest || date > latest) latest = date;
@@ -303,19 +347,15 @@ export function ClientDashboard() {
         days[day === 0 ? 6 : day - 1]++;
         hours[date.getUTCHours()]++;
       }
-
       const visitorId = visit.visitor_id || visit.raw_data?.visitor_id;
       if (visitorId) uniqueVisitors.add(String(visitorId));
-
       const endDt = visit.end ? new Date(visit.end) : null;
       if (endDt && !isNaN(date.getTime()) && !isNaN(endDt.getTime()) && endDt > date) {
         totalDur += (endDt.getTime() - date.getTime()) / 1000; durCount++;
       }
-
       const sex = visit.sex || visit.gender;
       if (sex === 1 || sex === 'male') genderCount.male++;
       if (sex === 2 || sex === 'female') genderCount.female++;
-
       const ageValue = typeof visit.age === 'number' ? visit.age : 0;
       let ageGroup = '18-';
       if (ageValue >= 18 && ageValue <= 24) ageGroup = '18-24';
@@ -324,12 +364,10 @@ export function ClientDashboard() {
       else if (ageValue >= 45 && ageValue <= 54) ageGroup = '45-54';
       else if (ageValue >= 55 && ageValue <= 64) ageGroup = '55-64';
       else if (ageValue >= 65) ageGroup = '65+';
-
       const isMale = sex === 1 || sex === 'male';
       const isFemale = sex === 2 || sex === 'female';
       if (isMale) ageMap[ageGroup].m++;
       if (isFemale) ageMap[ageGroup].f++;
-
       const attrs = visit.attributes || visit;
       const hasGlasses = attrs.glasses === true || attrs.glasses === 1 ||
         (typeof attrs.glasses === 'string' && ['yes', 'true', '1', 'y', 'on'].includes(attrs.glasses.toLowerCase()));
@@ -341,10 +379,8 @@ export function ClientDashboard() {
       const headwear = attrs.headwear;
       if (headwear && headwear !== 'none' && headwear !== 'no') attrHeadwear++;
     });
-
     const totalProcessed = uniqueVisitors.size > 0 ? uniqueVisitors.size : rows.length;
     const dayCount = Math.max(1, Math.floor((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1);
-
     setTotalVisitors(totalProcessed);
     setDailyStats([...days]);
     setHourlyStats([...hours]);
@@ -353,25 +389,27 @@ export function ClientDashboard() {
     setGenderStats([{ label: 'Masculino', value: genderCount.male }, { label: 'Feminino', value: genderCount.female }]);
     const base = Math.max(rows.length, 1);
     setAttributeStats([
-      { label: 'Óculos', value: Math.round((attrGlasses / base) * 100) },
-      { label: 'Barba', value: Math.round((attrBeard / base) * 100) },
-      { label: 'Máscara', value: Math.round((attrMask / base) * 100) },
+      { label: 'Óculos',      value: Math.round((attrGlasses  / base) * 100) },
+      { label: 'Barba',       value: Math.round((attrBeard    / base) * 100) },
+      { label: 'Máscara',     value: Math.round((attrMask     / base) * 100) },
       { label: 'Chapéu/Boné', value: Math.round((attrHeadwear / base) * 100) },
     ]);
     setAgeStats([
-      { age: '65+', m: Math.round((ageMap['65+'].m / base) * 100), f: Math.round((ageMap['65+'].f / base) * 100) },
+      { age: '65+',   m: Math.round((ageMap['65+'].m   / base) * 100), f: Math.round((ageMap['65+'].f   / base) * 100) },
       { age: '55-64', m: Math.round((ageMap['55-64'].m / base) * 100), f: Math.round((ageMap['55-64'].f / base) * 100) },
       { age: '45-54', m: Math.round((ageMap['45-54'].m / base) * 100), f: Math.round((ageMap['45-54'].f / base) * 100) },
       { age: '35-44', m: Math.round((ageMap['35-44'].m / base) * 100), f: Math.round((ageMap['35-44'].f / base) * 100) },
       { age: '25-34', m: Math.round((ageMap['25-34'].m / base) * 100), f: Math.round((ageMap['25-34'].f / base) * 100) },
       { age: '18-24', m: Math.round((ageMap['18-24'].m / base) * 100), f: Math.round((ageMap['18-24'].f / base) * 100) },
-      { age: '18-', m: Math.round((ageMap['18-'].m / base) * 100), f: Math.round((ageMap['18-'].f / base) * 100) },
+      { age: '18-',   m: Math.round((ageMap['18-'].m   / base) * 100), f: Math.round((ageMap['18-'].f   / base) * 100) },
     ]);
     if (latest) setLastUpdate(latest);
   }
   void processRawRows;
 
-  // ── Sync from API → DB (backend does all the work) ──────────────────────────
+  // ── Sync from API → DB ───────────────────────────────────────────────────────
+  // Chamado APENAS quando usuário clica "Sincronizar".
+  // Após sync completo, recalcula rollup via RPC direto (sem timeout da Vercel).
   const syncFromApi = useCallback(async (silent = false) => {
     if (!id) return;
     if (syncingRef.current) return;
@@ -392,9 +430,8 @@ export function ClientDashboard() {
         const payload: any = {
           client_id: id,
           start: selectedStartDate.toISOString(),
-          end: selectedEndDate.toISOString(),
+          end:   selectedEndDate.toISOString(),
           offset,
-          // ✅ force_full_sync ensures backend doesn't stop at MAX_MS prematurely
           force_full_sync: true,
         };
         if (deviceIds.length > 0) payload.devices = deviceIds;
@@ -418,23 +455,53 @@ export function ClientDashboard() {
 
         if (json?.done === true || json?.next_offset == null) {
           offset = null;
-          setSyncMessage(`Calculando totais...`);
+          setSyncMessage('Calculando totais...');
 
-          // ✅ Rebuild rollup after sync — but only if not already rebuilding
           const _startDay = selectedStartDate.toISOString().slice(0, 10);
-          const _endDay = selectedEndDate.toISOString().slice(0, 10);
+          const _endDay   = selectedEndDate.toISOString().slice(0, 10);
           const rebuildKey2 = `${id}:${_startDay}:${_endDay}`;
+
           if (_rebuilding.has(rebuildKey2)) {
-            setSyncMessage(`✅ Sincronização concluída.`);
-          } else {
+            setSyncMessage('✅ Sincronização concluída.');
+            return;
+          }
+
           try {
+            // ── Recalcula via RPC direto (mais rápido que /api/sync-analytics) ──
+            const { data: rpcData, error: rpcErr } = await supabase.rpc('build_visitor_rollup', {
+              p_client_id: id,
+              p_start: selectedStartDate.toISOString(),
+              p_end:   selectedEndDate.toISOString(),
+            });
+
+            if (!rpcErr && rpcData) {
+              const stats = rpcData as any;
+              const total = Number(stats?.total_visitors ?? 0);
+              if (total > 0) {
+                applyRollup({
+                  total_visitors:         stats.total_visitors,
+                  avg_visitors_per_day:   stats.avg_visitors_per_day,
+                  avg_visit_time_seconds: stats.avg_visit_time_seconds ?? 0,
+                  visitors_per_day:       stats.visitors_per_day,
+                  visitors_per_hour_avg:  stats.visitors_per_hour_avg,
+                  gender_percent:         stats.gender_percent,
+                  attributes_percent:     stats.attributes_percent,
+                  age_pyramid_percent:    stats.age_pyramid_percent,
+                });
+                setSyncMessage(`✅ ${total.toLocaleString()} visitantes sincronizados.`);
+                saveRollupToCache(stats, selectedStartDate.toISOString(), selectedEndDate.toISOString());
+                return;
+              }
+            }
+
+            // Fallback se RPC falhou: usa /api/sync-analytics rebuild
             const rebuildResp = await fetch('/api/sync-analytics', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
                 client_id: id,
                 start: selectedStartDate.toISOString(),
-                end: selectedEndDate.toISOString(),
+                end:   selectedEndDate.toISOString(),
                 rebuild_rollup: true,
                 ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
               }),
@@ -457,10 +524,10 @@ export function ClientDashboard() {
               await loadData();
             }
           } catch {
-            setSyncMessage(`✅ Sincronização concluída.`);
+            setSyncMessage('✅ Sincronização concluída.');
             await loadData();
           }
-          } // end else _rebuilding
+
         } else {
           offset = Number(json.next_offset);
           const displayTotal = totalInDB > 0 ? totalInDB : totalFetched;
@@ -478,29 +545,27 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  // ── On mount / filter change: load from DB/rollup only ──────────────────────
-  // ✅ NO auto-sync: syncFromApi is only called when user clicks "Sincronizar"
-  // This prevents 429 Too Many Requests on the external API.
+  // ── On mount / filtro muda: carrega dados ────────────────────────────────────
+  // ✅ SEM auto-sync: syncFromApi só é chamado quando usuário clica "Sincronizar"
   useEffect(() => {
     loadData();
   }, [loadData]);
 
-  // ── Auto-refresh: only reload rollup from DB every 5 min (no external API calls) ──
+  // ── Auto-refresh a cada 5 min (só lê rollup do banco, sem chamar API externa) ──
   useEffect(() => {
     if (!id) return;
     const t = setInterval(() => {
       if (!syncingRef.current && document.visibilityState === 'visible') {
-        loadData(); // reads rollup from DB only — no external API
+        loadData();
       }
     }, 5 * 60 * 1000);
     return () => clearInterval(t);
   }, [id, loadData]);
 
-  // ── Fetch client info, stores, api config ─────────────────────────────────
+  // ── Fetch client info, stores, api config ────────────────────────────────────
   useEffect(() => {
     async function fetchClientAndStores() {
       if (!id) return;
-
       const { data: client } = await supabase
         .from('clients').select('name, logo_url').eq('id', id).single();
       if (client) setClientData({ name: client.name, logo: client.logo_url });
@@ -516,7 +581,6 @@ export function ClientDashboard() {
           collect_face_quality, collect_glasses, collect_beard, collect_hair_color,
           collect_hair_type, collect_headwear`)
         .eq('client_id', id).single();
-
       if (apiCfg) setApiConfig(apiCfg as ClientApiConfig);
 
       if (storesData) {
@@ -528,7 +592,6 @@ export function ClientDashboard() {
             type: device.type || 'dome', resolution: '1080p', macAddress: device.mac_address,
           });
         });
-
         const seen = new Set<string>();
         const uniqueStores: StoreType[] = storesData
           .filter((s: any) => { if (seen.has(String(s.id))) return false; seen.add(String(s.id)); return true; })
@@ -542,10 +605,10 @@ export function ClientDashboard() {
     fetchClientAndStores();
   }, [id]);
 
-  // ── Widget config ─────────────────────────────────────────────────────────
+  // ── Widget config ─────────────────────────────────────────────────────────────
   useEffect(() => {
     const clientConfig = localStorage.getItem(`dashboard-config-${id}`);
-    const globalConfig = localStorage.getItem('dashboard-config-global');
+    const globalConfig  = localStorage.getItem('dashboard-config-global');
     const raw = clientConfig || globalConfig;
     if (raw) {
       const savedIds = JSON.parse(raw) as string[];
@@ -557,7 +620,7 @@ export function ClientDashboard() {
     setIsLoadingConfig(false);
   }, [id]);
 
-  // ── Navigation from location state ────────────────────────────────────────
+  // ── Navigation from location state ───────────────────────────────────────────
   useEffect(() => {
     if (location.state?.initialView === 'store' && location.state?.storeId) {
       const store = stores.find((s) => s.id === location.state.storeId);
@@ -566,12 +629,12 @@ export function ClientDashboard() {
   }, [location.state, stores]);
 
   const goToNetwork = () => { setView('network'); setSelectedStore(null); setSelectedCamera(null); };
-  const goToStore = (store: StoreType) => { setSelectedStore(store); setView('network'); setSelectedCamera(null); };
+  const goToStore   = (store: StoreType) => { setSelectedStore(store); setView('network'); setSelectedCamera(null); };
 
   const getStats = () => [
-    { label: 'Total Visitantes', value: totalVisitors.toLocaleString(), icon: Users },
-    { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(), icon: BarChart2 },
-    { label: 'Tempo Médio Visita', value: formatDuration(avgVisitSeconds), icon: Clock },
+    { label: 'Total Visitantes',     value: totalVisitors.toLocaleString(),      icon: Users     },
+    { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(),  icon: BarChart2 },
+    { label: 'Tempo Médio Visita',   value: formatDuration(avgVisitSeconds),      icon: Clock     },
     { label: 'Idade Média', value: avgAge == null ? '-' : `${avgAge.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} anos`, icon: Users },
   ];
 
@@ -581,6 +644,7 @@ export function ClientDashboard() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4">
+
         {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-sm text-gray-500">
           <button onClick={() => navigate('/clientes')} className="hover:text-emerald-400 transition-colors">
@@ -631,7 +695,11 @@ export function ClientDashboard() {
                 API configurada: {apiConfig?.api_key ? '✅' : '⚠️'}
               </p>
               {syncMessage && (
-                <p className={`text-xs mt-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : syncMessage.startsWith('Erro') ? 'text-red-400' : 'text-yellow-400'}`}>
+                <p className={`text-xs mt-1 ${
+                  syncMessage.startsWith('✅') ? 'text-emerald-400'
+                  : syncMessage.startsWith('Erro') ? 'text-red-400'
+                  : 'text-yellow-400'
+                }`}>
                   {syncMessage}
                 </p>
               )}
@@ -640,6 +708,7 @@ export function ClientDashboard() {
 
           {/* Controls */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+
             {/* Store selector */}
             <div className="relative w-full sm:w-auto">
               <select
@@ -752,20 +821,17 @@ export function ClientDashboard() {
               activeWidgets.map((widget) => {
                 const Component = WIDGET_MAP[widget.id];
                 if (!Component) return null;
-
                 let colSpan = 'lg:col-span-6';
-                if (widget.size === 'full') colSpan = 'lg:col-span-12';
-                if (widget.size === 'third') colSpan = 'lg:col-span-4';
+                if (widget.size === 'full')    colSpan = 'lg:col-span-12';
+                if (widget.size === 'third')   colSpan = 'lg:col-span-4';
                 if (widget.size === 'quarter') colSpan = 'lg:col-span-3';
-                if (widget.size === '2/3') colSpan = 'lg:col-span-8';
-
+                if (widget.size === '2/3')     colSpan = 'lg:col-span-8';
                 const widgetProps: any = { view: 'network' };
-                if (widget.id === 'flow_trend') widgetProps.dailyData = dailyStats;
+                if (widget.id === 'flow_trend')  widgetProps.dailyData  = dailyStats;
                 if (widget.id === 'hourly_flow') widgetProps.hourlyData = hourlyStats;
-                if (widget.id === 'age_pyramid') widgetProps.ageData = ageStats;
+                if (widget.id === 'age_pyramid') widgetProps.ageData    = ageStats;
                 if (widget.id === 'gender_dist') { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'attributes') widgetProps.attrData = attributeStats;
-
+                if (widget.id === 'attributes')  widgetProps.attrData   = attributeStats;
                 return (
                   <div key={widget.id} className={`col-span-1 ${colSpan} animate-in fade-in zoom-in-95 duration-500`}>
                     <Component {...widgetProps} />
