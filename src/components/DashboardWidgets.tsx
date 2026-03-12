@@ -98,8 +98,24 @@ export const DonutChart = ({
   const safeTotal = total > 0 ? total : 1;
   let accumulatedAngle = 0;
 
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [hoverTip, setHoverTip] = React.useState<string | null>(null);
+  const [mouse, setMouse] = React.useState<{ x: number; y: number } | null>(null);
+
+  const onMove = (e: React.MouseEvent) => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setMouse({ x: e.clientX - r.left, y: e.clientY - r.top });
+  };
+
+  const onLeave = () => {
+    setHoverTip(null);
+    setMouse(null);
+  };
+
   return (
-    <div className="h-[200px] w-full relative flex items-center justify-center">
+    <div ref={wrapRef} className="h-[200px] w-full relative flex items-center justify-center" onMouseMove={onMove} onMouseLeave={onLeave}>
       <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90 overflow-visible">
         {data.map((d, i) => {
           const angle = (d.value / safeTotal) * 360;
@@ -125,10 +141,10 @@ export const DonutChart = ({
               strokeWidth="15"
               strokeDasharray={strokeDasharray}
               strokeDashoffset={strokeDashoffset}
-              className="transition-all duration-1000 ease-out"
-            >
-              <title>{tip}</title>
-            </circle>
+              className="transition-all duration-1000 ease-out cursor-default"
+              onMouseEnter={() => setHoverTip(tip)}
+              onMouseLeave={() => setHoverTip(null)}
+            />
           );
         })}
       </svg>
@@ -139,16 +155,47 @@ export const DonutChart = ({
           <span className="text-[10px] text-gray-500 uppercase">Total</span>
         </div>
       )}
+
+      {hoverTip && mouse && (
+        <div
+          className="absolute z-10 px-2 py-1 rounded-md bg-gray-950/90 text-white text-[10px] border border-gray-800 pointer-events-none"
+          style={{ left: Math.min(mouse.x + 10, 260), top: Math.max(0, mouse.y - 30) }}
+        >
+          {hoverTip}
+        </div>
+      )}
     </div>
   );
 };
 
 export const HorizontalBarChart = ({ data, color }: { data: { label: string, value: number }[], color: string }) => {
   const max = Math.max(...data.map(d => d.value), 1);
+
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [hover, setHover] = React.useState<{ label: string; value: number } | null>(null);
+  const [mouse, setMouse] = React.useState<{ x: number; y: number } | null>(null);
+
+  const onMove = (e: React.MouseEvent) => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setMouse({ x: e.clientX - r.left, y: e.clientY - r.top });
+  };
+
+  const onLeave = () => {
+    setHover(null);
+    setMouse(null);
+  };
+
   return (
-    <div className="space-y-3 w-full">
+    <div ref={wrapRef} className="space-y-3 w-full relative" onMouseMove={onMove} onMouseLeave={onLeave}>
       {data.map((d, i) => (
-        <div key={i} className="flex items-center gap-3 text-xs">
+        <div
+          key={i}
+          className="flex items-center gap-3 text-xs"
+          onMouseEnter={() => setHover({ label: d.label, value: d.value })}
+          onMouseLeave={() => setHover(null)}
+        >
            <span className="w-24 text-right text-gray-400 truncate">{d.label}</span>
            <div className="flex-1 bg-gray-100 dark:bg-gray-900 rounded-full h-2 relative">
              <div 
@@ -159,6 +206,16 @@ export const HorizontalBarChart = ({ data, color }: { data: { label: string, val
            <span className="w-12 text-gray-900 dark:text-white font-medium">{d.value}%</span>
         </div>
       ))}
+
+      {hover && mouse && (
+        <div
+          className="absolute z-10 px-2 py-1 rounded-md bg-gray-950/90 text-white text-[10px] border border-gray-800 pointer-events-none"
+          style={{ left: Math.min(mouse.x + 10, 260), top: Math.max(0, mouse.y - 30) }}
+        >
+          <div className="font-semibold">{hover.label}</div>
+          <div>{hover.value}%</div>
+        </div>
+      )}
     </div>
   );
 };
@@ -178,8 +235,24 @@ export const AgePyramid = ({ data: externalData, totalVisitors }: { data?: any[]
   const maxVal = Math.max(...data.map((d) => Math.max(Number(d.m) || 0, Number(d.f) || 0)), 1);
   const base = typeof totalVisitors === 'number' && totalVisitors > 0 ? totalVisitors : null;
 
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [hoverTip, setHoverTip] = React.useState<string | null>(null);
+  const [mouse, setMouse] = React.useState<{ x: number; y: number } | null>(null);
+
+  const onMove = (e: React.MouseEvent) => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setMouse({ x: e.clientX - r.left, y: e.clientY - r.top });
+  };
+
+  const onLeave = () => {
+    setHoverTip(null);
+    setMouse(null);
+  };
+
   return (
-    <div className="w-full flex flex-col gap-1">
+    <div ref={wrapRef} className="w-full flex flex-col gap-1 relative" onMouseMove={onMove} onMouseLeave={onLeave}>
       <div className="flex justify-between text-[10px] text-gray-500 px-10 mb-2">
         <span>Masculino</span>
         <span>Feminino</span>
@@ -196,15 +269,34 @@ export const AgePyramid = ({ data: externalData, totalVisitors }: { data?: any[]
         return (
           <div key={i} className="flex items-center h-6 w-full">
             <div className="flex-1 flex justify-end pr-2">
-              <div title={tip} style={{ width: `${(mPct / maxVal) * 100}%` }} className="h-4 bg-blue-600 rounded-l-sm transition-all hover:bg-blue-500" />
+              <div
+                style={{ width: `${(mPct / maxVal) * 100}%` }}
+                className="h-4 bg-blue-600 rounded-l-sm transition-all hover:bg-blue-500"
+                onMouseEnter={() => setHoverTip(tip)}
+                onMouseLeave={() => setHoverTip(null)}
+              />
             </div>
             <span className="w-12 text-center text-[10px] text-gray-400">{d.age}</span>
             <div className="flex-1 pl-2">
-              <div title={tip} style={{ width: `${(fPct / maxVal) * 100}%` }} className="h-4 bg-pink-600 rounded-r-sm transition-all hover:bg-pink-500" />
+              <div
+                style={{ width: `${(fPct / maxVal) * 100}%` }}
+                className="h-4 bg-pink-600 rounded-r-sm transition-all hover:bg-pink-500"
+                onMouseEnter={() => setHoverTip(tip)}
+                onMouseLeave={() => setHoverTip(null)}
+              />
             </div>
           </div>
         );
       })}
+
+      {hoverTip && mouse && (
+        <div
+          className="absolute z-10 px-2 py-1 rounded-md bg-gray-950/90 text-white text-[10px] border border-gray-800 pointer-events-none"
+          style={{ left: Math.min(mouse.x + 10, 300), top: Math.max(0, mouse.y - 30) }}
+        >
+          {hoverTip}
+        </div>
+      )}
     </div>
   );
 };
@@ -212,23 +304,53 @@ export const AgePyramid = ({ data: externalData, totalVisitors }: { data?: any[]
 export const VerticalBarChart = ({ data, colors, height = 150 }: { data: { label: string, values: number[] }[], colors: string[], height?: number }) => {
   const allValues = data.flatMap(d => d.values);
   const max = Math.max(...allValues, 1);
-  
+
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [hoverTip, setHoverTip] = React.useState<string | null>(null);
+  const [mouse, setMouse] = React.useState<{ x: number; y: number } | null>(null);
+
+  const onMove = (e: React.MouseEvent) => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setMouse({ x: e.clientX - r.left, y: e.clientY - r.top });
+  };
+
+  const onLeave = () => {
+    setHoverTip(null);
+    setMouse(null);
+  };
+
   return (
-    <div style={{ height }} className="w-full flex items-end justify-between gap-2">
+    <div ref={wrapRef} style={{ height }} className="w-full flex items-end justify-between gap-2 relative" onMouseMove={onMove} onMouseLeave={onLeave}>
       {data.map((d, i) => (
         <div key={i} className="flex-1 flex flex-col items-center gap-1 group">
           <div className="flex items-end justify-center gap-1 w-full h-full relative">
-             {d.values.map((v, idx) => (
-               <div 
-                 key={idx}
-                 style={{ height: `${(v / max) * 100}%` }}
-                 className={`flex-1 rounded-t-sm transition-all duration-500 relative group-hover:opacity-80 ${colors[idx % colors.length]}`}
-               />
-             ))}
+             {d.values.map((v, idx) => {
+               const tip = `${d.label}: ${Number(v).toLocaleString()}`;
+               return (
+                 <div 
+                   key={idx}
+                   style={{ height: `${(v / max) * 100}%` }}
+                   className={`flex-1 rounded-t-sm transition-all duration-500 relative group-hover:opacity-80 ${colors[idx % colors.length]}`}
+                   onMouseEnter={() => setHoverTip(tip)}
+                   onMouseLeave={() => setHoverTip(null)}
+                 />
+               );
+             })}
           </div>
           <span className="text-[10px] text-gray-500 truncate w-full text-center">{d.label}</span>
         </div>
       ))}
+
+      {hoverTip && mouse && (
+        <div
+          className="absolute z-10 px-2 py-1 rounded-md bg-gray-950/90 text-white text-[10px] border border-gray-800 pointer-events-none"
+          style={{ left: Math.min(mouse.x + 10, 300), top: Math.max(0, mouse.y - 30) }}
+        >
+          {hoverTip}
+        </div>
+      )}
     </div>
   );
 };
@@ -438,203 +560,231 @@ export const WidgetCampaigns = ({ view }: { view: string }) => (
    </div>
 );
 
-export const WidgetKPIFlowStats = () => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex items-center justify-between gap-4 overflow-x-auto shadow-sm dark:shadow-none">
-     <KPIStat label="Total Visitantes" value="0" color="text-gray-900 dark:text-white" />
-     <KPIStat label="Média Visitantes Dia" value="0" color="text-blue-500" />
-     <KPIStat label="Tempo Médio Visita" value="00:00" color="text-emerald-500" />
-  </div>
-);
+export const WidgetKPIFlowStats = ({ totalVisitors, avgVisitorsPerDay, avgVisitSeconds }: { totalVisitors?: number; avgVisitorsPerDay?: number; avgVisitSeconds?: number }) => {
+  const fmtDur = (s: number) => {
+    const sec = Math.max(0, Math.floor(Number(s) || 0));
+    const m = Math.floor(sec / 60);
+    const r = sec % 60;
+    return `${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`;
+  };
 
-export const WidgetKPIStoreQuarter = () => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex flex-col justify-between shadow-sm dark:shadow-none">
-    <h3 className="font-bold text-red-500 mb-2 uppercase text-xs tracking-wider">Loja Último Trimestre</h3>
-    <div className="flex gap-2">
-       <KPIStat label="Visitantes" value="0" />
-       <KPIStat label="Vendas" value="0" />
-       <KPIStat label="Conversão" value="0%" color="text-emerald-500" />
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex items-center justify-between gap-4 overflow-x-auto shadow-sm dark:shadow-none">
+      <KPIStat label="Total Visitantes" value={Number(totalVisitors || 0).toLocaleString()} color="text-gray-900 dark:text-white" />
+      <KPIStat label="Média Visitantes Dia" value={Number(avgVisitorsPerDay || 0).toLocaleString()} color="text-blue-500" />
+      <KPIStat label="Tempo Médio Visita" value={fmtDur(Number(avgVisitSeconds || 0))} color="text-emerald-500" />
+    </div>
+  );
+};
+
+export const WidgetKPIStoreQuarter = ({ visitors, sales, loading }: { visitors?: number; sales?: number; loading?: boolean }) => {
+  const v = Number(visitors || 0);
+  const s = Number(sales || 0);
+  const conv = v > 0 ? (s / v) * 100 : 0;
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex flex-col justify-between shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-red-500 mb-2 uppercase text-xs tracking-wider">Loja Último Trimestre</h3>
+      <div className="flex gap-2">
+        <KPIStat label="Visitantes" value={loading ? '—' : v.toLocaleString()} />
+        <KPIStat label="Vendas" value={loading ? '—' : s.toLocaleString()} />
+        <KPIStat label="Conversão" value={loading ? '—' : `${conv.toFixed(1)}%`} color="text-emerald-500" />
+      </div>
+    </div>
+  );
+};
+
+export const WidgetKPIStorePeriod = ({ visitors, sales, loading }: { visitors?: number; sales?: number; loading?: boolean }) => {
+  const v = Number(visitors || 0);
+  const s = Number(sales || 0);
+  const conv = v > 0 ? (s / v) * 100 : 0;
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex flex-col justify-between shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-red-500 mb-2 uppercase text-xs tracking-wider">Loja Período</h3>
+      <div className="flex gap-2">
+        <KPIStat label="Visitantes" value={loading ? '—' : v.toLocaleString()} />
+        <KPIStat label="Vendas" value={loading ? '—' : s.toLocaleString()} />
+        <KPIStat label="Conversão" value={loading ? '—' : `${conv.toFixed(1)}%`} color="text-emerald-500" />
+      </div>
+    </div>
+  );
+};
+
+export const WidgetSalesQuarter = ({ quarterData, loading }: { quarterData?: { label: string; visitors: number; sales: number }[]; loading?: boolean }) => {
+  const data = Array.isArray(quarterData) && quarterData.length
+    ? quarterData
+    : [{ label: '—', visitors: 0, sales: 0 }, { label: '—', visitors: 0, sales: 0 }, { label: '—', visitors: 0, sales: 0 }];
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas Último Trimestre</h3>
+      <VerticalBarChart
+        data={data.map((d) => ({ label: d.label, values: [Number(d.visitors) || 0, Number(d.sales) || 0] }))}
+        colors={['bg-blue-500', 'bg-blue-900']}
+        height={120}
+      />
+      <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
+        <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-500 rounded-full"/> {loading ? 'Visitantes (carregando...)' : 'Visitantes'}</span>
+        <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-900 rounded-full"/> {loading ? 'Vendas (carregando...)' : 'Vendas'}</span>
+      </div>
+    </div>
+  );
+};
+
+export const WidgetSalesDaily = ({ labels, visitors, loading }: { labels?: string[]; visitors?: number[]; loading?: boolean }) => (
+  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+    <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas por Dia</h3>
+    <LineChart data={(visitors || []).length ? (visitors as number[]) : [0]} labels={labels} color="text-blue-500" height={100} />
+    <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
+      <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-500 rounded-full"/> {loading ? 'Visitantes (carregando...)' : 'Visitantes'}</span>
     </div>
   </div>
 );
 
-export const WidgetKPIStorePeriod = () => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full flex flex-col justify-between shadow-sm dark:shadow-none">
-    <h3 className="font-bold text-red-500 mb-2 uppercase text-xs tracking-wider">Loja Período</h3>
-    <div className="flex gap-2">
-       <KPIStat label="Visitantes" value="0" />
-       <KPIStat label="Vendas" value="0" />
-       <KPIStat label="Conversão" value="0%" color="text-emerald-500" />
+export const WidgetSalesPeriodBar = ({ periodData, loading }: { periodData?: { label: string; visitors: number; sales: number }[]; loading?: boolean }) => (
+  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+    <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas por Período</h3>
+    <VerticalBarChart
+      data={(periodData || []).length
+        ? (periodData as any[]).map((d) => ({ label: d.label, values: [Number(d.visitors) || 0, Number(d.sales) || 0] }))
+        : [{ label: '—', values: [0, 0] }, { label: '—', values: [0, 0] }, { label: '—', values: [0, 0] }, { label: '—', values: [0, 0] }]}
+      colors={['bg-blue-500', 'bg-blue-900']}
+      height={120}
+    />
+    <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
+      <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-500 rounded-full"/> {loading ? 'Visitantes (carregando...)' : 'Visitantes'}</span>
+      <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-900 rounded-full"/> {loading ? 'Vendas (carregando...)' : 'Vendas'}</span>
     </div>
   </div>
 );
 
-export const WidgetSalesQuarter = () => (
+export const WidgetSalesPeriodLine = ({ labels, current, previous, loading }: { labels?: string[]; current?: number[]; previous?: number[]; loading?: boolean }) => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas Último Trimestre</h3>
-     <VerticalBarChart 
-       data={[
-         { label: 'OUT', values: [0, 0] },
-         { label: 'NOV', values: [0, 0] },
-         { label: 'DEZ', values: [0, 0] }
-       ]} 
-       colors={['bg-blue-500', 'bg-blue-900']} 
-       height={120}
-     />
-     <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
-        <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-500 rounded-full"/> Visitantes</span>
-        <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-900 rounded-full"/> Vendas</span>
-     </div>
-  </div>
-);
-
-export const WidgetSalesDaily = () => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas por Dia</h3>
-     <LineChart data={[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]} color="text-blue-500" height={100} />
-     <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
-        <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-500 rounded-full"/> Visitantes</span>
-     </div>
-  </div>
-);
-
-export const WidgetSalesPeriodBar = () => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas por Período</h3>
-     <VerticalBarChart 
-       data={[
-         { label: 'Sem 1', values: [0, 0] },
-         { label: 'Sem 2', values: [0, 0] },
-         { label: 'Sem 3', values: [0, 0] },
-         { label: 'Sem 4', values: [0, 0] }
-       ]} 
-       colors={['bg-blue-500', 'bg-blue-900']} 
-       height={120}
-     />
-  </div>
-);
-
-export const WidgetSalesPeriodLine = () => (
-  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas (Comparativo)</h3>
-     <div className="relative h-[100px]">
-        <div className="absolute inset-0 opacity-50"><LineChart data={[20, 30, 40, 35]} color="text-blue-300" height={100} /></div>
-        <div className="absolute inset-0"><LineChart data={[30, 45, 55, 40]} color="text-blue-600" height={100} /></div>
-     </div>
+    <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-xs tracking-wider">Total Visitantes vs Vendas (Comparativo)</h3>
+    <div className="relative h-[100px]">
+      <div className="absolute inset-0 opacity-50"><LineChart data={(previous || []).length ? (previous as number[]) : [0]} labels={labels} color="text-blue-300" height={100} /></div>
+      <div className="absolute inset-0"><LineChart data={(current || []).length ? (current as number[]) : [0]} labels={labels} color="text-blue-600" height={100} /></div>
+    </div>
+    <div className="flex justify-center gap-4 mt-2 text-[10px] text-gray-500">
+      <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-300 rounded-full"/> {loading ? 'Período anterior (carregando...)' : 'Período anterior'}</span>
+      <span className="flex items-center gap-1"><div className="w-2 h-2 bg-blue-600 rounded-full"/> {loading ? 'Período atual (carregando...)' : 'Período atual'}</span>
+    </div>
   </div>
 );
 
 export const WidgetFreezerVerticalQuarter = () => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-red-500 mb-4 uppercase text-xs tracking-wider">Kibon Último Trimestre (Freezer Vertical)</h3>
-     <VerticalBarChart 
-       data={[
-         { label: 'OUT', values: [90, 20] },
-         { label: 'NOV', values: [50, 15] },
-         { label: 'DEZ', values: [45, 12] }
-       ]} 
-       colors={['bg-blue-500', 'bg-purple-600']} 
-       height={120}
-     />
+    <h3 className="font-bold text-red-500 mb-4 uppercase text-xs tracking-wider">Kibon Último Trimestre (Freezer Vertical)</h3>
+    <div className="h-[120px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
   </div>
 );
 
 export const WidgetFreezerHorizontalQuarter = () => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
-     <h3 className="font-bold text-red-500 mb-4 uppercase text-xs tracking-wider">Kibon Último Trimestre (Freezer Horizontal)</h3>
-     <VerticalBarChart 
-       data={[
-         { label: 'OUT', values: [85, 10] },
-         { label: 'NOV', values: [40, 8] },
-         { label: 'DEZ', values: [42, 9] }
-       ]} 
-       colors={['bg-blue-500', 'bg-purple-600']} 
-       height={120}
-     />
+    <h3 className="font-bold text-red-500 mb-4 uppercase text-xs tracking-wider">Kibon Último Trimestre (Freezer Horizontal)</h3>
+    <div className="h-[120px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
   </div>
 );
 
-export const WidgetAgeRanges = () => (
-  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-full">
-     <h3 className="font-bold text-white mb-4 uppercase text-sm tracking-wider">Faixa Etária</h3>
-     <VerticalBarChart 
-       data={[
-         { label: '18-', values: [10] },
-         { label: '18-24', values: [25] },
-         { label: '25-34', values: [60] },
-         { label: '35-44', values: [40] },
-         { label: '45-54', values: [20] },
-         { label: '55-64', values: [15] },
-         { label: '65+', values: [5] }
-       ]} 
-       colors={['bg-blue-500']} 
-       height={150}
-     />
-  </div>
-);
+export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: number; f: number }[] }) => {
+  const order = ['18-', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
+  const byAge = new Map((ageData || []).map((d) => [String(d.age), d]));
 
-export const WidgetVision = () => (
-  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-full">
-     <h3 className="font-bold text-white mb-4 uppercase text-sm tracking-wider">Visão</h3>
-     <DonutChart 
-        data={[{ label: 'Sem Óculos', value: 65 }, { label: 'Óculos Normais', value: 25 }, { label: 'Óculos Escuros', value: 10 }]} 
-        colors={['#e5e7eb', '#3b82f6', '#1f2937']}
-     />
-  </div>
-);
+  const chartData = order.map((age) => {
+    const d = byAge.get(age);
+    const m = Number(d?.m) || 0;
+    const f = Number(d?.f) || 0;
+    return { label: age, values: [m + f] };
+  });
 
-export const WidgetFacialHair = () => (
-  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-full">
-     <h3 className="font-bold text-white mb-4 uppercase text-sm tracking-wider">Pelos Faciais</h3>
-     <DonutChart 
-        data={[{ label: 'Raspado', value: 55 }, { label: 'Barba', value: 30 }, { label: 'Bigode', value: 15 }]} 
-        colors={['#fca5a5', '#3b82f6', '#ef4444']}
-     />
-  </div>
-);
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Faixa Etária</h3>
+      <VerticalBarChart data={chartData} colors={['bg-blue-500']} height={150} />
+    </div>
+  );
+};
 
-export const WidgetHairType = () => (
-  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-full">
-     <h3 className="font-bold text-white mb-4 uppercase text-sm tracking-wider">Tipo de Cabelo</h3>
-     <DonutChart 
-        data={[{ label: 'Normal', value: 45 }, { label: 'Longo', value: 40 }, { label: 'Careca', value: 15 }]} 
-        colors={['#3b82f6', '#eab308', '#ef4444']}
-     />
-  </div>
-);
+export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: number }[] }) => {
+  const glassesPct = Number(attrData?.find((a) => String(a.label).toLowerCase().includes('óculos'))?.value) || 0;
+  const withGlasses = Math.max(0, Math.min(100, glassesPct));
+  const withoutGlasses = Math.max(0, 100 - withGlasses);
 
-export const WidgetHairColor = () => (
-  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-full">
-     <h3 className="font-bold text-white mb-4 uppercase text-sm tracking-wider">Cor de Cabelo</h3>
-     <DonutChart 
-        data={[{ label: 'Preto', value: 50 }, { label: 'Loiro', value: 20 }, { label: 'Castanho', value: 30 }]} 
-        colors={['#1f2937', '#eab308', '#78350f']}
-     />
-  </div>
-);
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Visão</h3>
+      <DonutChart
+        data={[
+          { label: 'Sem Óculos', value: withoutGlasses },
+          { label: 'Com Óculos', value: withGlasses },
+        ]}
+        colors={['#e5e7eb', '#3b82f6']}
+        showCenter={false}
+      />
+    </div>
+  );
+};
+
+export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; value: number }[] }) => {
+  const beardPct = Number(attrData?.find((a) => String(a.label).toLowerCase().includes('barba'))?.value) || 0;
+  const withBeard = Math.max(0, Math.min(100, beardPct));
+  const withoutBeard = Math.max(0, 100 - withBeard);
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Pelos Faciais</h3>
+      <DonutChart
+        data={[
+          { label: 'Sem Barba', value: withoutBeard },
+          { label: 'Com Barba', value: withBeard },
+        ]}
+        colors={['#fca5a5', '#3b82f6']}
+        showCenter={false}
+      />
+    </div>
+  );
+};
+
+export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: string; value: number }[] }) => {
+  const has = Array.isArray(hairTypeData) && hairTypeData.some((d) => Number(d.value) > 0);
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Tipo de Cabelo</h3>
+      {has ? (
+        <DonutChart data={hairTypeData as any} colors={['#3b82f6', '#eab308', '#ef4444', '#94a3b8']} showCenter={false} />
+      ) : (
+        <div className="h-[160px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+      )}
+    </div>
+  );
+};
+
+export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: string; value: number }[] }) => {
+  const has = Array.isArray(hairColorData) && hairColorData.some((d) => Number(d.value) > 0);
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Cor de Cabelo</h3>
+      {has ? (
+        <DonutChart data={hairColorData as any} colors={['#1f2937', '#eab308', '#78350f', '#94a3b8']} showCenter={false} />
+      ) : (
+        <div className="h-[160px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+      )}
+    </div>
+  );
+};
 
 export const WidgetAttentionConversion = () => (
-  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-full">
-     <h3 className="font-bold text-white mb-4 uppercase text-sm tracking-wider">Atenção Possível Conversão</h3>
-     <DonutChart 
-        data={[{ label: 'Baixa', value: 60 }, { label: 'Média', value: 30 }, { label: 'Alta', value: 10 }]} 
-        colors={['#e5e7eb', '#f59e0b', '#ef4444']}
-     />
+  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+    <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Atenção Possível Conversão</h3>
+    <div className="h-[160px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
   </div>
 );
 
 export const WidgetJourneyPoints = () => (
-  <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 h-full">
-     <h3 className="font-bold text-white mb-4 uppercase text-sm tracking-wider">Pontos Jornada</h3>
-     <HorizontalBarChart 
-        data={[
-          { label: 'Entrada', value: 100 },
-          { label: 'Vitrine', value: 85 },
-          { label: 'Gôndola', value: 60 },
-          { label: 'Caixa', value: 45 },
-          { label: 'Saída', value: 98 }
-        ]}
-        color="bg-blue-600"
-     />
+  <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
+    <h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Pontos Jornada</h3>
+    <div className="h-[160px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
   </div>
 );
 

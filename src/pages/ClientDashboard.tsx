@@ -87,6 +87,18 @@ export function ClientDashboard() {
   const [isLoadingConfig, setIsLoadingConfig] = useState(true);
   const [isLoadingData, setIsLoadingData] = useState(false);
 
+  const [isLoadingQuarter, setIsLoadingQuarter] = useState(false);
+  const [quarterBars, setQuarterBars] = useState<{ label: string; visitors: number; sales: number }[]>([]);
+  const [quarterVisitorsTotal, setQuarterVisitorsTotal] = useState(0);
+  const [quarterSalesTotal, setQuarterSalesTotal] = useState(0);
+
+  const [visitorsPerDayMap, setVisitorsPerDayMap] = useState<Record<string, number>>({});
+  const [hairTypeData, setHairTypeData] = useState<{ label: string; value: number }[]>([]);
+  const [hairColorData, setHairColorData] = useState<{ label: string; value: number }[]>([]);
+
+  const [isLoadingCompare, setIsLoadingCompare] = useState(false);
+  const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
+
   const formatDuration = (s: number) => {
     const m = Math.floor(s / 60);
     const sec = Math.round(s % 60);
@@ -95,6 +107,19 @@ export function ClientDashboard() {
     return h > 0
       ? `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
       : `${String(mm).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  };
+
+  const pctMapToTopData = (m: any, maxItems = 3) => {
+    const entries = Object.entries(m || {})
+      .map(([k, v]) => ({ label: String(k), value: Number(v) || 0 }))
+      .filter((x) => x.value > 0)
+      .sort((a, b) => b.value - a.value);
+
+    const top = entries.slice(0, maxItems);
+    const rest = entries.slice(maxItems);
+    const restSum = rest.reduce((acc, r) => acc + r.value, 0);
+    if (restSum > 0) top.push({ label: 'Outros', value: restSum });
+    return top;
   };
 
   const deviceIds = useMemo(() => {
@@ -143,6 +168,8 @@ export function ClientDashboard() {
     setAvgAge(pSum > 0 ? Number((wSum / pSum).toFixed(1)) : null);
 
     const vpd: Record<string, number> = rollup.visitors_per_day ?? {};
+    setVisitorsPerDayMap(vpd);
+
     const days = [0, 0, 0, 0, 0, 0, 0];
     Object.entries(vpd).forEach(([dateStr, count]) => {
       const d = new Date(dateStr);
@@ -172,6 +199,9 @@ export function ClientDashboard() {
       { label: 'Máscara', value: 0 },
       { label: 'Chapéu/Boné', value: Math.round(ap.headwear?.true ?? 0) },
     ]);
+
+    setHairTypeData(pctMapToTopData(ap.hair_type));
+    setHairColorData(pctMapToTopData(ap.hair_color));
 
     const agePct: Record<string, number> = rollup.age_pyramid_percent ?? {};
     const ageOrder = ['65+', '55-64', '45-54', '35-44', '25-34', '18-24', '18-'];
@@ -229,6 +259,10 @@ export function ClientDashboard() {
       setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
       setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAge(null);
       setGenderStats([]); setAttributeStats([]); setAgeStats([]);
+      setVisitorsPerDayMap({});
+      setHairTypeData([]);
+      setHairColorData([]);
+      setComparePrevVisitorsPerDay({});
       setIsLoadingData(false);
 
       // ✅ Module-level lock — survives React StrictMode double-mount
@@ -486,9 +520,159 @@ export function ClientDashboard() {
   // ── On mount / filter change: load from DB/rollup only ──────────────────────
   // ✅ NO auto-sync: syncFromApi is only called when user clicks "Sincronizar"
   // This prevents 429 Too Many Requests on the external API.
+  const lastQuarterMonths = useCallback((end: Date) => {
+    const y = end.getUTCFullYear();
+    const m = end.getUTCMonth();
+    const endMonthLast = new Date(Date.UTC(y, m + 1, 0, 23, 59, 59, 999));
+    const endMonth = end.getTime() >= endMonthLast.getTime() ? m : m - 1;
+
+    const out: { label: string; startIso: string; endIso: string }[] = [];
+    for (let i = 2; i >= 0; i--) {
+      const mm = endMonth - i;
+      const d = new Date(Date.UTC(y, mm, 1, 0, 0, 0, 0));
+      const yy = d.getUTCFullYear();
+      const m2 = d.getUTCMonth();
+      const label = d
+        .toLocaleString('pt-BR', { month: 'short', timeZone: 'UTC' })
+        .replace('.', '')
+        .toUpperCase();
+      const startIso = new Date(Date.UTC(yy, m2, 1, 0, 0, 0, 0)).toISOString();
+      const endIso = new Date(Date.UTC(yy, m2 + 1, 0, 23, 59, 59, 999)).toISOString();
+      out.push({ label, startIso, endIso });
+    }
+    return out;
+  }, []);
+
+  const loadQuarterData = useCallback(async () => {
+    if (!id) return;
+
+    setIsLoadingQuarter(true);
+    try {
+      const months = lastQuarterMonths(selectedEndDate);
+
+      const rows: { label: string; visitors: number; sales: number }[] = [];
+      for (const month of months) {
+        let visitors = 0;
+        let sales = 0;
+
+        if (deviceIds.length === 0) {
+          const { data: rollups } = await supabase
+            .from('visitor_analytics_rollups')
+            .select('total_visitors')
+            .eq('client_id', id)
+            .eq('start', month.startIso)
+            .eq('end', month.endIso)
+            .order('updated_at', { ascending: false })
+            .limit(1);
+
+          const found = rollups?.[0] as any;
+          if (found?.total_visitors != null) {
+            visitors = Number(found.total_visitors) || 0;
+          } else {
+            const resp = await fetch('/api/sync-analytics', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                client_id: id,
+                start: month.startIso,
+                end: month.endIso,
+                rebuild_rollup: true,
+              }),
+            });
+            const json = resp.ok ? await resp.json() : null;
+            visitors = Number(json?.dashboard?.total_visitors ?? 0) || 0;
+          }
+        } else {
+          const resp = await fetch('/api/sync-analytics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              client_id: id,
+              start: month.startIso,
+              end: month.endIso,
+              rebuild_rollup: true,
+              devices: deviceIds,
+            }),
+          });
+          const json = resp.ok ? await resp.json() : null;
+          visitors = Number(json?.dashboard?.total_visitors ?? 0) || 0;
+        }
+
+        rows.push({ label: month.label, visitors, sales });
+      }
+
+      setQuarterBars(rows);
+      setQuarterVisitorsTotal(rows.reduce((acc, r) => acc + (Number(r.visitors) || 0), 0));
+      setQuarterSalesTotal(rows.reduce((acc, r) => acc + (Number(r.sales) || 0), 0));
+    } catch (e) {
+      console.warn('[Dashboard] Erro ao carregar último trimestre:', e);
+      setQuarterBars([]);
+      setQuarterVisitorsTotal(0);
+      setQuarterSalesTotal(0);
+    } finally {
+      setIsLoadingQuarter(false);
+    }
+  }, [id, selectedEndDate, deviceIds, lastQuarterMonths]);
+
   useEffect(() => {
     loadData();
   }, [loadData]);
+
+  const loadCompareData = useCallback(async () => {
+    if (!id) return;
+
+    const dayCount = Math.max(1, Math.floor((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1);
+    const prevEnd = new Date(selectedStartDate.getTime() - 1);
+    const prevStart = new Date(prevEnd.getTime() - (dayCount - 1) * 86400000);
+
+    setIsLoadingCompare(true);
+    try {
+      if (deviceIds.length === 0) {
+        const { data: rollups } = await supabase
+          .from('visitor_analytics_rollups')
+          .select('visitors_per_day')
+          .eq('client_id', id)
+          .eq('start', prevStart.toISOString())
+          .eq('end', prevEnd.toISOString())
+          .order('updated_at', { ascending: false })
+          .limit(1);
+
+        const found = rollups?.[0] as any;
+        if (found?.visitors_per_day) {
+          setComparePrevVisitorsPerDay(found.visitors_per_day || {});
+        } else {
+          const resp = await fetch('/api/sync-analytics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: id, start: prevStart.toISOString(), end: prevEnd.toISOString(), rebuild_rollup: true }),
+          });
+          const json = resp.ok ? await resp.json() : null;
+          setComparePrevVisitorsPerDay(json?.dashboard?.visitors_per_day || {});
+        }
+      } else {
+        const resp = await fetch('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: id, start: prevStart.toISOString(), end: prevEnd.toISOString(), rebuild_rollup: true, devices: deviceIds }),
+        });
+        const json = resp.ok ? await resp.json() : null;
+        setComparePrevVisitorsPerDay(json?.dashboard?.visitors_per_day || {});
+      }
+    } catch (e) {
+      console.warn('[Dashboard] Erro ao carregar comparativo:', e);
+      setComparePrevVisitorsPerDay({});
+    } finally {
+      setIsLoadingCompare(false);
+    }
+  }, [id, selectedStartDate, selectedEndDate, deviceIds]);
+
+  useEffect(() => {
+    loadQuarterData();
+  }, [loadQuarterData]);
+
+  useEffect(() => {
+    loadCompareData();
+  }, [loadCompareData]);
 
   // ── Auto-refresh: only reload rollup from DB every 5 min (no external API calls) ──
   useEffect(() => {
@@ -615,6 +799,54 @@ export function ClientDashboard() {
 
   const goToNetwork = () => { setView('network'); setSelectedStore(null); setSelectedCamera(null); };
   const goToStore = (store: StoreType) => { setSelectedStore(store); setView('network'); setSelectedCamera(null); };
+
+  const periodSeries = useMemo(() => {
+    const labels: string[] = [];
+    const values: number[] = [];
+
+    const start = new Date(selectedStartDate);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(selectedEndDate);
+    end.setUTCHours(0, 0, 0, 0);
+
+    for (let d = start; d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
+      const key = d.toISOString().slice(0, 10);
+      labels.push(d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'UTC' }));
+      values.push(Number(visitorsPerDayMap[key] || 0));
+    }
+
+    return { labels, values };
+  }, [selectedStartDate, selectedEndDate, visitorsPerDayMap]);
+
+  const periodWeeks = useMemo(() => {
+    const weeks: { label: string; visitors: number; sales: number }[] = [];
+    periodSeries.values.forEach((v, i) => {
+      const w = Math.floor(i / 7);
+      if (!weeks[w]) weeks[w] = { label: `Sem ${w + 1}`, visitors: 0, sales: 0 };
+      weeks[w].visitors += Number(v) || 0;
+    });
+    return weeks;
+  }, [periodSeries.values]);
+
+  const compareSeries = useMemo(() => {
+    const dayCount = Math.max(1, periodSeries.values.length);
+    const prevEnd = new Date(selectedStartDate.getTime() - 1);
+    const prevStart = new Date(prevEnd.getTime() - (dayCount - 1) * 86400000);
+
+    const prev: number[] = [];
+    const start = new Date(prevStart);
+    start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(prevEnd);
+    end.setUTCHours(0, 0, 0, 0);
+
+    for (let d = start; d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
+      const key = d.toISOString().slice(0, 10);
+      prev.push(Number(comparePrevVisitorsPerDay[key] || 0));
+    }
+
+    while (prev.length < dayCount) prev.push(0);
+    return { labels: periodSeries.labels, current: periodSeries.values, previous: prev.slice(0, dayCount) };
+  }, [periodSeries.labels, periodSeries.values, selectedStartDate, comparePrevVisitorsPerDay]);
 
   const getStats = () => [
     { label: 'Total Visitantes', value: totalVisitors.toLocaleString(), icon: Users },
@@ -817,6 +1049,45 @@ export function ClientDashboard() {
                 if (widget.id === 'age_pyramid') { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist') { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'attributes') widgetProps.attrData = attributeStats;
+                if (widget.id === 'kpi_flow_stats') {
+                  widgetProps.totalVisitors = totalVisitors;
+                  widgetProps.avgVisitorsPerDay = avgVisitorsPerDay;
+                  widgetProps.avgVisitSeconds = avgVisitSeconds;
+                }
+                if (widget.id === 'chart_age_ranges') widgetProps.ageData = ageStats;
+                if (widget.id === 'chart_vision') widgetProps.attrData = attributeStats;
+                if (widget.id === 'chart_facial_hair') widgetProps.attrData = attributeStats;
+                if (widget.id === 'chart_hair_type') widgetProps.hairTypeData = hairTypeData;
+                if (widget.id === 'chart_hair_color') widgetProps.hairColorData = hairColorData;
+                if (widget.id === 'kpi_store_quarter') {
+                  widgetProps.visitors = quarterVisitorsTotal;
+                  widgetProps.sales = quarterSalesTotal;
+                  widgetProps.loading = isLoadingQuarter;
+                }
+                if (widget.id === 'kpi_store_period') {
+                  widgetProps.visitors = totalVisitors;
+                  widgetProps.sales = 0;
+                  widgetProps.loading = isLoadingData;
+                }
+                if (widget.id === 'chart_sales_quarter') {
+                  widgetProps.quarterData = quarterBars;
+                  widgetProps.loading = isLoadingQuarter;
+                }
+                if (widget.id === 'chart_sales_daily') {
+                  widgetProps.labels = periodSeries.labels;
+                  widgetProps.visitors = periodSeries.values;
+                  widgetProps.loading = isLoadingData;
+                }
+                if (widget.id === 'chart_sales_period_bar') {
+                  widgetProps.periodData = periodWeeks;
+                  widgetProps.loading = isLoadingData;
+                }
+                if (widget.id === 'chart_sales_period_line') {
+                  widgetProps.labels = compareSeries.labels;
+                  widgetProps.current = compareSeries.current;
+                  widgetProps.previous = compareSeries.previous;
+                  widgetProps.loading = isLoadingCompare;
+                }
 
                 return (
                   <div key={widget.id} className={`col-span-1 ${colSpan} animate-in fade-in zoom-in-95 duration-500`}>
