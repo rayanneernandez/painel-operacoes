@@ -4,7 +4,6 @@ import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { logService } from '../services/logService';
 import supabase from '../lib/supabase';
-const ENV_DF_TOKEN = (import.meta.env.VITE_DISPLAYFORCE_TOKEN as string | undefined) || '';
 
 // Componente Toggle
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (

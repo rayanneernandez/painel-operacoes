@@ -64,6 +64,13 @@ export function ClientDashboard() {
   const [syncMessage, setSyncMessage] = useState('');
   const syncingRef = useRef(false);
 
+  useEffect(() => {
+    if (!syncMessage) return;
+    if (!syncMessage.startsWith('✅')) return;
+    const t = setTimeout(() => setSyncMessage(''), 5000);
+    return () => clearTimeout(t);
+  }, [syncMessage]);
+
   // ── Dashboard data ──────────────────────────────────────────────────────────
   const [totalVisitors, setTotalVisitors] = useState(0);
   const [dailyStats, setDailyStats] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
@@ -542,17 +549,60 @@ export function ClientDashboard() {
 
   // ── Widget config ─────────────────────────────────────────────────────────
   useEffect(() => {
-    const clientConfig = localStorage.getItem(`dashboard-config-${id}`);
-    const globalConfig = localStorage.getItem('dashboard-config-global');
-    const raw = clientConfig || globalConfig;
-    if (raw) {
-      const savedIds = JSON.parse(raw) as string[];
-      setActiveWidgets(savedIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[]);
-    } else {
-      const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
-      setActiveWidgets(defaultIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[]);
-    }
-    setIsLoadingConfig(false);
+    let cancelled = false;
+
+    const resolveIds = (widgetsConfig: any): string[] | null => {
+      if (Array.isArray(widgetsConfig)) return widgetsConfig.filter((x) => typeof x === 'string');
+      if (widgetsConfig && Array.isArray(widgetsConfig.widget_ids)) return widgetsConfig.widget_ids.filter((x: any) => typeof x === 'string');
+      return null;
+    };
+
+    (async () => {
+      if (!id) return;
+
+      const fetchConfig = async (scope: 'global' | 'client') => {
+        const q = supabase
+          .from('dashboard_configs')
+          .select('widgets_config, updated_at')
+          .eq('layout_name', scope)
+          .order('updated_at', { ascending: false })
+          .limit(1);
+
+        const { data } = scope === 'global'
+          ? await q.is('client_id', null)
+          : await q.eq('client_id', id);
+
+        return data?.[0]?.widgets_config ?? null;
+      };
+
+      let widgetsConfig = await fetchConfig('client');
+      if (!widgetsConfig) widgetsConfig = await fetchConfig('global');
+
+      let ids = resolveIds(widgetsConfig);
+
+      if (!ids) {
+        const clientConfig = localStorage.getItem(`dashboard-config-${id}`);
+        const globalConfig = localStorage.getItem('dashboard-config-global');
+        ids = resolveIds(clientConfig ? JSON.parse(clientConfig) : null) || resolveIds(globalConfig ? JSON.parse(globalConfig) : null);
+      }
+
+      const finalIds = ids && ids.length
+        ? ids
+        : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+
+      const active = finalIds
+        .map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid))
+        .filter(Boolean) as WidgetType[];
+
+      if (!cancelled) {
+        setActiveWidgets(active);
+        setIsLoadingConfig(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [id]);
 
   // ── Navigation from location state ────────────────────────────────────────
@@ -625,9 +675,11 @@ export function ClientDashboard() {
               <p className="text-sm sm:text-base text-gray-400 mt-1">
                 Monitorando {stores.length} lojas nesta rede
               </p>
-              <p className="text-xs text-gray-500 mt-1">
-                API configurada: {apiConfig?.api_key ? '✅' : '⚠️'}
-              </p>
+              {!apiConfig?.api_key && (
+                <p className="text-xs text-yellow-400 mt-1">
+                  API não configurada ⚠️
+                </p>
+              )}
               {syncMessage && (
                 <p className={`text-xs mt-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : syncMessage.startsWith('Erro') ? 'text-red-400' : 'text-yellow-400'}`}>
                   {syncMessage}
@@ -637,7 +689,7 @@ export function ClientDashboard() {
           </div>
 
           {/* Controls */}
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full lg:w-auto">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 w-full lg:w-auto">
             {/* Store selector */}
             <div className="relative w-full sm:w-auto">
               <select
@@ -660,52 +712,54 @@ export function ClientDashboard() {
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
             </div>
 
-            {/* Date picker */}
-            <div className="relative w-full sm:w-auto">
-              <button
-                onClick={() => setShowDatePicker(!showDatePicker)}
-                className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors"
-              >
-                <div className="flex items-center gap-2">
-                  <Calendar size={16} className="text-gray-500" />
-                  <span className="text-sm">
-                    {selectedStartDate.toLocaleDateString('pt-BR')} → {selectedEndDate.toLocaleDateString('pt-BR')}
-                  </span>
-                </div>
-                <ChevronDown size={14} className="text-gray-500" />
-              </button>
-              {showDatePicker && (
-                <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl right-0 w-full sm:w-auto">
-                  <div className="flex flex-col sm:flex-row items-end gap-3">
-                    <div className="w-full sm:w-auto">
-                      <label className="block text-xs text-gray-400">Início</label>
-                      <input type="date"
-                        value={selectedStartDate.toISOString().slice(0, 10)}
-                        onChange={(e) => { const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setSelectedStartDate(d); }}
-                        className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
-                      />
-                    </div>
-                    <div className="w-full sm:w-auto">
-                      <label className="block text-xs text-gray-400">Fim</label>
-                      <input type="date"
-                        value={selectedEndDate.toISOString().slice(0, 10)}
-                        onChange={(e) => { const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setSelectedEndDate(d); }}
-                        className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
-                      />
-                    </div>
-                    <button onClick={() => setShowDatePicker(false)} className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md">
-                      Aplicar
-                    </button>
+            {/* Date picker + last update */}
+            <div className="flex flex-col items-end w-full sm:w-auto">
+              <div className="relative w-full sm:w-auto">
+                <button
+                  onClick={() => setShowDatePicker(!showDatePicker)}
+                  className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors"
+                >
+                  <div className="flex items-center gap-2 flex-nowrap">
+                    <Calendar size={16} className="text-gray-500" />
+                    <span className="text-sm whitespace-nowrap">
+                      {selectedStartDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })} → {selectedEndDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })}
+                    </span>
                   </div>
+                  <ChevronDown size={14} className="text-gray-500" />
+                </button>
+                {showDatePicker && (
+                  <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl right-0 w-full sm:w-auto">
+                    <div className="flex flex-col sm:flex-row items-end gap-3">
+                      <div className="w-full sm:w-auto">
+                        <label className="block text-xs text-gray-400">Início</label>
+                        <input type="date"
+                          value={selectedStartDate.toISOString().slice(0, 10)}
+                          onChange={(e) => { const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setSelectedStartDate(d); }}
+                          className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
+                        />
+                      </div>
+                      <div className="w-full sm:w-auto">
+                        <label className="block text-xs text-gray-400">Fim</label>
+                        <input type="date"
+                          value={selectedEndDate.toISOString().slice(0, 10)}
+                          onChange={(e) => { const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setSelectedEndDate(d); }}
+                          className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
+                        />
+                      </div>
+                      <button onClick={() => setShowDatePicker(false)} className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md">
+                        Aplicar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {lastUpdate && (
+                <div className="mt-1 text-[10px] text-gray-500 w-full sm:w-auto text-right">
+                  Atualizado: {lastUpdate.toLocaleString('pt-BR')}
                 </div>
               )}
             </div>
-
-            {lastUpdate && (
-              <div className="text-xs text-gray-500 hidden xl:block">
-                Atualizado: {lastUpdate.toLocaleString('pt-BR')}
-              </div>
-            )}
 
             {/* Sync button */}
             <button
@@ -760,7 +814,7 @@ export function ClientDashboard() {
                 const widgetProps: any = { view: 'network' };
                 if (widget.id === 'flow_trend') widgetProps.dailyData = dailyStats;
                 if (widget.id === 'hourly_flow') widgetProps.hourlyData = hourlyStats;
-                if (widget.id === 'age_pyramid') widgetProps.ageData = ageStats;
+                if (widget.id === 'age_pyramid') { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist') { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'attributes') widgetProps.attrData = attributeStats;
 

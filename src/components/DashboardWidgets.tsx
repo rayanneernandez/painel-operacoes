@@ -3,60 +3,142 @@ import { Activity, Clock, Users } from 'lucide-react';
 
 // --- CHART COMPONENTS ---
 
-export const LineChart = ({ data, color, height = 60 }: { data: number[], color: string, height?: number }) => {
-  const max = Math.max(...data);
-  const min = Math.min(...data);
+export const LineChart = ({
+  data,
+  color,
+  height = 60,
+  labels,
+  valueFormatter,
+}: {
+  data: number[];
+  color: string;
+  height?: number;
+  labels?: string[];
+  valueFormatter?: (value: number, index: number) => string;
+}) => {
+  const safe = data && data.length ? data : [0];
+  const max = Math.max(...safe);
+  const min = Math.min(...safe);
   const range = max - min || 1;
-  const points = data.map((val, i) => {
-    const x = (i / (data.length - 1)) * 100;
+
+  const pts = safe.map((val, i) => {
+    const x = safe.length === 1 ? 50 : (i / (safe.length - 1)) * 100;
     const y = 100 - ((val - min) / range) * 100;
-    return `${x},${y}`;
-  }).join(' ');
+    return { x, y, val };
+  });
+
+  const polyPoints = pts.map((p) => `${p.x},${p.y}`).join(' ');
+
+  const wrapRef = React.useRef<HTMLDivElement | null>(null);
+  const [hoverIdx, setHoverIdx] = React.useState<number | null>(null);
+  const [mouse, setMouse] = React.useState<{ x: number; y: number } | null>(null);
+
+  const formatValue = (v: number, i: number) => {
+    if (valueFormatter) return valueFormatter(v, i);
+    return Number(v).toLocaleString();
+  };
+
+  const onMove = (e: React.MouseEvent) => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0) return;
+    const relX = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width));
+    const idx = pts.length === 1 ? 0 : Math.round(relX * (pts.length - 1));
+    setHoverIdx(idx);
+    setMouse({ x: e.clientX - r.left, y: e.clientY - r.top });
+  };
+
+  const onLeave = () => {
+    setHoverIdx(null);
+    setMouse(null);
+  };
+
+  const hoverPt = hoverIdx != null ? pts[hoverIdx] : null;
+  const hoverLabel = hoverIdx != null ? labels?.[hoverIdx] : undefined;
 
   return (
-    <div style={{ height }} className="w-full relative">
+    <div ref={wrapRef} style={{ height }} className="w-full relative" onMouseMove={onMove} onMouseLeave={onLeave}>
       <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="w-full h-full overflow-visible">
-        <polyline points={points} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" className={color} />
+        <polyline points={polyPoints} fill="none" stroke="currentColor" strokeWidth="2" vectorEffect="non-scaling-stroke" className={color} />
+
+        {hoverPt && (
+          <>
+            <line x1={hoverPt.x} y1={0} x2={hoverPt.x} y2={100} stroke="rgba(148,163,184,0.35)" strokeWidth="0.5" vectorEffect="non-scaling-stroke" />
+            <circle cx={hoverPt.x} cy={hoverPt.y} r={2.5} fill="currentColor" className={color} />
+          </>
+        )}
       </svg>
+
+      {hoverPt && mouse && (
+        <div
+          className="absolute z-10 px-2 py-1 rounded-md bg-gray-950/90 text-white text-[10px] border border-gray-800 pointer-events-none"
+          style={{ left: Math.min(mouse.x + 10, 260), top: Math.max(0, mouse.y - 30) }}
+        >
+          <div className="font-semibold">{hoverLabel ?? `#${(hoverIdx ?? 0) + 1}`}</div>
+          <div>{formatValue(hoverPt.val, hoverIdx ?? 0)}</div>
+        </div>
+      )}
     </div>
   );
 };
 
-export const DonutChart = ({ data, colors }: { data: { label: string, value: number }[], colors: string[] }) => {
+export const DonutChart = ({
+  data,
+  colors,
+  showCenter = true,
+  tooltipFormatter,
+}: {
+  data: { label: string; value: number }[];
+  colors: string[];
+  showCenter?: boolean;
+  tooltipFormatter?: (d: { label: string; value: number }, pct: number, total: number) => string;
+}) => {
   const total = data.reduce((acc, curr) => acc + curr.value, 0);
   const safeTotal = total > 0 ? total : 1;
   let accumulatedAngle = 0;
 
   return (
     <div className="h-[200px] w-full relative flex items-center justify-center">
-       <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90 overflow-visible">
-         {data.map((d, i) => {
-           const angle = (d.value / safeTotal) * 360;
-           const radius = 40;
-           const circumference = 2 * Math.PI * radius;
-           const strokeDasharray = `${(angle / 360) * circumference} ${circumference}`;
-           const strokeDashoffset = -((accumulatedAngle / 360) * circumference);
-           accumulatedAngle += angle;
-           return (
-             <circle 
-               key={i}
-               cx="50" 
-               cy="50" 
-               r={radius} 
-               fill="none" 
-               stroke={colors[i]} 
-               strokeWidth="15" 
-               strokeDasharray={strokeDasharray} 
-               strokeDashoffset={strokeDashoffset} 
-               className="transition-all duration-1000 ease-out"
-             />
-           );
-         })}
-       </svg>
-       <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+      <svg viewBox="0 0 100 100" className="w-full h-full -rotate-90 overflow-visible">
+        {data.map((d, i) => {
+          const angle = (d.value / safeTotal) * 360;
+          const radius = 40;
+          const circumference = 2 * Math.PI * radius;
+          const strokeDasharray = `${(angle / 360) * circumference} ${circumference}`;
+          const strokeDashoffset = -((accumulatedAngle / 360) * circumference);
+          accumulatedAngle += angle;
+
+          const pct = (d.value / safeTotal) * 100;
+          const tip = tooltipFormatter
+            ? tooltipFormatter(d, pct, total)
+            : `${d.label}: ${Number(d.value).toLocaleString()} (${pct.toFixed(1)}%)`;
+
+          return (
+            <circle
+              key={i}
+              cx="50"
+              cy="50"
+              r={radius}
+              fill="none"
+              stroke={colors[i]}
+              strokeWidth="15"
+              strokeDasharray={strokeDasharray}
+              strokeDashoffset={strokeDashoffset}
+              className="transition-all duration-1000 ease-out"
+            >
+              <title>{tip}</title>
+            </circle>
+          );
+        })}
+      </svg>
+
+      {showCenter && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
           <span className="text-2xl font-bold text-gray-900 dark:text-white">{total.toLocaleString()}</span>
           <span className="text-[10px] text-gray-500 uppercase">Total</span>
-       </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -81,7 +163,7 @@ export const HorizontalBarChart = ({ data, color }: { data: { label: string, val
   );
 };
 
-export const AgePyramid = ({ data: externalData }: { data?: any[] }) => {
+export const AgePyramid = ({ data: externalData, totalVisitors }: { data?: any[]; totalVisitors?: number }) => {
   const defaultData = [
     { age: '65+', m: 0, f: 0 },
     { age: '55-64', m: 0, f: 0 },
@@ -91,32 +173,38 @@ export const AgePyramid = ({ data: externalData }: { data?: any[] }) => {
     { age: '18-24', m: 0, f: 0 },
     { age: '18-', m: 0, f: 0 },
   ];
-  
+
   const data = externalData || defaultData;
-  
-  // Calculate max value for relative width
-  const maxVal = Math.max(
-     ...data.map(d => Math.max(d.m, d.f)),
-     1 // Avoid division by zero
-  );
+  const maxVal = Math.max(...data.map((d) => Math.max(Number(d.m) || 0, Number(d.f) || 0)), 1);
+  const base = typeof totalVisitors === 'number' && totalVisitors > 0 ? totalVisitors : null;
 
   return (
     <div className="w-full flex flex-col gap-1">
       <div className="flex justify-between text-[10px] text-gray-500 px-10 mb-2">
-         <span>Masculino</span>
-         <span>Feminino</span>
+        <span>Masculino</span>
+        <span>Feminino</span>
       </div>
-      {data.map((d, i) => (
-        <div key={i} className="flex items-center h-6 w-full">
-          <div className="flex-1 flex justify-end pr-2">
-             <div style={{ width: `${(d.m / maxVal) * 100}%` }} className="h-4 bg-blue-600 rounded-l-sm transition-all hover:bg-blue-500" />
+      {data.map((d, i) => {
+        const mPct = Number(d.m) || 0;
+        const fPct = Number(d.f) || 0;
+        const tPct = mPct + fPct;
+        const mCnt = base != null ? Math.round((mPct / 100) * base) : null;
+        const fCnt = base != null ? Math.round((fPct / 100) * base) : null;
+        const tCnt = base != null ? Math.round((tPct / 100) * base) : null;
+        const tip = `${d.age} | M: ${mPct}%${mCnt != null ? ` (${mCnt.toLocaleString()})` : ''} | F: ${fPct}%${fCnt != null ? ` (${fCnt.toLocaleString()})` : ''} | Total: ${tPct}%${tCnt != null ? ` (${tCnt.toLocaleString()})` : ''}`;
+
+        return (
+          <div key={i} className="flex items-center h-6 w-full">
+            <div className="flex-1 flex justify-end pr-2">
+              <div title={tip} style={{ width: `${(mPct / maxVal) * 100}%` }} className="h-4 bg-blue-600 rounded-l-sm transition-all hover:bg-blue-500" />
+            </div>
+            <span className="w-12 text-center text-[10px] text-gray-400">{d.age}</span>
+            <div className="flex-1 pl-2">
+              <div title={tip} style={{ width: `${(fPct / maxVal) * 100}%` }} className="h-4 bg-pink-600 rounded-r-sm transition-all hover:bg-pink-500" />
+            </div>
           </div>
-          <span className="w-12 text-center text-[10px] text-gray-400">{d.age}</span>
-          <div className="flex-1 pl-2">
-             <div style={{ width: `${(d.f / maxVal) * 100}%` }} className="h-4 bg-pink-600 rounded-r-sm transition-all hover:bg-pink-500" />
-          </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 };
@@ -211,7 +299,13 @@ export const WidgetFlowTrend = ({ view, dailyData }: { view: string, dailyData?:
          <Activity size={14} className="text-blue-500" />
          Média Visitantes Dia - {view === 'network' ? 'Rede' : 'Dia da Semana'}
        </h3>
-       <LineChart data={data} color="text-blue-500" height={100} />
+       <LineChart
+         data={data}
+         color="text-blue-500"
+         height={100}
+         labels={['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab', 'Dom']}
+         valueFormatter={(v) => `${Number(v).toLocaleString()} visitantes`}
+       />
        <div className="flex justify-between text-[10px] text-gray-500 mt-2 uppercase">
           <span>Seg</span><span>Ter</span><span>Qua</span><span>Qui</span><span>Sex</span><span>Sab</span><span>Dom</span>
        </div>
@@ -227,8 +321,12 @@ export const WidgetHourlyFlow = ({ view, hourlyData }: { view: string, hourlyDat
          <Clock size={14} className="text-emerald-500" />
          Média Visitantes por Hora {view === 'network' ? '(Rede)' : ''}
        </h3>
-       <LineChart data={data} 
-          color="text-emerald-500" height={100} 
+       <LineChart
+         data={data}
+         color="text-emerald-500"
+         height={100}
+         labels={Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}h`)}
+         valueFormatter={(v, i) => `${String(i).padStart(2, '0')}h: ${Number(v).toLocaleString()} visitantes`}
        />
        <div className="flex justify-between text-[10px] text-gray-500 mt-2">
           <span>06h</span><span>09h</span><span>12h</span><span>15h</span><span>18h</span><span>21h</span>
@@ -237,41 +335,57 @@ export const WidgetHourlyFlow = ({ view, hourlyData }: { view: string, hourlyDat
   );
 };
 
-export const WidgetAgePyramid = ({ view, ageData }: { view: string, ageData?: any[] }) => (
+export const WidgetAgePyramid = ({ view, ageData, totalVisitors }: { view: string, ageData?: any[]; totalVisitors?: number }) => (
   <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
      <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider">
        <Users size={16} className="text-purple-500" />
        Pirâmide Etária {view === 'network' ? '(Consolidado)' : ''}
      </h3>
-     <AgePyramid data={ageData} />
+     <AgePyramid data={ageData} totalVisitors={totalVisitors} />
    </div>
 );
 
 export const WidgetGenderDist = ({ view, genderData, totalVisitors }: { view: string, genderData?: { label: string, value: number }[], totalVisitors?: number }) => {
   const fallback = [{ label: 'Masculino', value: 0 }, { label: 'Feminino', value: 0 }];
   const data = genderData && genderData.length === 2 ? genderData : fallback;
-  const total = typeof totalVisitors === 'number' ? totalVisitors : data.reduce((acc, d) => acc + d.value, 0);
-  const male = data[0]?.value || 0;
-  const female = data[1]?.value || 0;
-  const base = total || (male + female) || 1;
-  const malePct = Math.round((male / base) * 100);
-  const femalePct = Math.round((female / base) * 100);
+
+  const maleRaw = Number(data[0]?.value) || 0;
+  const femaleRaw = Number(data[1]?.value) || 0;
+  const sum = maleRaw + femaleRaw;
+
+  const totalCount = typeof totalVisitors === 'number' && totalVisitors > 0 ? totalVisitors : null;
+  const isPct = totalCount != null && sum > 0 && sum <= 101;
+
+  const malePct = isPct ? Math.round(maleRaw) : Math.round((maleRaw / (sum || 1)) * 100);
+  const femalePct = isPct ? Math.round(femaleRaw) : Math.round((femaleRaw / (sum || 1)) * 100);
+
+  const maleCount = totalCount != null ? Math.round((malePct / 100) * totalCount) : (isPct ? null : Math.round(maleRaw));
+  const femaleCount = totalCount != null ? Math.round((femalePct / 100) * totalCount) : (isPct ? null : Math.round(femaleRaw));
 
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
-       <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider">
-         <Users size={16} className="text-pink-500" />
-         Gênero {view === 'network' ? '(Consolidado)' : ''}
-       </h3>
-       <DonutChart 
-          data={data} 
-          colors={['#1e40af', '#db2777']}
-       />
-       <div className="flex justify-center gap-4 mt-4 text-xs">
-          <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-blue-800 rounded-full" /> Masculino ({malePct}%)</span>
-          <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-pink-600 rounded-full" /> Feminino ({femalePct}%)</span>
-       </div>
-     </div>
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider">
+        <Users size={16} className="text-pink-500" />
+        Gênero {view === 'network' ? '(Consolidado)' : ''}
+      </h3>
+
+      <DonutChart
+        data={data}
+        colors={['#1e40af', '#db2777']}
+        showCenter={false}
+        tooltipFormatter={(d, pct) => {
+          const p = isPct ? d.value : pct;
+          const pFmt = `${Number(p).toFixed(1)}%`;
+          if (d.label.toLowerCase().includes('masc')) return `${d.label}: ${pFmt}${maleCount != null ? ` (${maleCount.toLocaleString()})` : ''}`;
+          return `${d.label}: ${pFmt}${femaleCount != null ? ` (${femaleCount.toLocaleString()})` : ''}`;
+        }}
+      />
+
+      <div className="flex justify-center gap-4 mt-4 text-xs">
+        <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-blue-800 rounded-full" /> Masculino ({malePct}%{maleCount != null ? ` • ${maleCount.toLocaleString()}` : ''})</span>
+        <span className="flex items-center gap-1 text-gray-400"><div className="w-2 h-2 bg-pink-600 rounded-full" /> Feminino ({femalePct}%{femaleCount != null ? ` • ${femaleCount.toLocaleString()}` : ''})</span>
+      </div>
+    </div>
   );
 };
 

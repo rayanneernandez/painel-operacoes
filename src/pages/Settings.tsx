@@ -32,46 +32,66 @@ export function Settings() {
     fetchClients();
   }, []);
 
+  const resolveWidgetIds = (widgetsConfig: any): string[] | null => {
+    if (Array.isArray(widgetsConfig)) return widgetsConfig.filter((x) => typeof x === 'string');
+    if (widgetsConfig && Array.isArray(widgetsConfig.widget_ids)) return widgetsConfig.widget_ids.filter((x: any) => typeof x === 'string');
+    return null;
+  };
+
   useEffect(() => {
-    // Load config based on scope
-    const loadConfig = () => {
-      let storageKey = 'dashboard-config-global';
-      if (selectedScope !== 'global') {
-        storageKey = `dashboard-config-${selectedScope}`;
+    let cancelled = false;
+
+    (async () => {
+      const isGlobal = selectedScope === 'global';
+
+      const fetchConfig = async (scope: 'global' | 'client') => {
+        const q = supabase
+          .from('dashboard_configs')
+          .select('widgets_config, updated_at')
+          .eq('layout_name', scope)
+          .order('updated_at', { ascending: false })
+          .limit(1);
+
+        const { data } = scope === 'global'
+          ? await q.is('client_id', null)
+          : await q.eq('client_id', selectedScope);
+
+        return data?.[0]?.widgets_config ?? null;
+      };
+
+      let widgetsConfig = await fetchConfig(isGlobal ? 'global' : 'client');
+      if (!widgetsConfig && !isGlobal) widgetsConfig = await fetchConfig('global');
+
+      let ids = resolveWidgetIds(widgetsConfig);
+
+      if (!ids) {
+        const storageKey = isGlobal ? 'dashboard-config-global' : `dashboard-config-${selectedScope}`;
+        const savedConfig = localStorage.getItem(storageKey);
+        if (savedConfig) ids = resolveWidgetIds(JSON.parse(savedConfig));
+        if (!ids && !isGlobal) {
+          const globalConfig = localStorage.getItem('dashboard-config-global');
+          if (globalConfig) ids = resolveWidgetIds(JSON.parse(globalConfig));
+        }
       }
 
-      const savedConfig = localStorage.getItem(storageKey);
-      
-      // If client specific config doesn't exist, try loading global as fallback for initial state
-      if (!savedConfig && selectedScope !== 'global') {
-         const globalConfig = localStorage.getItem('dashboard-config-global');
-         if (globalConfig) {
-            const savedIds = JSON.parse(globalConfig) as string[];
-            const active = savedIds.map(wid => AVAILABLE_WIDGETS.find(w => w.id === wid)).filter(Boolean) as WidgetType[];
-            const available = AVAILABLE_WIDGETS.filter(w => !savedIds.includes(w.id));
-            setActiveWidgets(active);
-            setAvailableWidgets(available);
-            return;
-         }
-      }
+      const finalIds = ids && ids.length
+        ? ids
+        : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'journey', 'campaigns'];
 
-      if (savedConfig) {
-        const savedIds = JSON.parse(savedConfig) as string[];
-        const active = savedIds.map(wid => AVAILABLE_WIDGETS.find(w => w.id === wid)).filter(Boolean) as WidgetType[];
-        const available = AVAILABLE_WIDGETS.filter(w => !savedIds.includes(w.id));
-        setActiveWidgets(active);
-        setAvailableWidgets(available);
-      } else {
-        // Default Initial State
-        const defaultActiveIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'journey', 'campaigns'];
-        const active = defaultActiveIds.map(wid => AVAILABLE_WIDGETS.find(w => w.id === wid)).filter(Boolean) as WidgetType[];
-        const available = AVAILABLE_WIDGETS.filter(w => !defaultActiveIds.includes(w.id));
+      const active = finalIds
+        .map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid))
+        .filter(Boolean) as WidgetType[];
+      const available = AVAILABLE_WIDGETS.filter((w) => !finalIds.includes(w.id));
+
+      if (!cancelled) {
         setActiveWidgets(active);
         setAvailableWidgets(available);
       }
+    })();
+
+    return () => {
+      cancelled = true;
     };
-
-    loadConfig();
   }, [selectedScope]);
 
   const addWidget = (widget: WidgetType) => {
@@ -128,12 +148,51 @@ export function Settings() {
     setSaveStatus('idle');
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setSaveStatus('saving');
-    const storageKey = selectedScope === 'global' ? 'dashboard-config-global' : `dashboard-config-${selectedScope}`;
-    localStorage.setItem(storageKey, JSON.stringify(activeWidgets.map(w => w.id)));
-    setTimeout(() => setSaveStatus('saved'), 800);
-    setTimeout(() => setSaveStatus('idle'), 3000);
+
+    try {
+      const isGlobal = selectedScope === 'global';
+      const layoutName: 'global' | 'client' = isGlobal ? 'global' : 'client';
+      const clientId = isGlobal ? null : selectedScope;
+      const widgetIds = activeWidgets.map((w) => w.id);
+
+      const findQ = supabase
+        .from('dashboard_configs')
+        .select('id, updated_at')
+        .eq('layout_name', layoutName)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
+      const { data: existing } = clientId == null
+        ? await findQ.is('client_id', null)
+        : await findQ.eq('client_id', clientId);
+
+      const existingId = existing?.[0]?.id as string | undefined;
+      const payload = {
+        layout_name: layoutName,
+        client_id: clientId,
+        widgets_config: widgetIds,
+        updated_at: new Date().toISOString(),
+      };
+
+      if (existingId) {
+        const { error } = await supabase.from('dashboard_configs').update(payload).eq('id', existingId);
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('dashboard_configs').insert({ id: crypto.randomUUID(), ...payload });
+        if (error) throw error;
+      }
+
+      const storageKey = isGlobal ? 'dashboard-config-global' : `dashboard-config-${selectedScope}`;
+      localStorage.setItem(storageKey, JSON.stringify(widgetIds));
+
+      setSaveStatus('saved');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } catch (e) {
+      console.error('Erro ao salvar dashboard_configs:', e);
+      setSaveStatus('idle');
+    }
   };
 
   return (
@@ -156,11 +215,11 @@ export function Settings() {
                 <select 
                   value={selectedScope}
                   onChange={(e) => setSelectedScope(e.target.value)}
-                  className="bg-transparent text-white font-medium focus:outline-none min-w-[150px]"
+                  className="bg-gray-950 text-white font-medium focus:outline-none min-w-[150px] rounded-md px-2 py-1 border border-gray-800"
                 >
-                  <option value="global">Padrão Global</option>
+                  <option value="global" style={{ backgroundColor: '#0b1220', color: 'white' }}>Padrão Global</option>
                   {clients.map(client => (
-                    <option key={client.id} value={client.id}>{client.name}</option>
+                    <option key={client.id} value={client.id} style={{ backgroundColor: '#0b1220', color: 'white' }}>{client.name}</option>
                   ))}
                 </select>
              </div>

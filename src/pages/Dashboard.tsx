@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
-import { Users, Globe, Activity, ArrowUp, ArrowDown, Server, Clock, ShieldCheck, Wallet, Zap, Cpu, BarChart2 } from 'lucide-react';
+import { Users, Globe, Activity, ArrowUp, ArrowDown, ShieldCheck, BarChart2 } from 'lucide-react';
 import supabase from '../lib/supabase';
 
 export function Dashboard() {
@@ -15,7 +15,6 @@ export function Dashboard() {
   ]);
   const [chartData, setChartData] = useState<{ month: string, count: number }[]>([]);
   const [recentClients, setRecentClients] = useState<any[]>([]);
-  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (user?.role === 'client' && user.clientId) {
@@ -25,8 +24,6 @@ export function Dashboard() {
 
     const fetchData = async () => {
       try {
-        setLoading(true);
-        
         // 1. Fetch Clients Count & Data for Chart
         const { data: clientsData, count: clientsCount } = await supabase
           .from('clients')
@@ -103,8 +100,6 @@ export function Dashboard() {
 
       } catch (error) {
         console.error('Error fetching dashboard data:', error);
-      } finally {
-        setLoading(false);
       }
     };
 
