@@ -1,6 +1,12 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
-import { supabaseAdmin as supabase } from "../src/lib/supabaseAdmin";
+import { createClient } from "@supabase/supabase-js";
+
+const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
+const _key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const supabase = createClient(_url, _key, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
 
 type ClientApiConfig = {
   api_endpoint: string;
