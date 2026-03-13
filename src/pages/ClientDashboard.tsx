@@ -62,6 +62,7 @@ export function ClientDashboard() {
 
   // ── Sync state ──────────────────────────────────────────────────────────────
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isSyncingStores, setIsSyncingStores] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const syncingRef = useRef(false);
 
@@ -188,17 +189,6 @@ export function ClientDashboard() {
 
     const vpd: Record<string, number> = rollup.visitors_per_day ?? {};
     setVisitorsPerDayMap(vpd);
-
-    const days = [0, 0, 0, 0, 0, 0, 0];
-    Object.entries(vpd).forEach(([dateStr, count]) => {
-      const d = new Date(dateStr);
-      if (!isNaN(d.getTime())) {
-        const dow = d.getUTCDay();
-        const idx = dow === 0 ? 6 : dow - 1;
-        days[idx] += Number(count);
-      }
-    });
-    setDailyStats(days);
 
     const vph: Record<string, number> = rollup.visitors_per_hour_avg ?? {};
     const hours = new Array(24).fill(0);
@@ -404,7 +394,6 @@ export function ClientDashboard() {
     const dayCount = Math.max(1, Math.floor((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1);
 
     setTotalVisitors(totalProcessed);
-    setDailyStats([...days]);
     setHourlyStats([...hours]);
     setAvgVisitorsPerDay(Math.round(totalProcessed / dayCount));
     setAvgVisitSeconds(durCount ? Math.round(totalDur / durCount) : 0);
@@ -682,6 +671,99 @@ export function ClientDashboard() {
     }
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
+  const loadWeekFlowData = useCallback(async () => {
+    if (!id) return;
+
+    const end = new Date(selectedEndDate);
+    end.setUTCHours(23, 59, 59, 999);
+    const dow = end.getUTCDay();
+    const offset = (dow + 6) % 7;
+    const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() - offset, 0, 0, 0, 0));
+
+    const startIso = start.toISOString();
+    const endIso = end.toISOString();
+
+    const toWeekDays = (vpd: Record<string, number>) => {
+      const days = [0, 0, 0, 0, 0, 0, 0];
+      Object.entries(vpd || {}).forEach(([dateStr, count]) => {
+        const d = new Date(dateStr);
+        if (isNaN(d.getTime())) return;
+        const ud = d.getUTCDay();
+        const idx = ud === 0 ? 6 : ud - 1;
+        days[idx] += Number(count) || 0;
+      });
+      return days;
+    };
+
+    try {
+      if (deviceIds.length === 0) {
+        const { data } = await supabase
+          .from('visitor_analytics_rollups')
+          .select('visitors_per_day')
+          .eq('client_id', id)
+          .eq('start', startIso)
+          .eq('end', endIso)
+          .order('updated_at', { ascending: false })
+          .limit(1);
+
+        const found = data?.[0] as any;
+        if (found?.visitors_per_day) {
+          setDailyStats(toWeekDays(found.visitors_per_day || {}));
+          return;
+        }
+
+        const resp = await fetch('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
+        });
+        const json = resp.ok ? await resp.json() : null;
+        setDailyStats(toWeekDays(json?.dashboard?.visitors_per_day || {}));
+        return;
+      }
+
+      const days = [0, 0, 0, 0, 0, 0, 0];
+      let from = 0;
+      const page = 1000;
+
+      while (true) {
+        const { data, error } = await supabase
+          .from('visitor_analytics')
+          .select('timestamp')
+          .eq('client_id', id)
+          .gte('timestamp', startIso)
+          .lte('timestamp', endIso)
+          .in('device_id', deviceIds)
+          .order('timestamp', { ascending: true })
+          .range(from, from + page - 1);
+
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+
+        (data as any[]).forEach((r: any) => {
+          const t = new Date(r.timestamp);
+          if (isNaN(t.getTime())) return;
+          const ud = t.getUTCDay();
+          const idx = ud === 0 ? 6 : ud - 1;
+          days[idx] += 1;
+        });
+
+        if (data.length < page) break;
+        from += page;
+        if (from > 20000) break;
+      }
+
+      setDailyStats(days);
+    } catch (e) {
+      console.warn('[Dashboard] Erro ao carregar semana:', e);
+      setDailyStats([0, 0, 0, 0, 0, 0, 0]);
+    }
+  }, [id, selectedEndDate, deviceIds]);
+
+  useEffect(() => {
+    loadWeekFlowData();
+  }, [loadWeekFlowData]);
+
   useEffect(() => {
     loadQuarterData();
   }, [loadQuarterData]);
@@ -701,51 +783,268 @@ export function ClientDashboard() {
     return () => clearInterval(t);
   }, [id, loadData]);
 
-  // ── Fetch client info, stores, api config ─────────────────────────────────
-  useEffect(() => {
-    async function fetchClientAndStores() {
-      if (!id) return;
+  const refreshClientAndStores = useCallback(async () => {
+    if (!id) return;
 
-      const { data: client } = await supabase
-        .from('clients').select('name, logo_url').eq('id', id).single();
-      if (client) setClientData({ name: client.name, logo: client.logo_url });
+    const { data: client } = await supabase
+      .from('clients')
+      .select('name, logo_url')
+      .eq('id', id)
+      .single();
+    if (client) setClientData({ name: client.name, logo: client.logo_url });
 
-      const { data: storesData } = await supabase
-        .from('stores').select('id, name, city').eq('client_id', id);
-      const { data: devicesData } = await supabase
-        .from('devices').select('id, name, type, mac_address, status, store_id');
-      const { data: apiCfg } = await supabase
-        .from('client_api_configs')
-        .select(`api_endpoint, analytics_endpoint, api_key, custom_header_key,
-          custom_header_value, collection_start, collection_end, collect_tracks,
-          collect_face_quality, collect_glasses, collect_beard, collect_hair_color,
-          collect_hair_type, collect_headwear`)
-        .eq('client_id', id).single();
+    const { data: storesData } = await supabase
+      .from('stores')
+      .select('id, name, city')
+      .eq('client_id', id);
+    const { data: devicesData } = await supabase
+      .from('devices')
+      .select('id, name, type, mac_address, status, store_id');
+    const { data: apiCfg } = await supabase
+      .from('client_api_configs')
+      .select(`api_endpoint, analytics_endpoint, api_key, custom_header_key,
+        custom_header_value, collection_start, collection_end, collect_tracks,
+        collect_face_quality, collect_glasses, collect_beard, collect_hair_color,
+        collect_hair_type, collect_headwear`)
+      .eq('client_id', id)
+      .single();
 
-      if (apiCfg) setApiConfig(apiCfg as ClientApiConfig);
+    if (apiCfg) setApiConfig(apiCfg as ClientApiConfig);
 
-      if (storesData) {
-        const devicesByStore: Record<string, any[]> = {};
-        (devicesData || []).forEach((device: any) => {
-          if (!devicesByStore[device.store_id]) devicesByStore[device.store_id] = [];
-          devicesByStore[device.store_id].push({
-            id: device.id, name: device.name, status: device.status || 'offline',
-            type: device.type || 'dome', resolution: '1080p', macAddress: device.mac_address,
-          });
+    if (storesData) {
+      const devicesByStore: Record<string, any[]> = {};
+      (devicesData || []).forEach((device: any) => {
+        if (!devicesByStore[device.store_id]) devicesByStore[device.store_id] = [];
+        devicesByStore[device.store_id].push({
+          id: device.id,
+          name: device.name,
+          status: device.status || 'offline',
+          type: device.type || 'dome',
+          resolution: '1080p',
+          macAddress: device.mac_address,
+        });
+      });
+
+      const seen = new Set<string>();
+      const uniqueStores: StoreType[] = storesData
+        .filter((s: any) => {
+          if (seen.has(String(s.id))) return false;
+          seen.add(String(s.id));
+          return true;
+        })
+        .map((store: any) => ({
+          id: store.id,
+          name: store.name,
+          address: '',
+          city: store.city || '',
+          status: 'online',
+          cameras: devicesByStore[store.id] || [],
+        }));
+      setStores(uniqueStores);
+    }
+  }, [id]);
+
+  const syncStoresFromExternal = useCallback(async () => {
+    if (!id) return;
+
+    setIsSyncingStores(true);
+    try {
+      setSyncMessage('Atualizando lojas...');
+
+      let cfg = apiConfig;
+      if (!cfg) {
+        const { data } = await supabase
+          .from('client_api_configs')
+          .select(`api_endpoint, analytics_endpoint, api_key, custom_header_key,
+            custom_header_value, collection_start, collection_end, collect_tracks,
+            collect_face_quality, collect_glasses, collect_beard, collect_hair_color,
+            collect_hair_type, collect_headwear`)
+          .eq('client_id', id)
+          .single();
+        if (data) {
+          cfg = data as ClientApiConfig;
+          setApiConfig(cfg);
+        }
+      }
+
+      if (!cfg) {
+        setSyncMessage('Erro: API não configurada');
+        return;
+      }
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      };
+
+      const ck = cfg.custom_header_key?.trim();
+      const cv = cfg.custom_header_value?.trim();
+      if (ck && cv) headers[ck] = cv;
+      else if (cfg.api_key?.trim()) headers['X-API-Token'] = cfg.api_key.trim();
+      else {
+        setSyncMessage('Erro: api_key não configurada');
+        return;
+      }
+
+      const isDisplayForce = (cfg.api_endpoint || '').includes('displayforce.ai');
+      const isDev = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+      const baseRaw = (cfg.api_endpoint || 'https://api.displayforce.ai').replace(/\/$/, '');
+      const baseUrl = isDisplayForce ? (isDev ? '/api-proxy' : 'https://api.displayforce.ai') : baseRaw;
+
+      const folderUrl = `${baseUrl}/public/v1/folder/list`;
+      const folderBody = { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 };
+
+      let foldersResponse = await fetch(`${folderUrl}?recursive=true&limit=100&offset=0`, {
+        method: 'GET',
+        headers,
+      });
+      if (!foldersResponse.ok) {
+        foldersResponse = await fetch(folderUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(folderBody),
+        });
+      }
+      if (!foldersResponse.ok) {
+        const errorText = await foldersResponse.text();
+        setSyncMessage(`Erro ao buscar lojas na API (${foldersResponse.status})`);
+        console.warn('[Stores Sync] Erro folders:', errorText);
+        return;
+      }
+
+      const foldersJson = await foldersResponse.json();
+      const folders = Array.isArray(foldersJson?.data) ? foldersJson.data : [];
+
+      const deviceUrl = `${baseUrl}/public/v1/device/list`;
+      const deviceBody = {
+        id: [],
+        name: [],
+        parent_ids: [],
+        recursive: true,
+        params: ['id', 'name', 'parent_id', 'parent_ids', 'tags'],
+        limit: 100,
+        offset: 0,
+      };
+
+      let devicesResponse = await fetch(`${deviceUrl}?recursive=true&limit=100&offset=0`, {
+        method: 'GET',
+        headers,
+      });
+      if (!devicesResponse.ok) {
+        devicesResponse = await fetch(deviceUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(deviceBody),
+        });
+      }
+      if (!devicesResponse.ok) {
+        const errorText = await devicesResponse.text();
+        setSyncMessage(`Erro ao buscar dispositivos na API (${devicesResponse.status})`);
+        console.warn('[Stores Sync] Erro devices:', errorText);
+        return;
+      }
+
+      const devicesJson = await devicesResponse.json();
+      const devices = Array.isArray(devicesJson?.data) ? devicesJson.data : [];
+
+      if (folders.length === 0) {
+        setSyncMessage('Nenhuma loja encontrada na API');
+        return;
+      }
+
+      const { data: dbStores } = await supabase
+        .from('stores')
+        .select('id, name, city')
+        .eq('client_id', id);
+
+      const nameToStore = new Map<string, { id: string; name: string; city?: string | null }>();
+      (dbStores || []).forEach((s: any) => {
+        if (!s?.name || !s?.id) return;
+        nameToStore.set(String(s.name).trim().toLowerCase(), { id: s.id, name: s.name, city: s.city });
+      });
+
+      const storeIdsUsed: string[] = [];
+      const folderToStoreId = new Map<string, string>();
+
+      for (const folder of folders) {
+        const folderName = String(folder?.name || '').trim();
+        if (!folderName) continue;
+
+        const norm = folderName.toLowerCase();
+        const existing = nameToStore.get(norm);
+        const storeId = existing?.id || crypto.randomUUID();
+        const city = existing?.city || 'Não informada';
+
+        folderToStoreId.set(String(folder.id), storeId);
+        storeIdsUsed.push(storeId);
+
+        await supabase.from('stores').upsert({ id: storeId, client_id: id, name: folderName, city });
+      }
+
+      const { data: existingDevs } = await supabase
+        .from('devices')
+        .select('id, store_id, mac_address')
+        .in('store_id', storeIdsUsed);
+
+      const devMapByStore = new Map<string, Map<string, string>>();
+      (existingDevs || []).forEach((d: any) => {
+        if (!d?.store_id) return;
+        if (!devMapByStore.has(d.store_id)) devMapByStore.set(d.store_id, new Map());
+        const m = devMapByStore.get(d.store_id)!;
+        if (d.mac_address) m.set(String(d.mac_address), String(d.id));
+      });
+
+      for (const folder of folders) {
+        const storeId = folderToStoreId.get(String(folder.id));
+        if (!storeId) continue;
+
+        const storeDevMap = devMapByStore.get(storeId) || new Map<string, string>();
+        const seenMacs = new Set<string>();
+
+        const storeDevices = devices.filter((device: any) => {
+          const pid = device?.parent_id != null ? String(device.parent_id) : '';
+          return pid === String(folder.id);
         });
 
-        const seen = new Set<string>();
-        const uniqueStores: StoreType[] = storesData
-          .filter((s: any) => { if (seen.has(String(s.id))) return false; seen.add(String(s.id)); return true; })
-          .map((store: any) => ({
-            id: store.id, name: store.name, address: '', city: store.city || '',
-            status: 'online', cameras: devicesByStore[store.id] || [],
-          }));
-        setStores(uniqueStores);
+        const payload = storeDevices
+          .map((device: any) => {
+            const mac = String(device?.id ?? '').trim();
+            if (!mac) return null;
+            if (seenMacs.has(mac)) return null;
+            seenMacs.add(mac);
+
+            const existingId = storeDevMap.get(mac);
+            const devId = existingId || crypto.randomUUID();
+            return {
+              id: devId,
+              store_id: storeId,
+              name: String(device?.name || mac),
+              type: 'camera',
+              mac_address: mac,
+              status: device?.connection_state === 'online' ? 'online' : 'offline',
+            };
+          })
+          .filter(Boolean) as any[];
+
+        if (payload.length > 0) {
+          await supabase.from('devices').upsert(payload);
+        }
       }
+
+      await refreshClientAndStores();
+      setSyncMessage(`✅ Lojas atualizadas: ${folders.length}`);
+    } catch (e) {
+      console.warn('[Stores Sync] Erro:', e);
+      setSyncMessage('Erro ao atualizar lojas');
+    } finally {
+      setIsSyncingStores(false);
     }
-    fetchClientAndStores();
-  }, [id]);
+  }, [id, apiConfig, refreshClientAndStores]);
+
+  // ── Fetch client info, stores, api config ─────────────────────────────────
+  useEffect(() => {
+    refreshClientAndStores();
+  }, [refreshClientAndStores]);
 
   // ── Widget config ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1019,12 +1318,15 @@ export function ClientDashboard() {
 
             {/* Sync button */}
             <button
-              onClick={() => syncFromApi(false)}
-              disabled={isSyncing}
+              onClick={async () => {
+                await syncStoresFromExternal();
+                await syncFromApi(false);
+              }}
+              disabled={isSyncing || isSyncingStores}
               className="flex items-center justify-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-500 transition-colors w-full sm:w-auto disabled:opacity-60"
             >
-              <Upload size={16} className={isSyncing ? 'animate-pulse' : ''} />
-              <span className="text-sm">{isSyncing ? 'Sincronizando...' : 'Sincronizar'}</span>
+              <Upload size={16} className={isSyncing || isSyncingStores ? 'animate-pulse' : ''} />
+              <span className="text-sm">{isSyncing || isSyncingStores ? 'Sincronizando...' : 'Sincronizar'}</span>
             </button>
           </div>
         </div>
