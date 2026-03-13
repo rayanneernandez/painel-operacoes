@@ -65,6 +65,7 @@ export function ClientDashboard() {
   const [isSyncingStores, setIsSyncingStores] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const syncingRef = useRef(false);
+  const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
 
   useEffect(() => {
     if (!syncMessage) return;
@@ -548,34 +549,32 @@ export function ClientDashboard() {
 
   const fetchSalesFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
     if (!id) return 0;
+    if (salesSourceRef.current === 'none') return 0;
 
-    const trySum = async (table: string, dateCol: string, valueCols: string[]) => {
-      const selectCols = [dateCol, ...valueCols].join(',');
+    const isNotFound = (err: any) => {
+      const status = err?.status ?? err?.statusCode;
+      const msg = String(err?.message || '');
+      return status === 404 || /not found/i.test(msg) || /does not exist/i.test(msg);
+    };
+
+    const sumSalesCount = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
       const { data, error } = await supabase
         .from(table)
-        .select(selectCols)
+        .select(`${dateCol},sales_count`)
         .eq('client_id', id)
         .gte(dateCol, rangeStartIso)
         .lte(dateCol, rangeEndIso)
         .range(0, 9999);
 
-      if (error) return null;
+      if (error) {
+        if (isNotFound(error)) return null;
+        return undefined;
+      }
 
-      const rows = (data as any[]) || [];
-      let sum = 0;
-      rows.forEach((r: any) => {
-        for (const c of valueCols) {
-          if (r?.[c] != null) {
-            sum += Number(r[c]) || 0;
-            return;
-          }
-        }
-        sum += 1;
-      });
-      return sum;
+      return ((data as any[]) || []).reduce((acc, r) => acc + (Number(r?.sales_count) || 0), 0);
     };
 
-    const tryCount = async (table: string, dateCol: string) => {
+    const countRows = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
       const { count, error } = await supabase
         .from(table)
         .select('*', { count: 'exact', head: true })
@@ -583,29 +582,53 @@ export function ClientDashboard() {
         .gte(dateCol, rangeStartIso)
         .lte(dateCol, rangeEndIso);
 
-      if (error) return null;
+      if (error) {
+        if (isNotFound(error)) return null;
+        return undefined;
+      }
+
       return Number(count) || 0;
     };
 
-    const candidates = [
-      () => trySum('sales_daily', 'date', ['sales', 'sales_count', 'qty', 'quantity', 'total']),
-      () => trySum('sales_daily', 'created_at', ['sales', 'sales_count', 'qty', 'quantity', 'total']),
-      () => trySum('sales', 'date', ['sales', 'sales_count', 'qty', 'quantity', 'total']),
-      () => trySum('sales', 'created_at', ['sales', 'sales_count', 'qty', 'quantity', 'total']),
-      () => tryCount('sales', 'created_at'),
-      () => tryCount('sales', 'date'),
-      () => tryCount('sales_daily', 'date'),
-      () => tryCount('sales_daily', 'created_at'),
-    ];
+    const readFrom = async (table: 'sales_daily' | 'sales') => {
+      const a = await sumSalesCount(table, 'date');
+      if (typeof a === 'number') return a;
+      if (a === null) return null;
 
-    for (const fn of candidates) {
-      try {
-        const v = await fn();
-        if (typeof v === 'number') return v;
-      } catch {
-      }
+      const b = await sumSalesCount(table, 'created_at');
+      if (typeof b === 'number') return b;
+      if (b === null) return null;
+
+      const c = await countRows(table, 'created_at');
+      if (typeof c === 'number') return c;
+      if (c === null) return null;
+
+      const d = await countRows(table, 'date');
+      if (typeof d === 'number') return d;
+      if (d === null) return null;
+
+      return 0;
+    };
+
+    if (salesSourceRef.current === 'sales_daily') {
+      const v = await readFrom('sales_daily');
+      if (v === null) { salesSourceRef.current = 'none'; return 0; }
+      return v;
     }
 
+    if (salesSourceRef.current === 'sales') {
+      const v = await readFrom('sales');
+      if (v === null) { salesSourceRef.current = 'none'; return 0; }
+      return v;
+    }
+
+    const vd = await readFrom('sales_daily');
+    if (typeof vd === 'number') { salesSourceRef.current = 'sales_daily'; return vd; }
+
+    const vs = await readFrom('sales');
+    if (typeof vs === 'number') { salesSourceRef.current = 'sales'; return vs; }
+
+    salesSourceRef.current = 'none';
     return 0;
   }, [id]);
 
@@ -919,25 +942,14 @@ export function ClientDashboard() {
         return;
       }
 
-      const isDisplayForce = (cfg.api_endpoint || '').includes('displayforce.ai');
-      const isDev = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
-      const baseRaw = (cfg.api_endpoint || 'https://api.displayforce.ai').replace(/\/$/, '');
-      const baseUrl = isDisplayForce ? (isDev ? '/api-proxy' : 'https://api.displayforce.ai') : baseRaw;
+      const baseUrl = '/api/proxy-displayforce';
 
-      const folderUrl = `${baseUrl}/public/v1/folder/list`;
       const folderBody = { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 };
-
-      let foldersResponse = await fetch(`${folderUrl}?recursive=true&limit=100&offset=0`, {
-        method: 'GET',
-        headers,
+      const foldersResponse = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'folder/list', method: 'GET', headers, query: { recursive: true, limit: 100, offset: 0 }, fallbackBody: folderBody }),
       });
-      if (!foldersResponse.ok) {
-        foldersResponse = await fetch(folderUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(folderBody),
-        });
-      }
       if (!foldersResponse.ok) {
         const errorText = await foldersResponse.text();
         setSyncMessage(`Erro ao buscar lojas na API (${foldersResponse.status})`);
@@ -948,28 +960,12 @@ export function ClientDashboard() {
       const foldersJson = await foldersResponse.json();
       const folders = Array.isArray(foldersJson?.data) ? foldersJson.data : [];
 
-      const deviceUrl = `${baseUrl}/public/v1/device/list`;
-      const deviceBody = {
-        id: [],
-        name: [],
-        parent_ids: [],
-        recursive: true,
-        params: ['id', 'name', 'parent_id', 'parent_ids', 'tags'],
-        limit: 100,
-        offset: 0,
-      };
-
-      let devicesResponse = await fetch(`${deviceUrl}?recursive=true&limit=100&offset=0`, {
-        method: 'GET',
-        headers,
+      const deviceBody = { id: [], name: [], parent_ids: [], recursive: true, params: ['id','name','parent_id','parent_ids','tags'], limit: 100, offset: 0 };
+      const devicesResponse = await fetch(baseUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ endpoint: 'device/list', method: 'GET', headers, query: { recursive: true, limit: 100, offset: 0 }, fallbackBody: deviceBody }),
       });
-      if (!devicesResponse.ok) {
-        devicesResponse = await fetch(deviceUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(deviceBody),
-        });
-      }
       if (!devicesResponse.ok) {
         const errorText = await devicesResponse.text();
         setSyncMessage(`Erro ao buscar dispositivos na API (${devicesResponse.status})`);
@@ -1090,8 +1086,18 @@ export function ClientDashboard() {
       if (document.visibilityState !== 'visible') return;
 
       await refreshClientAndStores();
-      await syncStoresFromExternal();
+
+      const isDev = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
+      if (isDev) {
+        await syncStoresFromExternal();
+      }
+
       await syncFromApi(true);
+
+      await loadData();
+      await loadWeekFlowData();
+      await loadQuarterData();
+      await loadCompareData();
 
       setLastUpdate(new Date());
     };
@@ -1099,7 +1105,7 @@ export function ClientDashboard() {
     void run();
     const t = setInterval(() => { void run(); }, 10 * 60 * 1000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [id, refreshClientAndStores, syncStoresFromExternal, syncFromApi, isSyncingStores]);
+  }, [id, refreshClientAndStores, syncStoresFromExternal, syncFromApi, isSyncingStores, loadData, loadWeekFlowData, loadQuarterData, loadCompareData]);
 
   // ── Widget config ─────────────────────────────────────────────────────────
   useEffect(() => {
