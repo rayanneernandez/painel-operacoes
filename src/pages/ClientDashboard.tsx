@@ -526,8 +526,6 @@ export function ClientDashboard() {
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
   // ── On mount / filter change: load from DB/rollup only ──────────────────────
-  // ✅ NO auto-sync: syncFromApi is only called when user clicks "Sincronizar"
-  // This prevents 429 Too Many Requests on the external API.
   const lastQuarterMonths = useCallback((end: Date) => {
     const y = end.getUTCFullYear();
     const endMonth = end.getUTCMonth();
@@ -611,6 +609,26 @@ export function ClientDashboard() {
     return 0;
   }, [id]);
 
+  const fetchVisitorsFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
+    if (!id) return 0;
+
+    let q = supabase
+      .from('visitor_analytics')
+      .select('*', { count: 'exact', head: true })
+      .eq('client_id', id)
+      .gte('timestamp', rangeStartIso)
+      .lte('timestamp', rangeEndIso);
+
+    if (deviceIds.length > 0) q = q.in('device_id', deviceIds);
+
+    const { count, error } = await q;
+    if (error) {
+      console.warn('[Dashboard] Erro ao contar visitantes (trimestre):', error);
+      return 0;
+    }
+    return Number(count) || 0;
+  }, [id, deviceIds]);
+
   const loadQuarterData = useCallback(async () => {
     if (!id) return;
 
@@ -623,48 +641,7 @@ export function ClientDashboard() {
         let visitors = 0;
         let sales = 0;
 
-        if (deviceIds.length === 0) {
-          const { data: rollups } = await supabase
-            .from('visitor_analytics_rollups')
-            .select('total_visitors')
-            .eq('client_id', id)
-            .eq('start', month.startIso)
-            .eq('end', month.endIso)
-            .order('updated_at', { ascending: false })
-            .limit(1);
-
-          const found = rollups?.[0] as any;
-          if (found?.total_visitors != null) {
-            visitors = Number(found.total_visitors) || 0;
-          } else {
-            const resp = await fetch('/api/sync-analytics', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                client_id: id,
-                start: month.startIso,
-                end: month.endIso,
-                rebuild_rollup: true,
-              }),
-            });
-            const json = resp.ok ? await resp.json() : null;
-            visitors = Number(json?.dashboard?.total_visitors ?? 0) || 0;
-          }
-        } else {
-          const resp = await fetch('/api/sync-analytics', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              client_id: id,
-              start: month.startIso,
-              end: month.endIso,
-              rebuild_rollup: true,
-              devices: deviceIds,
-            }),
-          });
-          const json = resp.ok ? await resp.json() : null;
-          visitors = Number(json?.dashboard?.total_visitors ?? 0) || 0;
-        }
+        visitors = await fetchVisitorsFromDb(month.startIso, month.endIso);
 
         sales = await fetchSalesFromDb(month.startIso, month.endIso);
 
@@ -682,7 +659,7 @@ export function ClientDashboard() {
     } finally {
       setIsLoadingQuarter(false);
     }
-  }, [id, selectedEndDate, deviceIds, lastQuarterMonths, fetchSalesFromDb]);
+  }, [id, selectedEndDate, deviceIds, lastQuarterMonths, fetchSalesFromDb, fetchVisitorsFromDb]);
 
   useEffect(() => {
     loadData();
@@ -899,21 +876,6 @@ export function ClientDashboard() {
     }
   }, [id]);
 
-  // ── Auto-refresh: reload from DB every 10 min ───────────────────────────────
-  useEffect(() => {
-    if (!id) return;
-    const t = setInterval(() => {
-      if (syncingRef.current) return;
-      if (document.visibilityState !== 'visible') return;
-
-      loadData();
-      loadWeekFlowData();
-      loadQuarterData();
-      loadCompareData();
-      refreshClientAndStores();
-    }, 10 * 60 * 1000);
-    return () => clearInterval(t);
-  }, [id, loadData, loadWeekFlowData, loadQuarterData, loadCompareData, refreshClientAndStores]);
 
   const syncStoresFromExternal = useCallback(async () => {
     if (!id) return;
@@ -1116,6 +1078,28 @@ export function ClientDashboard() {
   useEffect(() => {
     refreshClientAndStores();
   }, [refreshClientAndStores]);
+
+  useEffect(() => {
+    if (!id) return;
+
+    let cancelled = false;
+
+    const run = async () => {
+      if (cancelled) return;
+      if (syncingRef.current || isSyncingStores) return;
+      if (document.visibilityState !== 'visible') return;
+
+      await refreshClientAndStores();
+      await syncStoresFromExternal();
+      await syncFromApi(true);
+
+      setLastUpdate(new Date());
+    };
+
+    void run();
+    const t = setInterval(() => { void run(); }, 10 * 60 * 1000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [id, refreshClientAndStores, syncStoresFromExternal, syncFromApi, isSyncingStores]);
 
   // ── Widget config ─────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1387,18 +1371,6 @@ export function ClientDashboard() {
               )}
             </div>
 
-            {/* Sync button */}
-            <button
-              onClick={async () => {
-                await syncStoresFromExternal();
-                await syncFromApi(false);
-              }}
-              disabled={isSyncing || isSyncingStores}
-              className="flex items-center justify-center gap-2 bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-500 transition-colors w-full sm:w-auto disabled:opacity-60"
-            >
-              <Upload size={16} className={isSyncing || isSyncingStores ? 'animate-pulse' : ''} />
-              <span className="text-sm">{isSyncing || isSyncingStores ? 'Sincronizando...' : 'Sincronizar'}</span>
-            </button>
           </div>
         </div>
       </div>
