@@ -56,8 +56,9 @@ export function ClientDashboard() {
     const now = new Date();
     now.setUTCHours(23, 59, 59, 999); // hoje, fim do dia
     return now;
-});
+  });
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const autoTodayRef = useRef(true);
 
   // ── Sync state ──────────────────────────────────────────────────────────────
   const [isSyncing, setIsSyncing] = useState(false);
@@ -70,6 +71,24 @@ export function ClientDashboard() {
     const t = setTimeout(() => setSyncMessage(''), 5000);
     return () => clearTimeout(t);
   }, [syncMessage]);
+
+  useEffect(() => {
+    const tick = () => {
+      if (!autoTodayRef.current) return;
+
+      const s = new Date();
+      s.setUTCHours(0, 0, 0, 0);
+      const e = new Date();
+      e.setUTCHours(23, 59, 59, 999);
+
+      if (selectedStartDate.getTime() !== s.getTime()) setSelectedStartDate(s);
+      if (selectedEndDate.getTime() !== e.getTime()) setSelectedEndDate(e);
+    };
+
+    tick();
+    const t = setInterval(tick, 60 * 1000);
+    return () => clearInterval(t);
+  }, [selectedStartDate, selectedEndDate]);
 
   // ── Dashboard data ──────────────────────────────────────────────────────────
   const [totalVisitors, setTotalVisitors] = useState(0);
@@ -522,14 +541,11 @@ export function ClientDashboard() {
   // This prevents 429 Too Many Requests on the external API.
   const lastQuarterMonths = useCallback((end: Date) => {
     const y = end.getUTCFullYear();
-    const m = end.getUTCMonth();
-    const endMonthLast = new Date(Date.UTC(y, m + 1, 0, 23, 59, 59, 999));
-    const endMonth = end.getTime() >= endMonthLast.getTime() ? m : m - 1;
+    const endMonth = end.getUTCMonth();
 
     const out: { label: string; startIso: string; endIso: string }[] = [];
     for (let i = 2; i >= 0; i--) {
-      const mm = endMonth - i;
-      const d = new Date(Date.UTC(y, mm, 1, 0, 0, 0, 0));
+      const d = new Date(Date.UTC(y, endMonth - i, 1, 0, 0, 0, 0));
       const yy = d.getUTCFullYear();
       const m2 = d.getUTCMonth();
       const label = d
@@ -966,7 +982,11 @@ export function ClientDashboard() {
                         <label className="block text-xs text-gray-400">Início</label>
                         <input type="date"
                           value={selectedStartDate.toISOString().slice(0, 10)}
-                          onChange={(e) => { const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setSelectedStartDate(d); }}
+                          onChange={(e) => {
+                            autoTodayRef.current = false;
+                            const d = new Date(`${e.target.value}T00:00:00.000Z`);
+                            if (!isNaN(d.getTime())) setSelectedStartDate(d);
+                          }}
                           className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
                         />
                       </div>
@@ -974,7 +994,11 @@ export function ClientDashboard() {
                         <label className="block text-xs text-gray-400">Fim</label>
                         <input type="date"
                           value={selectedEndDate.toISOString().slice(0, 10)}
-                          onChange={(e) => { const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setSelectedEndDate(d); }}
+                          onChange={(e) => {
+                            autoTodayRef.current = false;
+                            const d = new Date(`${e.target.value}T23:59:59.999Z`);
+                            if (!isNaN(d.getTime())) setSelectedEndDate(d);
+                          }}
                           className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
                         />
                       </div>
