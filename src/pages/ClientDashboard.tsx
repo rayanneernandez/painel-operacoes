@@ -548,6 +548,69 @@ export function ClientDashboard() {
     return out;
   }, []);
 
+  const fetchSalesFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
+    if (!id) return 0;
+
+    const trySum = async (table: string, dateCol: string, valueCols: string[]) => {
+      const selectCols = [dateCol, ...valueCols].join(',');
+      const { data, error } = await supabase
+        .from(table)
+        .select(selectCols)
+        .eq('client_id', id)
+        .gte(dateCol, rangeStartIso)
+        .lte(dateCol, rangeEndIso)
+        .range(0, 9999);
+
+      if (error) return null;
+
+      const rows = (data as any[]) || [];
+      let sum = 0;
+      rows.forEach((r: any) => {
+        for (const c of valueCols) {
+          if (r?.[c] != null) {
+            sum += Number(r[c]) || 0;
+            return;
+          }
+        }
+        sum += 1;
+      });
+      return sum;
+    };
+
+    const tryCount = async (table: string, dateCol: string) => {
+      const { count, error } = await supabase
+        .from(table)
+        .select('*', { count: 'exact', head: true })
+        .eq('client_id', id)
+        .gte(dateCol, rangeStartIso)
+        .lte(dateCol, rangeEndIso);
+
+      if (error) return null;
+      return Number(count) || 0;
+    };
+
+    const candidates = [
+      () => trySum('sales_daily', 'date', ['sales', 'sales_count', 'qty', 'quantity', 'total']),
+      () => trySum('sales_daily', 'created_at', ['sales', 'sales_count', 'qty', 'quantity', 'total']),
+      () => trySum('sales', 'date', ['sales', 'sales_count', 'qty', 'quantity', 'total']),
+      () => trySum('sales', 'created_at', ['sales', 'sales_count', 'qty', 'quantity', 'total']),
+      () => tryCount('sales', 'created_at'),
+      () => tryCount('sales', 'date'),
+      () => tryCount('sales_daily', 'date'),
+      () => tryCount('sales_daily', 'created_at'),
+    ];
+
+    for (const fn of candidates) {
+      try {
+        const v = await fn();
+        if (typeof v === 'number') return v;
+      } catch {
+      }
+    }
+
+    return 0;
+  }, [id]);
+
   const loadQuarterData = useCallback(async () => {
     if (!id) return;
 
@@ -603,6 +666,8 @@ export function ClientDashboard() {
           visitors = Number(json?.dashboard?.total_visitors ?? 0) || 0;
         }
 
+        sales = await fetchSalesFromDb(month.startIso, month.endIso);
+
         rows.push({ label: month.label, visitors, sales });
       }
 
@@ -617,7 +682,7 @@ export function ClientDashboard() {
     } finally {
       setIsLoadingQuarter(false);
     }
-  }, [id, selectedEndDate, deviceIds, lastQuarterMonths]);
+  }, [id, selectedEndDate, deviceIds, lastQuarterMonths, fetchSalesFromDb]);
 
   useEffect(() => {
     loadData();
@@ -772,16 +837,6 @@ export function ClientDashboard() {
     loadCompareData();
   }, [loadCompareData]);
 
-  // ── Auto-refresh: only reload rollup from DB every 5 min (no external API calls) ──
-  useEffect(() => {
-    if (!id) return;
-    const t = setInterval(() => {
-      if (!syncingRef.current && document.visibilityState === 'visible') {
-        loadData(); // reads rollup from DB only — no external API
-      }
-    }, 5 * 60 * 1000);
-    return () => clearInterval(t);
-  }, [id, loadData]);
 
   const refreshClientAndStores = useCallback(async () => {
     if (!id) return;
@@ -843,6 +898,22 @@ export function ClientDashboard() {
       setStores(uniqueStores);
     }
   }, [id]);
+
+  // ── Auto-refresh: reload from DB every 10 min ───────────────────────────────
+  useEffect(() => {
+    if (!id) return;
+    const t = setInterval(() => {
+      if (syncingRef.current) return;
+      if (document.visibilityState !== 'visible') return;
+
+      loadData();
+      loadWeekFlowData();
+      loadQuarterData();
+      loadCompareData();
+      refreshClientAndStores();
+    }, 10 * 60 * 1000);
+    return () => clearInterval(t);
+  }, [id, loadData, loadWeekFlowData, loadQuarterData, loadCompareData, refreshClientAndStores]);
 
   const syncStoresFromExternal = useCallback(async () => {
     if (!id) return;
