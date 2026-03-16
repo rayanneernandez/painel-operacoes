@@ -176,6 +176,7 @@ export function ClientDashboard() {
     setHairTypeData(pctMapToTopData(ap.hair_type));
     setHairColorData(pctMapToTopData(ap.hair_color));
 
+    // Pirâmide etária: usa gender_percent para dividir corretamente M/F por faixa
     const agePct: Record<string, number> = rollup.age_pyramid_percent ?? {};
     const ageOrder = ['65+', '55-64', '45-54', '35-44', '25-34', '18-24', '18-'];
     const ageMap: Record<string, { m: number; f: number }> = {};
@@ -183,11 +184,17 @@ export function ClientDashboard() {
       '65-74': '65+', '75+': '65+', '55-64': '55-64', '45-54': '45-54',
       '35-44': '35-44', '25-34': '25-34', '18-24': '18-24', '0-9': '18-', '10-17': '18-',
     };
+    // Pega split M/F real do rollup
+    const genderPct: Record<string, number> = rollup.gender_percent ?? {};
+    const maleRatio   = (genderPct.male   ?? 50) / 100;
+    const femaleRatio = (genderPct.female ?? 50) / 100;
+
     Object.entries(agePct).forEach(([bucket, pct]) => {
       const label = bucketMap[bucket] ?? bucket;
       if (!ageMap[label]) ageMap[label] = { m: 0, f: 0 };
-      ageMap[label].m += Math.round(Number(pct) / 2);
-      ageMap[label].f += Math.round(Number(pct) / 2);
+      const p = Number(pct);
+      ageMap[label].m += Number((p * maleRatio).toFixed(1));
+      ageMap[label].f += Number((p * femaleRatio).toFixed(1));
     });
     setAgeStats(ageOrder.map((age) => ({ age, m: ageMap[age]?.m ?? 0, f: ageMap[age]?.f ?? 0 })));
     setLastUpdate(new Date());

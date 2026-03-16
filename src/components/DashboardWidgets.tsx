@@ -159,10 +159,13 @@ function useChartJs(
 const CJ = {
   grid:    'rgba(255,255,255,0.06)',
   label:   '#9ca3af',
-  male:    '#2563eb',   // azul
-  female:  '#ef4444',   // vermelho/coral
+  male:    '#2563eb',
+  female:  '#ef4444',
   neutral: '#1D9E75',
-  bg:      'rgba(10,10,20,0.92)',
+  bg:      'rgba(10,10,20,0.95)',
+  tooltipPadding: { top: 10, bottom: 10, left: 14, right: 14 },
+  titleFont: { size: 13, weight: 'bold' as const },
+  bodyFont:  { size: 13 },
 };
 
 // ── Widget: Pirâmide / Gênero & Idade (barras agrupadas por faixa) ───────────
@@ -193,7 +196,8 @@ export const WidgetAgePyramid = ({ view, ageData, totalVisitors }: { view: strin
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1, padding: 10,
+          backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth: 1,
+          padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont,
           callbacks: {
             label: (ctx: any) => {
               const v = Number(ctx.raw);
@@ -220,7 +224,7 @@ export const WidgetAgePyramid = ({ view, ageData, totalVisitors }: { view: strin
       <div className="flex items-center justify-between">
         <h3 className="font-bold text-gray-900 dark:text-white flex items-center gap-2 uppercase text-xs tracking-wider">
           <Users size={14} className="text-purple-500" />
-          Gênero &amp; Idade {view === 'network' ? '(Consolidado)' : ''}
+          Gênero &amp; Idade
         </h3>
         <div className="flex gap-3 text-[10px]">
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: CJ.female }} />Feminino</span>
@@ -390,7 +394,7 @@ export const WidgetGenderDist = ({ view, genderData, totalVisitors }: { view: st
   const femaleCount = totalCount != null ? Math.round((femalePct / 100) * totalCount) : null;
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
-      <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider"><Users size={16} className="text-pink-500" />Gênero {view === 'network' ? '(Consolidado)' : ''}</h3>
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider"><Users size={16} className="text-pink-500" />Gênero</h3>
       <DonutChart data={data} colors={[CJ.male, CJ.female]} showCenter={false}
         tooltipFormatter={(d, pct) => { const p = isPct ? d.value : pct; const pFmt = `${Number(p).toFixed(1)}%`; if (d.label.toLowerCase().includes('masc')) return `${d.label}: ${pFmt}${maleCount != null ? ` (${maleCount.toLocaleString()})` : ''}`; return `${d.label}: ${pFmt}${femaleCount != null ? ` (${femaleCount.toLocaleString()})` : ''}`; }} />
       <div className="flex justify-center gap-4 mt-4 text-xs">
@@ -494,7 +498,7 @@ export const WidgetAttributes = ({ view, attrData }: { view: string; attrData?: 
   const data = attrData && attrData.length ? attrData : [{ label: 'Óculos', value: 0 }, { label: 'Barba', value: 0 }, { label: 'Máscara', value: 0 }, { label: 'Chapéu/Boné', value: 0 }];
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none">
-      <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider"><Users size={16} className="text-orange-500" />Atributos {view === 'network' ? '(Consolidado)' : ''}</h3>
+      <h3 className="font-bold text-gray-900 dark:text-white mb-4 flex items-center gap-2 uppercase text-sm tracking-wider"><Users size={16} className="text-orange-500" />Atributos</h3>
       <HorizontalBarChart data={data} color="bg-orange-500" />
     </div>
   );
@@ -539,28 +543,111 @@ export const WidgetKPIStoreQuarter = ({ visitors, sales, loading }: { visitors?:
   );
 };
 
+// ── Donut com Chart.js (tooltip maior, dados reais) ─────────────────────────
+function ChartDonut({ labels, values, colors, title }: {
+  labels: string[]; values: number[]; colors: string[]; title: string;
+}) {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const total = values.reduce((a, b) => a + b, 0);
+
+  useChartJs(canvasRef, () => {
+    if (total === 0) return null;
+    return {
+      type: 'doughnut',
+      data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0, hoverOffset: 6 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '68%',
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: CJ.bg,
+            borderColor: 'rgba(255,255,255,0.12)',
+            borderWidth: 1,
+            padding: { top: 10, bottom: 10, left: 14, right: 14 },
+            titleFont: { size: 13, weight: 'bold' },
+            bodyFont: { size: 13 },
+            callbacks: {
+              label: (ctx: any) => {
+                const v = Number(ctx.raw);
+                const pct = total > 0 ? ((v / total) * 100).toFixed(1) : '0.0';
+                return `  ${ctx.label}: ${pct}%`;
+              },
+            },
+          },
+        },
+      },
+    };
+  }, [JSON.stringify(values)]);
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div className="relative w-full" style={{ height: 160 }}>
+        {total === 0
+          ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+          : <canvas ref={canvasRef} />}
+      </div>
+      {total > 0 && (
+        <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
+          {labels.map((l, i) => (
+            <span key={i} className="flex items-center gap-1 text-[11px] text-gray-400">
+              <span className="w-2.5 h-2.5 rounded-sm inline-block flex-shrink-0" style={{ background: colors[i] }} />
+              {l} ({total > 0 ? ((values[i] / total) * 100).toFixed(1) : 0}%)
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: number }[] }) => {
   const glassesPct    = Number(attrData?.find((a) => String(a.label).toLowerCase().includes('óculos'))?.value) || 0;
   const withGlasses   = Math.max(0, Math.min(100, glassesPct));
   const withoutGlasses = Math.max(0, 100 - withGlasses);
-  return (<div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none"><h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Visão</h3><DonutChart data={[{ label: 'Sem Óculos', value: withoutGlasses }, { label: 'Com Óculos', value: withGlasses }]} colors={['#e5e7eb', '#3b82f6']} showCenter={false} /></div>);
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-3 uppercase text-xs tracking-wider">Visão</h3>
+      <ChartDonut labels={['Sem Óculos', 'Com Óculos']} values={[withoutGlasses, withGlasses]} colors={['#4b5563', '#3b82f6']} title="Visão" />
+    </div>
+  );
 };
 
 export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; value: number }[] }) => {
   const beardPct    = Number(attrData?.find((a) => String(a.label).toLowerCase().includes('barba'))?.value) || 0;
   const withBeard   = Math.max(0, Math.min(100, beardPct));
   const withoutBeard = Math.max(0, 100 - withBeard);
-  return (<div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none"><h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Pelos Faciais</h3><DonutChart data={[{ label: 'Sem Barba', value: withoutBeard }, { label: 'Com Barba', value: withBeard }]} colors={['#fca5a5', '#3b82f6']} showCenter={false} /></div>);
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-3 uppercase text-xs tracking-wider">Pelos Faciais</h3>
+      <ChartDonut labels={['Sem Barba', 'Com Barba']} values={[withoutBeard, withBeard]} colors={['#6b7280', '#2563eb']} title="Pelos Faciais" />
+    </div>
+  );
 };
 
 export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: string; value: number }[] }) => {
-  const has = Array.isArray(hairTypeData) && hairTypeData.some((d) => Number(d.value) > 0);
-  return (<div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none"><h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Tipo de Cabelo</h3>{has ? <DonutChart data={hairTypeData as any} colors={['#3b82f6','#eab308','#ef4444','#94a3b8']} showCenter={false} /> : <div className="h-[160px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>}</div>);
+  const items  = (hairTypeData || []).filter((d) => Number(d.value) > 0);
+  const labels = items.map((d) => d.label);
+  const values = items.map((d) => Number(d.value));
+  const colors = ['#3b82f6', '#eab308', '#ef4444', '#94a3b8', '#8b5cf6', '#10b981'];
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-3 uppercase text-xs tracking-wider">Tipo de Cabelo</h3>
+      <ChartDonut labels={labels} values={values} colors={colors.slice(0, labels.length)} title="Tipo de Cabelo" />
+    </div>
+  );
 };
 
 export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: string; value: number }[] }) => {
-  const has = Array.isArray(hairColorData) && hairColorData.some((d) => Number(d.value) > 0);
-  return (<div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-6 h-full shadow-sm dark:shadow-none"><h3 className="font-bold text-gray-900 dark:text-white mb-4 uppercase text-sm tracking-wider">Cor de Cabelo</h3>{has ? <DonutChart data={hairColorData as any} colors={['#1f2937','#eab308','#78350f','#94a3b8']} showCenter={false} /> : <div className="h-[160px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>}</div>);
+  const items  = (hairColorData || []).filter((d) => Number(d.value) > 0);
+  const labels = items.map((d) => d.label);
+  const values = items.map((d) => Number(d.value));
+  const colors = ['#1f2937', '#eab308', '#78350f', '#94a3b8', '#ef4444', '#3b82f6'];
+  return (
+    <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
+      <h3 className="font-bold text-gray-900 dark:text-white mb-3 uppercase text-xs tracking-wider">Cor de Cabelo</h3>
+      <ChartDonut labels={labels} values={values} colors={colors.slice(0, labels.length)} title="Cor de Cabelo" />
+    </div>
+  );
 };
 
 export const WIDGET_MAP: Record<string, React.FC<any>> = {
