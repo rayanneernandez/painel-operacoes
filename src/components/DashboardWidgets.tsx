@@ -437,7 +437,7 @@ export const WidgetSalesQuarter = ({
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none flex flex-col gap-3">
       <h3 className="font-bold text-gray-900 dark:text-white uppercase text-xs tracking-wider">
-        Total Visitantes vs Vendas — Último Trimestre
+        Total Visitantes — Último Trimestre
       </h3>
 
       {/* Legenda */}
@@ -490,19 +490,11 @@ export type WidgetType = {
 export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'kpi_flow_stats',             title: 'Resumo de Fluxo',                      type: 'kpi',   size: 'full',    description: 'Total Visitantes, Média Dia, Tempo Médio' },
   { id: 'kpi_store_quarter',          title: 'Loja Último Trimestre',                type: 'kpi',   size: 'half',    description: 'KPIs de Visitantes, Vendas e Conversão' },
-  { id: 'kpi_store_period',           title: 'Loja Período',                         type: 'kpi',   size: 'half',    description: 'KPIs de Visitantes, Vendas e Conversão (Período)' },
+
   { id: 'flow_trend',                 title: 'Tendências de Fluxo (Semanal)',        type: 'chart', size: 'half',    description: 'Gráfico de linha com fluxo diário' },
   { id: 'hourly_flow',                title: 'Fluxo por Hora',                       type: 'chart', size: 'half',    description: 'Gráfico de linha com média horária' },
   { id: 'chart_sales_quarter',        title: 'Visitantes vs Vendas (Trimestre)',     type: 'chart', size: 'half',    description: 'Comparativo mensal de conversão' },
-  { id: 'chart_sales_daily',          title: 'Visitantes vs Vendas (Diário)',        type: 'chart', size: 'half',    description: 'Linha do tempo diária de conversão' },
-  { id: 'chart_sales_period_bar',     title: 'Visitantes vs Vendas (Período Barras)',type: 'chart', size: 'half',    description: 'Comparativo por período agrupado' },
-  { id: 'chart_sales_period_line',    title: 'Visitantes vs Vendas (Período Linha)', type: 'chart', size: 'half',    description: 'Tendência comparativa entre períodos' },
-  { id: 'conversion',                 title: 'Taxa de Conversão',                   type: 'kpi',   size: 'quarter', description: 'KPI simples de conversão de vendas' },
-  { id: 'chart_attention_conversion', title: 'Atenção Possível Conversão',           type: 'chart', size: 'quarter', description: 'Donut chart de níveis de atenção' },
-  { id: 'chart_kibon_vert_quarter',   title: 'Kibon Vertical (Trimestre)',           type: 'chart', size: 'half',    description: 'Contatos Freezer Vertical Último Trimestre' },
-  { id: 'chart_kibon_vert_period',    title: 'Kibon Vertical (Período)',             type: 'chart', size: 'half',    description: 'Contatos Freezer Vertical Período' },
-  { id: 'chart_kibon_horiz_quarter',  title: 'Kibon Horizontal (Trimestre)',         type: 'chart', size: 'half',    description: 'Contatos Freezer Horizontal Último Trimestre' },
-  { id: 'chart_kibon_horiz_period',   title: 'Kibon Horizontal (Período)',           type: 'chart', size: 'half',    description: 'Contatos Freezer Horizontal Período' },
+
   { id: 'age_pyramid',                title: 'Pirâmide Etária',                     type: 'chart', size: 'third',   description: 'Distribuição demográfica por idade/gênero' },
   { id: 'chart_age_ranges',           title: 'Faixa Etária (Barras)',               type: 'chart', size: 'third',   description: 'Distribuição por faixas etárias detalhadas' },
   { id: 'gender_dist',                title: 'Distribuição de Gênero',              type: 'chart', size: 'third',   description: 'Gráfico de rosca: Masculino vs Feminino' },
@@ -511,7 +503,7 @@ export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'chart_hair_type',            title: 'Atributo: Tipo de Cabelo',            type: 'chart', size: 'third',   description: 'Longo, Curto, Careca' },
   { id: 'chart_hair_color',           title: 'Atributo: Cor de Cabelo',             type: 'chart', size: 'third',   description: 'Preto, Loiro, Castanho' },
   { id: 'attributes',                 title: 'Atributos Gerais',                    type: 'chart', size: 'third',   description: 'Resumo de atributos principais' },
-  { id: 'journey',                    title: 'Jornada do Cliente',                  type: 'chart', size: 'third',   description: 'Funil de pontos de passagem' },
+
   { id: 'campaigns',                  title: 'Engajamento em Campanhas',            type: 'table', size: '2/3',     description: 'Tabela de performance de campanhas' },
   { id: 'heatmap',                    title: 'Mapa de Calor (Loja)',               type: 'chart', size: 'full',    description: 'Visualização térmica da planta baixa' },
 ];
@@ -825,15 +817,9 @@ export const WIDGET_MAP: Record<string, React.FC<any>> = {
   'campaigns':                  WidgetCampaigns,
   'kpi_flow_stats':             WidgetKPIFlowStats,
   'kpi_store_quarter':          WidgetKPIStoreQuarter,
-  'kpi_store_period':           WidgetKPIStorePeriod,
+
   'chart_sales_quarter':        WidgetSalesQuarter,      // ← usa Chart.js agora
-  'chart_sales_daily':          WidgetSalesDaily,
-  'chart_sales_period_bar':     WidgetSalesPeriodBar,
-  'chart_sales_period_line':    WidgetSalesPeriodLine,
-  'chart_kibon_vert_quarter':   WidgetFreezerVerticalQuarter,
-  'chart_kibon_vert_period':    WidgetFreezerVerticalQuarter,
-  'chart_kibon_horiz_quarter':  WidgetFreezerHorizontalQuarter,
-  'chart_kibon_horiz_period':   WidgetFreezerHorizontalQuarter,
+
   'chart_age_ranges':           WidgetAgeRanges,
   'chart_vision':               WidgetVision,
   'chart_facial_hair':          WidgetFacialHair,
