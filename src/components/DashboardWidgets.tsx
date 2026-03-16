@@ -219,27 +219,61 @@ function ChartDonut({ labels, values, colors }: { labels: string[]; values: numb
   );
 }
 
-// ── Mapas de tradução para atributos de cabelo ───────────────────────────────
+const FACIAL_HAIR_MAP: Record<string, { label: string; color: string }> = {
+  raspados:   { label: 'Raspados',   color: '#f9a8d4' },
+  shaved:     { label: 'Raspados',   color: '#f9a8d4' },
+  none:       { label: 'Raspados',   color: '#f9a8d4' },
+  barba:      { label: 'Barba',      color: '#1f2937' },
+  beard:      { label: 'Barba',      color: '#1f2937' },
+  full:       { label: 'Barba',      color: '#1f2937' },
+  cavanhaque: { label: 'Cavanhaque', color: '#2563eb' },
+  goatee:     { label: 'Cavanhaque', color: '#2563eb' },
+  bigode:     { label: 'Bigode',     color: '#dc2626' },
+  mustache:   { label: 'Bigode',     color: '#dc2626' },
+  cerdas:     { label: 'Cerdas',     color: '#d97706' },
+  stubble:    { label: 'Cerdas',     color: '#d97706' },
+};
+
+const GLASSES_MAP: Record<string, { label: string; color: string }> = {
+  'sem óculos':    { label: 'Sem óculos',    color: '#e5e7eb' },
+  none:            { label: 'Sem óculos',    color: '#e5e7eb' },
+  'false':         { label: 'Sem óculos',    color: '#e5e7eb' },
+  'óculos normais':{ label: 'Óculos normais',color: '#93c5fd' },
+  normal:          { label: 'Óculos normais',color: '#93c5fd' },
+  regular:         { label: 'Óculos normais',color: '#93c5fd' },
+  'true':          { label: 'Óculos normais',color: '#93c5fd' },
+  'óculos escuros':{ label: 'Óculos escuros',color: '#374151' },
+  dark:            { label: 'Óculos escuros',color: '#374151' },
+  sunglasses:      { label: 'Óculos escuros',color: '#374151' },
+};
 const HAIR_TYPE_MAP: Record<string, { label: string; color: string }> = {
-  normal:      { label: 'Normal',    color: '#8b5cf6' },
-  high_temple: { label: 'Entradas',  color: '#06b6d4' },
-  bald:        { label: 'Careca',    color: '#f97316' },
-  short:       { label: 'Curto',     color: '#10b981' },
-  long:        { label: 'Longo',     color: '#f43f5e' },
-  curly:       { label: 'Cacheado',  color: '#eab308' },
-  wavy:        { label: 'Ondulado',  color: '#3b82f6' },
-  straight:    { label: 'Liso',      color: '#a78bfa' },
+  normal:      { label: 'Normal',   color: '#2563eb' },
+  longo:       { label: 'Longo',    color: '#7c3aed' },
+  long:        { label: 'Longo',    color: '#7c3aed' },
+  careca:      { label: 'Careca',   color: '#f97316' },
+  bald:        { label: 'Careca',   color: '#f97316' },
+  high_temple: { label: 'Entradas', color: '#06b6d4' },
+  short:       { label: 'Curto',    color: '#10b981' },
+  curly:       { label: 'Cacheado', color: '#eab308' },
+  wavy:        { label: 'Ondulado', color: '#a78bfa' },
+  straight:    { label: 'Liso',     color: '#34d399' },
 };
 
 const HAIR_COLOR_MAP: Record<string, { label: string; color: string }> = {
-  black:  { label: 'Preto',    color: '#374151' },
-  brown:  { label: 'Castanho', color: '#92400e' },
-  blond:  { label: 'Loiro',    color: '#f59e0b' },
-  blonde: { label: 'Loiro',    color: '#f59e0b' },
-  gray:   { label: 'Grisalho', color: '#9ca3af' },
-  grey:   { label: 'Grisalho', color: '#9ca3af' },
-  red:    { label: 'Ruivo',    color: '#ef4444' },
-  white:  { label: 'Branco',   color: '#e5e7eb' },
+  preto:    { label: 'Preto',    color: '#374151' },
+  black:    { label: 'Preto',    color: '#374151' },
+  castanho: { label: 'Castanho', color: '#92400e' },
+  brown:    { label: 'Castanho', color: '#92400e' },
+  loiro:    { label: 'Loiro',    color: '#f59e0b' },
+  blond:    { label: 'Loiro',    color: '#f59e0b' },
+  blonde:   { label: 'Loiro',    color: '#f59e0b' },
+  ruivo:    { label: 'Ruivo',    color: '#ef4444' },
+  red:      { label: 'Ruivo',    color: '#ef4444' },
+  grisalho: { label: 'Grisalho', color: '#9ca3af' },
+  gray:     { label: 'Grisalho', color: '#9ca3af' },
+  grey:     { label: 'Grisalho', color: '#9ca3af' },
+  branco:   { label: 'Branco',   color: '#e5e7eb' },
+  white:    { label: 'Branco',   color: '#e5e7eb' },
 };
 
 function mapHairData(raw: { label: string; value: number }[] | undefined, mapDict: Record<string, { label: string; color: string }>): { labels: string[]; values: number[]; colors: string[] } {
@@ -432,23 +466,45 @@ export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: numbe
 // ── WidgetGenderDist ─────────────────────────────────────────────────────────
 export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string; genderData?: { label: string; value: number }[]; totalVisitors?: number }) => {
   const fallback = [{ label:'Masculino', value:0 },{ label:'Feminino', value:0 }];
-  const data = genderData && genderData.length === 2 ? genderData : fallback;
-  const maleRaw = Number(data[0]?.value)||0; const femaleRaw = Number(data[1]?.value)||0;
-  const sum = maleRaw + femaleRaw;
+  const raw = genderData && genderData.length >= 2 ? genderData : fallback;
+
+  const maleRaw  = Number(raw.find(g => g.label.toLowerCase().includes('masc'))?.value) || 0;
+  const femRaw   = Number(raw.find(g => g.label.toLowerCase().includes('fem'))?.value)  || 0;
+  const indRaw   = Number(raw.find(g => g.label.toLowerCase().includes('indef') || g.label.toLowerCase().includes('unknown') || g.label === '0')?.value) || 0;
+
+  const sum = maleRaw + femRaw + indRaw || 1;
   const totalCount = typeof totalVisitors === 'number' && totalVisitors > 0 ? totalVisitors : null;
   const isPct = totalCount != null && sum > 0 && sum <= 101;
-  const malePct   = isPct ? Math.round(maleRaw)   : Math.round((maleRaw   /(sum||1))*100);
-  const femalePct = isPct ? Math.round(femaleRaw) : Math.round((femaleRaw/(sum||1))*100);
-  const maleCount   = totalCount != null ? Math.round((malePct/100)*totalCount)   : null;
-  const femaleCount = totalCount != null ? Math.round((femalePct/100)*totalCount) : null;
+
+  const malePct  = isPct ? Math.round(maleRaw) : Math.round((maleRaw/sum)*100);
+  const femPct   = isPct ? Math.round(femRaw)  : Math.round((femRaw/sum)*100);
+  const indPct   = isPct ? Math.round(indRaw)  : Math.round((indRaw/sum)*100);
+
+  const maleCount = totalCount ? Math.round((malePct/100)*totalCount) : null;
+  const femCount  = totalCount ? Math.round((femPct/100)*totalCount)  : null;
+  const indCount  = totalCount ? Math.round((indPct/100)*totalCount)  : null;
+
+  const segments = [
+    { label: 'Masculino',  value: malePct, color: CJ.male,   count: maleCount },
+    { label: 'Feminino',   value: femPct,  color: CJ.female, count: femCount  },
+    ...(indPct > 0 ? [{ label: 'Indefinido', value: indPct, color: '#10b981', count: indCount }] : []),
+  ].filter(s => s.value > 0);
+
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full">
       <h3 className="font-bold text-white mb-3 flex items-center gap-2 uppercase text-xs tracking-wider"><Users size={14} className="text-pink-500" />Gênero</h3>
-      <DonutChart data={data} colors={[CJ.male, CJ.female]} showCenter={false}
-        tooltipFormatter={(d,pct) => { const p = isPct?d.value:pct; const pFmt=`${Number(p).toFixed(1)}%`; if(d.label.toLowerCase().includes('masc')) return `${d.label}: ${pFmt}${maleCount!=null?` (${maleCount.toLocaleString()})`:''}`; return `${d.label}: ${pFmt}${femaleCount!=null?` (${femaleCount.toLocaleString()})`:''}`;}} />
-      <div className="flex justify-center gap-4 mt-2 text-[11px] text-gray-400">
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: CJ.male }} />Masculino ({malePct}%{maleCount!=null?` • ${maleCount.toLocaleString()}`:''})</span>
-        <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: CJ.female }} />Feminino ({femalePct}%{femaleCount!=null?` • ${femaleCount.toLocaleString()}`:''})</span>
+      <ChartDonut
+        labels={segments.map(s=>s.label)}
+        values={segments.map(s=>s.value)}
+        colors={segments.map(s=>s.color)}
+      />
+      <div className="flex flex-wrap justify-center gap-x-3 gap-y-1 mt-1">
+        {segments.map((s,i) => (
+          <span key={i} className="flex items-center gap-1 text-[11px] text-gray-300">
+            <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: s.color }} />
+            {s.label} ({s.value}%{s.count!=null?` • ${s.count.toLocaleString()}`:''})
+          </span>
+        ))}
       </div>
     </div>
   );
@@ -467,19 +523,41 @@ export const WidgetAttributes = ({ attrData }: { view?: string; attrData?: { lab
 
 // ── WidgetVision ─────────────────────────────────────────────────────────────
 export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: number }[] }) => {
-  const glassesPct     = Number(attrData?.find((a) => String(a.label).toLowerCase().includes('óculos'))?.value) || 0;
-  const withGlasses    = Math.max(0, Math.min(100, glassesPct));
-  const withoutGlasses = Math.max(0, 100 - withGlasses);
-  const items = [
-    { label: 'Com Óculos', value: withGlasses,    color: '#06b6d4' },
-    { label: 'Sem Óculos', value: withoutGlasses, color: '#0e7490' },
-  ].filter((x) => x.value > 0);
+  const raw = attrData?.find((a) => String(a.label).toLowerCase().includes('óculos'));
+  const glassesPct = Number(raw?.value) || 0;
+
+  // Tenta usar mapa detalhado se vier como categorias
+  const glassesAttr = attrData || [];
+  const hasCats = glassesAttr.some((a) => {
+    const k = String(a.label).toLowerCase();
+    return k.includes('normal') || k.includes('escuro') || k.includes('sunglasses');
+  });
+
+  let items: { label: string; value: number; color: string }[] = [];
+
+  if (hasCats) {
+    items = glassesAttr
+      .filter((a) => Number(a.value) > 0)
+      .map((a) => {
+        const k = String(a.label).toLowerCase().trim();
+        const m = GLASSES_MAP[k] ?? { label: a.label, color: '#6b7280' };
+        return { label: m.label, value: Number(a.value), color: m.color };
+      });
+  } else {
+    const withGlasses    = Math.max(0, Math.min(100, glassesPct));
+    const withoutGlasses = Math.max(0, 100 - withGlasses);
+    if (withGlasses > 0)    items.push({ label: 'Com Óculos', value: withGlasses,    color: '#93c5fd' });
+    if (withoutGlasses > 0) items.push({ label: 'Sem Óculos', value: withoutGlasses, color: '#4b5563' });
+  }
+
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Visão</h3>
-      {items.length === 0 ? <div className="h-[120px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : items.length === 1 ? <AttrBarList items={items} />
-        : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} />}
+      {items.length === 0
+        ? <div className="h-[120px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : items.length === 1
+          ? <AttrBarList items={items} />
+          : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} />}
     </div>
   );
 };
@@ -489,16 +567,36 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
   const beardPct     = Number(attrData?.find((a) => String(a.label).toLowerCase().includes('barba'))?.value) || 0;
   const withBeard    = Math.max(0, Math.min(100, beardPct));
   const withoutBeard = Math.max(0, 100 - withBeard);
-  const items = [
-    { label: 'Com Barba', value: withBeard,    color: '#f97316' },
-    { label: 'Sem Barba', value: withoutBeard, color: '#1d4ed8' },
-  ].filter((x) => x.value > 0);
+
+  // Detecta se tem categorias detalhadas (raspados, cavanhaque, etc)
+  const hasCats = (attrData || []).some((a) => {
+    const k = String(a.label).toLowerCase();
+    return k.includes('raspad') || k.includes('cavanhaque') || k.includes('bigode') || k.includes('cerda');
+  });
+
+  let items: { label: string; value: number; color: string }[] = [];
+
+  if (hasCats) {
+    items = (attrData || [])
+      .filter((a) => Number(a.value) > 0)
+      .map((a) => {
+        const k = String(a.label).toLowerCase().trim();
+        const m = FACIAL_HAIR_MAP[k] ?? { label: a.label, color: '#6b7280' };
+        return { label: m.label, value: Number(a.value), color: m.color };
+      });
+  } else {
+    if (withBeard > 0)    items.push({ label: 'Com Barba', value: withBeard,    color: '#f97316' });
+    if (withoutBeard > 0) items.push({ label: 'Sem Barba', value: withoutBeard, color: '#1d4ed8' });
+  }
+
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Pelos Faciais</h3>
-      {items.length === 0 ? <div className="h-[120px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : items.length === 1 ? <AttrBarList items={items} />
-        : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} />}
+      {items.length === 0
+        ? <div className="h-[120px] flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : items.length === 1
+          ? <AttrBarList items={items} />
+          : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} />}
     </div>
   );
 };
