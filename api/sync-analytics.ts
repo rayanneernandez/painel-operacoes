@@ -306,7 +306,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (req.method !== "POST") return bad(res, 405, { error: "Method Not Allowed" });
 
 
-    const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup } = (req.body as any) ?? {};
+    const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup, sync_stores } = (req.body as any) ?? {};
 
     const authHeader = req.headers.authorization;
     const providedAuth = typeof authHeader === "string" && authHeader.startsWith("Bearer ")
@@ -335,6 +335,128 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       headers["X-API-Token"] = cfg.api_key.trim();
     } else {
       return bad(res, 400, { error: "api_key não configurada" });
+    }
+
+    if (sync_stores === true) {
+      const base = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
+
+      const fetchWithFallback = async (url: string, body: any) => {
+        let r = await fetch(`${url}?recursive=true&limit=100&offset=0`, { method: "GET", headers });
+        if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+        return r;
+      };
+
+      const folderUrl = `${base}/public/v1/folder/list`;
+      const folderBody = { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 };
+      const foldersResp = await fetchWithFallback(folderUrl, folderBody);
+      if (!foldersResp.ok) {
+        const txt = await foldersResp.text();
+        return bad(res, foldersResp.status, { error: "Erro ao buscar lojas na API", details: txt });
+      }
+      const foldersJson: any = await foldersResp.json();
+      const folders = Array.isArray(foldersJson?.data) ? foldersJson.data : [];
+
+      const deviceUrl = `${base}/public/v1/device/list`;
+      const deviceBody = { id: [], name: [], parent_ids: [], recursive: true, params: ["id","name","parent_id","parent_ids","tags"], limit: 100, offset: 0 };
+      const devicesResp = await fetchWithFallback(deviceUrl, deviceBody);
+      if (!devicesResp.ok) {
+        const txt = await devicesResp.text();
+        return bad(res, devicesResp.status, { error: "Erro ao buscar dispositivos na API", details: txt });
+      }
+      const devicesJson: any = await devicesResp.json();
+      const devices = Array.isArray(devicesJson?.data) ? devicesJson.data : [];
+
+      if (folders.length === 0) {
+        return ok(res, { message: "Nenhuma loja encontrada na API", stores_upserted: 0, devices_upserted: 0 });
+      }
+
+      const { data: dbStores } = await supabase
+        .from("stores")
+        .select("id,name,city")
+        .eq("client_id", client_id);
+
+      const nameToStore = new Map<string, { id: string; city?: string | null }>();
+      (dbStores || []).forEach((s: any) => {
+        const n = String(s?.name || "").trim().toLowerCase();
+        if (!n || !s?.id) return;
+        nameToStore.set(n, { id: String(s.id), city: s.city });
+      });
+
+      const folderToStoreId = new Map<string, string>();
+      const storesPayload: any[] = [];
+
+      for (const f of folders) {
+        const folderId = String(f?.id ?? "").trim();
+        const name = String(f?.name || "").trim();
+        if (!folderId || !name) continue;
+
+        const key = name.toLowerCase();
+        const existing = nameToStore.get(key);
+        const storeId = existing?.id || crypto.randomUUID();
+        folderToStoreId.set(folderId, storeId);
+        storesPayload.push({
+          id: storeId,
+          client_id,
+          name,
+          city: existing?.city ?? "Não informada",
+        });
+      }
+
+      if (storesPayload.length > 0) {
+        await supabase.from("stores").upsert(storesPayload);
+      }
+
+      const storeIds = storesPayload.map((s) => s.id).filter(Boolean);
+      const { data: dbDevs } = storeIds.length
+        ? await supabase.from("devices").select("id,mac_address,store_id").in("store_id", storeIds)
+        : { data: [] as any[] };
+
+      const devIdByStoreMac = new Map<string, string>();
+      (dbDevs || []).forEach((d: any) => {
+        const sid = String(d?.store_id || "");
+        const mac = String(d?.mac_address || "").trim();
+        const did = String(d?.id || "");
+        if (!sid || !mac || !did) return;
+        devIdByStoreMac.set(`${sid}:${mac}`, did);
+      });
+
+      const devicesByFolder = new Map<string, any[]>();
+      devices.forEach((d: any) => {
+        const pid = d?.parent_id;
+        if (pid == null) return;
+        const k = String(pid);
+        const arr = devicesByFolder.get(k) || [];
+        arr.push(d);
+        devicesByFolder.set(k, arr);
+      });
+
+      const devicesPayload: any[] = [];
+      folderToStoreId.forEach((storeId, folderId) => {
+        const list = devicesByFolder.get(folderId) || [];
+        list.forEach((d: any) => {
+          const mac = String(d?.id ?? "").trim();
+          if (!mac) return;
+          const existingId = devIdByStoreMac.get(`${storeId}:${mac}`);
+          devicesPayload.push({
+            id: existingId || crypto.randomUUID(),
+            store_id: storeId,
+            name: String(d?.name || mac),
+            type: "camera",
+            mac_address: mac,
+            status: d?.connection_state === "online" ? "online" : "offline",
+          });
+        });
+      });
+
+      if (devicesPayload.length > 0) {
+        await supabase.from("devices").upsert(devicesPayload);
+      }
+
+      return ok(res, {
+        message: "Lojas sincronizadas",
+        stores_upserted: storesPayload.length,
+        devices_upserted: devicesPayload.length,
+      });
     }
 
     const now = new Date();
@@ -372,6 +494,38 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // It aggregates all data server-side in one query — no row pagination needed.
     // Create the function first by running create_rollup_function.sql in Supabase.
     if (rebuild_rollup === true) {
+      if (deviceNums.length > 0) {
+        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
+        if (rows.length === 0) {
+          return ok(res, {
+            message: "Sem dados no banco para o período informado",
+            start: rangeStart, end: rangeEnd,
+            externalFetched: 0, raw_upserted_new: 0,
+            total_in_db: 0, next_offset: null, done: true,
+            dashboard: null, stored_rollup: false,
+          });
+        }
+
+        const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        return ok(res, {
+          message: "Rollup recalculado (filtro por dispositivo)",
+          start: rangeStart, end: rangeEnd,
+          externalFetched: 0, raw_upserted_new: 0,
+          total_in_db: rr.total_visitors, next_offset: null, done: true,
+          dashboard: {
+            total_visitors: rr.total_visitors,
+            avg_visitors_per_day: rr.avg_visitors_per_day,
+            visitors_per_day: rr.visitors_per_day,
+            visitors_per_hour_avg: rr.visitors_per_hour_avg,
+            gender_percent: rr.gender_percent,
+            attributes_percent: rr.attributes_percent,
+            age_pyramid_percent: rr.age_pyramid_percent,
+            avg_times_seconds: { avg_visit_time_seconds: rr.avg_visit_time_seconds, avg_dwell_time_seconds: rr.avg_dwell_time_seconds },
+          },
+          stored_rollup: false,
+        });
+      }
+
       const lockKey = `${client_id}:${rangeStart}:${rangeEnd}`;
 
       // If another request is already rebuilding for same client+period, return early
@@ -560,6 +714,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // ── If no new data from API, use SQL RPC to rebuild rollup from DB ──────────
     if (combined.length === 0) {
+      if (deviceNums.length > 0) {
+        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
+        if (rows.length === 0) {
+          return ok(res, { message: "Sem dados no período informado", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
+        }
+        const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        return ok(res, {
+          message: "Sem dados novos na API — rollup recalculado (filtro por dispositivo)",
+          start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0,
+          total_in_db: rr.total_visitors, next_offset: null, done: true,
+          dashboard: {
+            total_visitors: rr.total_visitors,
+            avg_visitors_per_day: rr.avg_visitors_per_day,
+            visitors_per_day: rr.visitors_per_day,
+            visitors_per_hour_avg: rr.visitors_per_hour_avg,
+            gender_percent: rr.gender_percent,
+            attributes_percent: rr.attributes_percent,
+            age_pyramid_percent: rr.age_pyramid_percent,
+            avg_times_seconds: { avg_visit_time_seconds: rr.avg_visit_time_seconds, avg_dwell_time_seconds: rr.avg_dwell_time_seconds },
+          },
+          stored_rollup: false,
+        });
+      }
+
       const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
         p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd,
       });

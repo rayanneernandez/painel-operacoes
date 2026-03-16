@@ -245,6 +245,43 @@ export function ClientDashboard() {
       const startDay = startIso.slice(0, 10);
       const endDay   = endIso.slice(0, 10);
 
+      if (deviceIds.length > 0) {
+        setSyncMessage('Calculando dados da loja...');
+
+        const resp = await fetch('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
+        });
+
+        const json = resp.ok ? await resp.json() : null;
+        if (json?.dashboard) {
+          applyRollup({
+            total_visitors:         json.dashboard.total_visitors,
+            avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
+            avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+            visitors_per_day:       json.dashboard.visitors_per_day,
+            visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
+            gender_percent:         json.dashboard.gender_percent,
+            attributes_percent:     json.dashboard.attributes_percent,
+            age_pyramid_percent:    json.dashboard.age_pyramid_percent,
+          });
+          setSyncMessage('');
+        } else {
+          setSyncMessage('');
+          setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
+          setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAge(null);
+          setGenderStats([]); setAttributeStats([]); setAgeStats([]);
+          setVisitorsPerDayMap({});
+          setHairTypeData([]);
+          setHairColorData([]);
+          setComparePrevVisitorsPerDay({});
+        }
+
+        setIsLoadingData(false);
+        return;
+      }
+
     // 1. Try rollup from DB first (instant) — aceita rollup do mesmo período
     const { data: rollups } = await supabase
       .from('visitor_analytics_rollups')
@@ -276,7 +313,7 @@ export function ClientDashboard() {
       setIsLoadingData(false);
 
       // ✅ Module-level lock — survives React StrictMode double-mount
-      const rebuildKey = `${id}:${startDay}:${endDay}`;
+      const rebuildKey = `${id}:${startDay}:${endDay}:${deviceIds.join(',')}`;
       if (_rebuilding.has(rebuildKey)) return;
       _rebuilding.add(rebuildKey);
       setSyncMessage('Calculando dados do banco...');
@@ -471,7 +508,7 @@ export function ClientDashboard() {
           // ✅ Rebuild rollup after sync — but only if not already rebuilding
           const _startDay = selectedStartDate.toISOString().slice(0, 10);
           const _endDay = selectedEndDate.toISOString().slice(0, 10);
-          const rebuildKey2 = `${id}:${_startDay}:${_endDay}`;
+          const rebuildKey2 = `${id}:${_startDay}:${_endDay}:${deviceIds.join(',')}`;
           if (_rebuilding.has(rebuildKey2)) {
             setSyncMessage(`✅ Sincronização concluída.`);
           } else {
@@ -551,43 +588,81 @@ export function ClientDashboard() {
     if (!id) return 0;
     if (salesSourceRef.current === 'none') return 0;
 
+    const storeId = selectedStore?.id || null;
+
     const isNotFound = (err: any) => {
       const status = err?.status ?? err?.statusCode;
       const msg = String(err?.message || '');
       return status === 404 || /not found/i.test(msg) || /does not exist/i.test(msg);
     };
 
-    const sumSalesCount = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
-      const { data, error } = await supabase
-        .from(table)
-        .select(`${dateCol},sales_count`)
-        .eq('client_id', id)
-        .gte(dateCol, rangeStartIso)
-        .lte(dateCol, rangeEndIso)
-        .range(0, 9999);
+    const applySalesFilter = (q: any, mode: 'device' | 'store' | 'none') => {
+      if (mode === 'device' && deviceIds.length > 0) return q.in('device_id', deviceIds);
+      if (mode === 'store' && storeId) return q.eq('store_id', storeId);
+      return q;
+    };
 
-      if (error) {
-        if (isNotFound(error)) return null;
-        return undefined;
+    const sumSalesCount = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
+      const run = async (mode: 'device' | 'store' | 'none') => {
+        const q = applySalesFilter(
+          supabase
+            .from(table)
+            .select(`${dateCol},sales_count`)
+            .eq('client_id', id)
+            .gte(dateCol, rangeStartIso)
+            .lte(dateCol, rangeEndIso)
+            .range(0, 9999),
+          mode,
+        );
+        return await q;
+      };
+
+      const attempts: ('device' | 'store' | 'none')[] = [];
+      if (deviceIds.length > 0) attempts.push('device');
+      if (storeId) attempts.push('store');
+      attempts.push('none');
+
+      for (const mode of attempts) {
+        const { data, error } = await run(mode);
+        if (error) {
+          if (isNotFound(error)) return null;
+          continue;
+        }
+        return ((data as any[]) || []).reduce((acc, r) => acc + (Number(r?.sales_count) || 0), 0);
       }
 
-      return ((data as any[]) || []).reduce((acc, r) => acc + (Number(r?.sales_count) || 0), 0);
+      return undefined;
     };
 
     const countRows = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
-      const { count, error } = await supabase
-        .from(table)
-        .select('*', { count: 'exact', head: true })
-        .eq('client_id', id)
-        .gte(dateCol, rangeStartIso)
-        .lte(dateCol, rangeEndIso);
+      const run = async (mode: 'device' | 'store' | 'none') => {
+        const q = applySalesFilter(
+          supabase
+            .from(table)
+            .select('*', { count: 'exact', head: true })
+            .eq('client_id', id)
+            .gte(dateCol, rangeStartIso)
+            .lte(dateCol, rangeEndIso),
+          mode,
+        );
+        return await q;
+      };
 
-      if (error) {
-        if (isNotFound(error)) return null;
-        return undefined;
+      const attempts: ('device' | 'store' | 'none')[] = [];
+      if (deviceIds.length > 0) attempts.push('device');
+      if (storeId) attempts.push('store');
+      attempts.push('none');
+
+      for (const mode of attempts) {
+        const { count, error } = await run(mode);
+        if (error) {
+          if (isNotFound(error)) return null;
+          continue;
+        }
+        return Number(count) || 0;
       }
 
-      return Number(count) || 0;
+      return undefined;
     };
 
     const readFrom = async (table: 'sales_daily' | 'sales') => {
@@ -630,7 +705,7 @@ export function ClientDashboard() {
 
     salesSourceRef.current = 'none';
     return 0;
-  }, [id]);
+  }, [id, deviceIds, selectedStore?.id]);
 
   const fetchVisitorsFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
     if (!id) return 0;
@@ -1075,6 +1150,38 @@ export function ClientDashboard() {
     refreshClientAndStores();
   }, [refreshClientAndStores]);
 
+  const syncStoresFromServer = useCallback(async () => {
+    if (!id) return;
+
+    setIsSyncingStores(true);
+    setSyncMessage('Atualizando lojas...');
+
+    try {
+      const resp = await fetch('/api/sync-analytics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: id, sync_stores: true }),
+      });
+
+      if (!resp.ok) {
+        const txt = await resp.text();
+        console.warn('[Stores Sync] Erro API:', txt);
+        setSyncMessage(`Erro ao atualizar lojas (${resp.status})`);
+        return;
+      }
+
+      const json = await resp.json();
+      await refreshClientAndStores();
+      const s = Number(json?.stores_upserted) || 0;
+      setSyncMessage(`✅ Lojas atualizadas: ${s}`);
+    } catch (e) {
+      console.warn('[Stores Sync] Erro:', e);
+      setSyncMessage('Erro ao atualizar lojas');
+    } finally {
+      setIsSyncingStores(false);
+    }
+  }, [id, refreshClientAndStores]);
+
   useEffect(() => {
     if (!id) return;
 
@@ -1086,12 +1193,7 @@ export function ClientDashboard() {
       if (document.visibilityState !== 'visible') return;
 
       await refreshClientAndStores();
-
-      const isDev = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
-      if (isDev) {
-        await syncStoresFromExternal();
-      }
-
+      await syncStoresFromServer();
       await syncFromApi(true);
 
       await loadData();
@@ -1105,7 +1207,7 @@ export function ClientDashboard() {
     void run();
     const t = setInterval(() => { void run(); }, 10 * 60 * 1000);
     return () => { cancelled = true; clearInterval(t); };
-  }, [id, refreshClientAndStores, syncStoresFromExternal, syncFromApi, isSyncingStores, loadData, loadWeekFlowData, loadQuarterData, loadCompareData]);
+  }, [id, refreshClientAndStores, syncStoresFromServer, syncFromApi, isSyncingStores, loadData, loadWeekFlowData, loadQuarterData, loadCompareData]);
 
   // ── Widget config ─────────────────────────────────────────────────────────
   useEffect(() => {
