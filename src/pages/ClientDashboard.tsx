@@ -916,7 +916,7 @@ export function ClientDashboard() {
 
                 const widgetProps: any = { view: 'network' };
                 if (widget.id === 'flow_trend')             widgetProps.dailyData = dailyStats;
-                if (widget.id === 'hourly_flow')            widgetProps.hourlyData = hourlyStats;
+                if (widget.id === 'hourly_flow')          { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'age_pyramid')          { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')          { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'attributes')             widgetProps.attrData = attributeStats;
