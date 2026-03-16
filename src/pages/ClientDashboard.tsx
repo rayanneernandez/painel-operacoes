@@ -9,10 +9,7 @@ import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 import supabase from '../lib/supabase';
 
-// ── Module-level rebuild lock ─────────────────────────────────────────────────
-// useRef resets on every remount (React StrictMode mounts twice in dev).
-// This Set lives outside the component so it survives remounts.
-const _rebuilding = new Set<string>(); // key = `${client_id}:${startDay}:${endDay}`
+const _rebuilding = new Set<string>();
 
 type CameraType = {
   id: string; name: string; status: 'online' | 'offline';
@@ -48,19 +45,14 @@ export function ClientDashboard() {
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
   const [selectedStartDate, setSelectedStartDate] = useState<Date>(() => {
-    const now = new Date();
-    now.setUTCHours(0, 0, 0, 0); // hoje, início do dia
-    return now;
+    const now = new Date(); now.setUTCHours(0, 0, 0, 0); return now;
   });
   const [selectedEndDate, setSelectedEndDate] = useState<Date>(() => {
-    const now = new Date();
-    now.setUTCHours(23, 59, 59, 999); // hoje, fim do dia
-    return now;
+    const now = new Date(); now.setUTCHours(23, 59, 59, 999); return now;
   });
   const [showDatePicker, setShowDatePicker] = useState(false);
   const autoTodayRef = useRef(true);
 
-  // ── Sync state ──────────────────────────────────────────────────────────────
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSyncingStores, setIsSyncingStores] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
@@ -68,8 +60,7 @@ export function ClientDashboard() {
   const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
 
   useEffect(() => {
-    if (!syncMessage) return;
-    if (!syncMessage.startsWith('✅')) return;
+    if (!syncMessage || !syncMessage.startsWith('✅')) return;
     const t = setTimeout(() => setSyncMessage(''), 5000);
     return () => clearTimeout(t);
   }, [syncMessage]);
@@ -77,22 +68,17 @@ export function ClientDashboard() {
   useEffect(() => {
     const tick = () => {
       if (!autoTodayRef.current) return;
-
-      const s = new Date();
-      s.setUTCHours(0, 0, 0, 0);
-      const e = new Date();
-      e.setUTCHours(23, 59, 59, 999);
-
+      const s = new Date(); s.setUTCHours(0, 0, 0, 0);
+      const e = new Date(); e.setUTCHours(23, 59, 59, 999);
       if (selectedStartDate.getTime() !== s.getTime()) setSelectedStartDate(s);
       if (selectedEndDate.getTime() !== e.getTime()) setSelectedEndDate(e);
     };
-
     tick();
     const t = setInterval(tick, 60 * 1000);
     return () => clearInterval(t);
   }, [selectedStartDate, selectedEndDate]);
 
-  // ── Dashboard data ──────────────────────────────────────────────────────────
+  // Dashboard data
   const [totalVisitors, setTotalVisitors] = useState(0);
   const [dailyStats, setDailyStats] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
   const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
@@ -121,21 +107,17 @@ export function ClientDashboard() {
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
 
   const formatDuration = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = Math.round(s % 60);
-    const h = Math.floor(m / 60);
-    const mm = m % 60;
+    const m = Math.floor(s / 60); const sec = Math.round(s % 60);
+    const h = Math.floor(m / 60); const mm = m % 60;
     return h > 0
-      ? `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
-      : `${String(mm).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+      ? `${String(h).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
+      : `${String(mm).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
   };
 
   const pctMapToTopData = (m: any, maxItems = 3) => {
     const entries = Object.entries(m || {})
       .map(([k, v]) => ({ label: String(k), value: Number(v) || 0 }))
-      .filter((x) => x.value > 0)
-      .sort((a, b) => b.value - a.value);
-
+      .filter((x) => x.value > 0).sort((a, b) => b.value - a.value);
     const top = entries.slice(0, maxItems);
     const rest = entries.slice(maxItems);
     const restSum = rest.reduce((acc, r) => acc + r.value, 0);
@@ -149,42 +131,27 @@ export function ClientDashboard() {
       return Number.isFinite(n) ? [n] : [];
     }
     if ((view === 'store' || (view === 'network' && selectedStore)) && selectedStore) {
-      return selectedStore.cameras
-        .map((c) => Number((c as any).macAddress))
-        .filter((n) => Number.isFinite(n));
+      return selectedStore.cameras.map((c) => Number((c as any).macAddress)).filter((n) => Number.isFinite(n));
     }
     return [];
   }, [view, selectedStore, selectedCamera]);
 
-  // ── Apply rollup data to dashboard state ────────────────────────────────────
   function applyRollup(rollup: any) {
     if (!rollup) return false;
-
     setTotalVisitors(rollup.total_visitors ?? 0);
     setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
     setAvgVisitSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
 
     const agePctForAvg: Record<string, number> = rollup.age_pyramid_percent ?? {};
     const midpoints: Record<string, number> = {
-      '0-9': 4.5,
-      '10-17': 13.5,
-      '18-24': 21,
-      '25-34': 29.5,
-      '35-44': 39.5,
-      '45-54': 49.5,
-      '55-64': 59.5,
-      '65-74': 69.5,
-      '75+': 80,
+      '0-9': 4.5, '10-17': 13.5, '18-24': 21, '25-34': 29.5,
+      '35-44': 39.5, '45-54': 49.5, '55-64': 59.5, '65-74': 69.5, '75+': 80,
     };
-    let wSum = 0;
-    let pSum = 0;
+    let wSum = 0, pSum = 0;
     Object.entries(agePctForAvg).forEach(([bucket, pct]) => {
-      const mp = midpoints[bucket];
-      if (mp === undefined) return;
-      const p = Number(pct);
-      if (!Number.isFinite(p) || p <= 0) return;
-      wSum += mp * p;
-      pSum += p;
+      const mp = midpoints[bucket]; if (mp === undefined) return;
+      const p = Number(pct); if (!Number.isFinite(p) || p <= 0) return;
+      wSum += mp * p; pSum += p;
     });
     setAvgAge(pSum > 0 ? Number((wSum / pSum).toFixed(1)) : null);
 
@@ -197,10 +164,7 @@ export function ClientDashboard() {
     setHourlyStats(hours);
 
     const gp: Record<string, number> = rollup.gender_percent ?? {};
-    setGenderStats([
-      { label: 'Masculino', value: Math.round(gp.male ?? 0) },
-      { label: 'Feminino', value: Math.round(gp.female ?? 0) },
-    ]);
+    setGenderStats([{ label: 'Masculino', value: Math.round(gp.male ?? 0) }, { label: 'Feminino', value: Math.round(gp.female ?? 0) }]);
 
     const ap: any = rollup.attributes_percent ?? {};
     setAttributeStats([
@@ -209,7 +173,6 @@ export function ClientDashboard() {
       { label: 'Máscara', value: 0 },
       { label: 'Chapéu/Boné', value: Math.round(ap.headwear?.true ?? 0) },
     ]);
-
     setHairTypeData(pctMapToTopData(ap.hair_type));
     setHairColorData(pctMapToTopData(ap.hair_color));
 
@@ -217,10 +180,8 @@ export function ClientDashboard() {
     const ageOrder = ['65+', '55-64', '45-54', '35-44', '25-34', '18-24', '18-'];
     const ageMap: Record<string, { m: number; f: number }> = {};
     const bucketMap: Record<string, string> = {
-      '65-74': '65+', '75+': '65+',
-      '55-64': '55-64', '45-54': '45-54', '35-44': '35-44',
-      '25-34': '25-34', '18-24': '18-24',
-      '0-9': '18-', '10-17': '18-',
+      '65-74': '65+', '75+': '65+', '55-64': '55-64', '45-54': '45-54',
+      '35-44': '35-44', '25-34': '25-34', '18-24': '18-24', '0-9': '18-', '10-17': '18-',
     };
     Object.entries(agePct).forEach(([bucket, pct]) => {
       const label = bucketMap[bucket] ?? bucket;
@@ -229,16 +190,13 @@ export function ClientDashboard() {
       ageMap[label].f += Math.round(Number(pct) / 2);
     });
     setAgeStats(ageOrder.map((age) => ({ age, m: ageMap[age]?.m ?? 0, f: ageMap[age]?.f ?? 0 })));
-
     setLastUpdate(new Date());
     return true;
   }
 
-  // ── Load data: read rollup from DB (instant), rebuild if missing ─────────────
   const loadData = useCallback(async () => {
     if (!id) return;
     setIsLoadingData(true);
-
     try {
       const startIso = selectedStartDate.toISOString();
       const endIso   = selectedEndDate.toISOString();
@@ -247,13 +205,10 @@ export function ClientDashboard() {
 
       if (deviceIds.length > 0) {
         setSyncMessage('Calculando dados da loja...');
-
         const resp = await fetch('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
         });
-
         const json = resp.ok ? await resp.json() : null;
         if (json?.dashboard) {
           applyRollup({
@@ -272,28 +227,19 @@ export function ClientDashboard() {
           setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
           setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAge(null);
           setGenderStats([]); setAttributeStats([]); setAgeStats([]);
-          setVisitorsPerDayMap({});
-          setHairTypeData([]);
-          setHairColorData([]);
+          setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
           setComparePrevVisitorsPerDay({});
         }
-
         setIsLoadingData(false);
         return;
       }
 
-    // 1. Try rollup from DB first (instant) — aceita rollup do mesmo período
-    const { data: rollups } = await supabase
-      .from('visitor_analytics_rollups')
-      .select('*')
-      .eq('client_id', id)
-      .gte('start', `${startDay}T00:00:00`)
-      .lte('end',   `${endDay}T23:59:59.999Z`)
-      .order('updated_at', { ascending: false })
-      .limit(1);
+      const { data: rollups } = await supabase
+        .from('visitor_analytics_rollups').select('*').eq('client_id', id)
+        .lte('start', `${startDay}T00:00:00`).gte('end', `${endDay}T23:59:59.999Z`)
+        .order('updated_at', { ascending: false }).limit(1);
 
       const rollup = rollups?.[0] ?? null;
-
       if (rollup) {
         console.log(`[Dashboard] Rollup carregado ✅ (${rollup.total_visitors} visitantes)`);
         applyRollup(rollup);
@@ -301,18 +247,14 @@ export function ClientDashboard() {
         return;
       }
 
-      // 2. No rollup — unblock UI immediately with zeros
       console.log('[Dashboard] Sem rollup — acionando rebuild em background...');
       setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
       setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAge(null);
       setGenderStats([]); setAttributeStats([]); setAgeStats([]);
-      setVisitorsPerDayMap({});
-      setHairTypeData([]);
-      setHairColorData([]);
+      setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
       setComparePrevVisitorsPerDay({});
       setIsLoadingData(false);
 
-      // ✅ Module-level lock — survives React StrictMode double-mount
       const rebuildKey = `${id}:${startDay}:${endDay}:${deviceIds.join(',')}`;
       if (_rebuilding.has(rebuildKey)) return;
       _rebuilding.add(rebuildKey);
@@ -320,19 +262,11 @@ export function ClientDashboard() {
 
       try {
         const resp = await fetch('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            client_id: id,
-            start: startIso,
-            end: endIso,
-            rebuild_rollup: true,
-            ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
-          }),
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
         });
         const json = resp.ok ? await resp.json() : null;
         if (json?.dashboard) {
-          console.log(`[Dashboard] Rebuild ✅ ${json.dashboard.total_visitors} visitantes`);
           applyRollup({
             total_visitors:         json.dashboard.total_visitors,
             avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
@@ -353,9 +287,6 @@ export function ClientDashboard() {
       } finally {
         _rebuilding.delete(rebuildKey);
       }
-
-      return;
-
     } catch (err) {
       console.error('[Dashboard] Erro ao carregar dados:', err);
     } finally {
@@ -364,104 +295,8 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, view, selectedStore?.id, selectedCamera?.id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  // ── processRawRows (fallback when no rollup exists) ──────────────────────────
-  function processRawRows(rows: any[]) {
-    const days = [0, 0, 0, 0, 0, 0, 0];
-    const hours = new Array(24).fill(0);
-    const genderCount = { male: 0, female: 0 };
-    let totalDur = 0; let durCount = 0;
-    const ageMap: Record<string, { m: number; f: number }> = {
-      '18-': { m: 0, f: 0 }, '18-24': { m: 0, f: 0 }, '25-34': { m: 0, f: 0 },
-      '35-44': { m: 0, f: 0 }, '45-54': { m: 0, f: 0 }, '55-64': { m: 0, f: 0 }, '65+': { m: 0, f: 0 },
-    };
-    let attrGlasses = 0, attrBeard = 0, attrMask = 0, attrHeadwear = 0;
-    const uniqueVisitors = new Set<string>();
-    let latest: Date | null = null;
-
-    rows.forEach((visit: any) => {
-      const startVal = visit.start || visit.timestamp;
-      if (!startVal) return;
-
-      const date = new Date(startVal);
-      if (!isNaN(date.getTime())) {
-        if (!latest || date > latest) latest = date;
-        const day = date.getUTCDay();
-        days[day === 0 ? 6 : day - 1]++;
-        hours[date.getUTCHours()]++;
-      }
-
-      const visitorId = visit.visitor_id || visit.raw_data?.visitor_id;
-      if (visitorId) uniqueVisitors.add(String(visitorId));
-
-      const endDt = visit.end ? new Date(visit.end) : null;
-      if (endDt && !isNaN(date.getTime()) && !isNaN(endDt.getTime()) && endDt > date) {
-        totalDur += (endDt.getTime() - date.getTime()) / 1000; durCount++;
-      }
-
-      const sex = visit.sex || visit.gender;
-      if (sex === 1 || sex === 'male') genderCount.male++;
-      if (sex === 2 || sex === 'female') genderCount.female++;
-
-      const ageValue = typeof visit.age === 'number' ? visit.age : 0;
-      let ageGroup = '18-';
-      if (ageValue >= 18 && ageValue <= 24) ageGroup = '18-24';
-      else if (ageValue >= 25 && ageValue <= 34) ageGroup = '25-34';
-      else if (ageValue >= 35 && ageValue <= 44) ageGroup = '35-44';
-      else if (ageValue >= 45 && ageValue <= 54) ageGroup = '45-54';
-      else if (ageValue >= 55 && ageValue <= 64) ageGroup = '55-64';
-      else if (ageValue >= 65) ageGroup = '65+';
-
-      const isMale = sex === 1 || sex === 'male';
-      const isFemale = sex === 2 || sex === 'female';
-      if (isMale) ageMap[ageGroup].m++;
-      if (isFemale) ageMap[ageGroup].f++;
-
-      const attrs = visit.attributes || visit;
-      const hasGlasses = attrs.glasses === true || attrs.glasses === 1 ||
-        (typeof attrs.glasses === 'string' && ['yes', 'true', '1', 'y', 'on'].includes(attrs.glasses.toLowerCase()));
-      if (hasGlasses) attrGlasses++;
-      const facialHair = attrs.facial_hair;
-      if (facialHair && facialHair !== 'none' && facialHair !== 'shaved') attrBeard++;
-      const mask = attrs.mask || attrs.has_mask;
-      if (mask) attrMask++;
-      const headwear = attrs.headwear;
-      if (headwear && headwear !== 'none' && headwear !== 'no') attrHeadwear++;
-    });
-
-    const totalProcessed = uniqueVisitors.size > 0 ? uniqueVisitors.size : rows.length;
-    const dayCount = Math.max(1, Math.floor((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1);
-
-    setTotalVisitors(totalProcessed);
-    setHourlyStats([...hours]);
-    setAvgVisitorsPerDay(Math.round(totalProcessed / dayCount));
-    setAvgVisitSeconds(durCount ? Math.round(totalDur / durCount) : 0);
-    setGenderStats([{ label: 'Masculino', value: genderCount.male }, { label: 'Feminino', value: genderCount.female }]);
-    const base = Math.max(rows.length, 1);
-    setAttributeStats([
-      { label: 'Óculos', value: Math.round((attrGlasses / base) * 100) },
-      { label: 'Barba', value: Math.round((attrBeard / base) * 100) },
-      { label: 'Máscara', value: Math.round((attrMask / base) * 100) },
-      { label: 'Chapéu/Boné', value: Math.round((attrHeadwear / base) * 100) },
-    ]);
-    setAgeStats([
-      { age: '65+', m: Math.round((ageMap['65+'].m / base) * 100), f: Math.round((ageMap['65+'].f / base) * 100) },
-      { age: '55-64', m: Math.round((ageMap['55-64'].m / base) * 100), f: Math.round((ageMap['55-64'].f / base) * 100) },
-      { age: '45-54', m: Math.round((ageMap['45-54'].m / base) * 100), f: Math.round((ageMap['45-54'].f / base) * 100) },
-      { age: '35-44', m: Math.round((ageMap['35-44'].m / base) * 100), f: Math.round((ageMap['35-44'].f / base) * 100) },
-      { age: '25-34', m: Math.round((ageMap['25-34'].m / base) * 100), f: Math.round((ageMap['25-34'].f / base) * 100) },
-      { age: '18-24', m: Math.round((ageMap['18-24'].m / base) * 100), f: Math.round((ageMap['18-24'].f / base) * 100) },
-      { age: '18-', m: Math.round((ageMap['18-'].m / base) * 100), f: Math.round((ageMap['18-'].f / base) * 100) },
-    ]);
-    if (latest) setLastUpdate(latest);
-  }
-  void processRawRows;
-
-  // ── Sync from API → DB (backend does all the work) ──────────────────────────
   const syncFromApi = useCallback(async (silent = false) => {
-    if (!id) return;
-    if (syncingRef.current) return;
-    if (document.visibilityState !== 'visible') return;
-
+    if (!id || syncingRef.current || document.visibilityState !== 'visible') return;
     syncingRef.current = true;
     setIsSyncing(true);
     if (!silent) setSyncMessage('Sincronizando...');
@@ -473,29 +308,11 @@ export function ClientDashboard() {
 
       while (offset !== null) {
         if (++loops > 300) { console.warn('[Sync] limite de loops atingido'); break; }
-
-        const payload: any = {
-          client_id: id,
-          start: selectedStartDate.toISOString(),
-          end: selectedEndDate.toISOString(),
-          offset,
-          // ✅ force_full_sync ensures backend doesn't stop at MAX_MS prematurely
-          force_full_sync: true,
-        };
+        const payload: any = { client_id: id, start: selectedStartDate.toISOString(), end: selectedEndDate.toISOString(), offset, force_full_sync: true };
         if (deviceIds.length > 0) payload.devices = deviceIds;
 
-        const resp = await fetch('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload),
-        });
-
-        if (!resp.ok) {
-          const txt = await resp.text();
-          console.error('[Sync] erro:', resp.status, txt);
-          setSyncMessage(`Erro ao sincronizar (${resp.status})`);
-          return;
-        }
+        const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        if (!resp.ok) { const txt = await resp.text(); setSyncMessage(`Erro ao sincronizar (${resp.status})`); console.error('[Sync] erro:', resp.status, txt); return; }
 
         const json = await resp.json();
         totalFetched += Number(json?.externalFetched || 0);
@@ -503,49 +320,36 @@ export function ClientDashboard() {
 
         if (json?.done === true || json?.next_offset == null) {
           offset = null;
-          setSyncMessage(`Calculando totais...`);
-
-          // ✅ Rebuild rollup after sync — but only if not already rebuilding
+          setSyncMessage('Calculando totais...');
           const _startDay = selectedStartDate.toISOString().slice(0, 10);
-          const _endDay = selectedEndDate.toISOString().slice(0, 10);
+          const _endDay   = selectedEndDate.toISOString().slice(0, 10);
           const rebuildKey2 = `${id}:${_startDay}:${_endDay}:${deviceIds.join(',')}`;
-          if (_rebuilding.has(rebuildKey2)) {
-            setSyncMessage(`✅ Sincronização concluída.`);
-          } else {
-          try {
-            const rebuildResp = await fetch('/api/sync-analytics', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                client_id: id,
-                start: selectedStartDate.toISOString(),
-                end: selectedEndDate.toISOString(),
-                rebuild_rollup: true,
-                ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
-              }),
-            });
-            const rebuildJson = rebuildResp.ok ? await rebuildResp.json() : null;
-            if (rebuildJson?.dashboard) {
-              applyRollup({
-                total_visitors:         rebuildJson.dashboard.total_visitors,
-                avg_visitors_per_day:   rebuildJson.dashboard.avg_visitors_per_day,
-                avg_visit_time_seconds: rebuildJson.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-                visitors_per_day:       rebuildJson.dashboard.visitors_per_day,
-                visitors_per_hour_avg:  rebuildJson.dashboard.visitors_per_hour_avg,
-                gender_percent:         rebuildJson.dashboard.gender_percent,
-                attributes_percent:     rebuildJson.dashboard.attributes_percent,
-                age_pyramid_percent:    rebuildJson.dashboard.age_pyramid_percent,
+          if (_rebuilding.has(rebuildKey2)) { setSyncMessage('✅ Sincronização concluída.'); }
+          else {
+            try {
+              const rebuildResp = await fetch('/api/sync-analytics', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ client_id: id, start: selectedStartDate.toISOString(), end: selectedEndDate.toISOString(), rebuild_rollup: true, ...(deviceIds.length > 0 ? { devices: deviceIds } : {}) }),
               });
-              setSyncMessage(`✅ ${rebuildJson.dashboard.total_visitors.toLocaleString()} visitantes sincronizados.`);
-            } else {
-              setSyncMessage(`✅ ${totalFetched.toLocaleString()} registros importados.`);
-              await loadData();
-            }
-          } catch {
-            setSyncMessage(`✅ Sincronização concluída.`);
-            await loadData();
+              const rebuildJson = rebuildResp.ok ? await rebuildResp.json() : null;
+              if (rebuildJson?.dashboard) {
+                applyRollup({
+                  total_visitors:         rebuildJson.dashboard.total_visitors,
+                  avg_visitors_per_day:   rebuildJson.dashboard.avg_visitors_per_day,
+                  avg_visit_time_seconds: rebuildJson.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+                  visitors_per_day:       rebuildJson.dashboard.visitors_per_day,
+                  visitors_per_hour_avg:  rebuildJson.dashboard.visitors_per_hour_avg,
+                  gender_percent:         rebuildJson.dashboard.gender_percent,
+                  attributes_percent:     rebuildJson.dashboard.attributes_percent,
+                  age_pyramid_percent:    rebuildJson.dashboard.age_pyramid_percent,
+                });
+                setSyncMessage(`✅ ${rebuildJson.dashboard.total_visitors.toLocaleString()} visitantes sincronizados.`);
+              } else {
+                setSyncMessage(`✅ ${totalFetched.toLocaleString()} registros importados.`);
+                await loadData();
+              }
+            } catch { setSyncMessage('✅ Sincronização concluída.'); await loadData(); }
           }
-          } // end else _rebuilding
         } else {
           offset = Number(json.next_offset);
           const displayTotal = totalInDB > 0 ? totalInDB : totalFetched;
@@ -563,23 +367,20 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  // ── On mount / filter change: load from DB/rollup only ──────────────────────
-  const lastQuarterMonths = useCallback((end: Date) => {
-    const y = end.getUTCFullYear();
-    const endMonth = end.getUTCMonth();
-
+  // ── lastQuarterMonths: sempre usa TODAY como âncora ──────────────────────
+  const lastQuarterMonths = useCallback((anchor: Date) => {
+    const y = anchor.getUTCFullYear();
+    const endMonth = anchor.getUTCMonth();
     const out: { label: string; startIso: string; endIso: string }[] = [];
     for (let i = 2; i >= 0; i--) {
       const d = new Date(Date.UTC(y, endMonth - i, 1, 0, 0, 0, 0));
-      const yy = d.getUTCFullYear();
-      const m2 = d.getUTCMonth();
-      const label = d
-        .toLocaleString('pt-BR', { month: 'short', timeZone: 'UTC' })
-        .replace('.', '')
-        .toUpperCase();
-      const startIso = new Date(Date.UTC(yy, m2, 1, 0, 0, 0, 0)).toISOString();
-      const endIso = new Date(Date.UTC(yy, m2 + 1, 0, 23, 59, 59, 999)).toISOString();
-      out.push({ label, startIso, endIso });
+      const yy = d.getUTCFullYear(); const m2 = d.getUTCMonth();
+      const label = d.toLocaleString('pt-BR', { month: 'short', timeZone: 'UTC' }).replace('.', '').toUpperCase();
+      out.push({
+        label,
+        startIso: new Date(Date.UTC(yy, m2, 1, 0, 0, 0, 0)).toISOString(),
+        endIso:   new Date(Date.UTC(yy, m2 + 1, 0, 23, 59, 59, 999)).toISOString(),
+      });
     }
     return out;
   }, []);
@@ -587,249 +388,206 @@ export function ClientDashboard() {
   const fetchSalesFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
     if (!id) return 0;
     if (salesSourceRef.current === 'none') return 0;
-
     const storeId = selectedStore?.id || null;
-
-    const isNotFound = (err: any) => {
-      const status = err?.status ?? err?.statusCode;
-      const msg = String(err?.message || '');
-      return status === 404 || /not found/i.test(msg) || /does not exist/i.test(msg);
-    };
-
+    const isNotFound = (err: any) => { const s = err?.status ?? err?.statusCode; const m = String(err?.message || ''); return s === 404 || /not found/i.test(m) || /does not exist/i.test(m); };
     const applySalesFilter = (q: any, mode: 'device' | 'store' | 'none') => {
       if (mode === 'device' && deviceIds.length > 0) return q.in('device_id', deviceIds);
       if (mode === 'store' && storeId) return q.eq('store_id', storeId);
       return q;
     };
-
     const sumSalesCount = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
-      const run = async (mode: 'device' | 'store' | 'none') => {
-        const q = applySalesFilter(
-          supabase
-            .from(table)
-            .select(`${dateCol},sales_count`)
-            .eq('client_id', id)
-            .gte(dateCol, rangeStartIso)
-            .lte(dateCol, rangeEndIso)
-            .range(0, 9999),
-          mode,
-        );
-        return await q;
-      };
-
       const attempts: ('device' | 'store' | 'none')[] = [];
       if (deviceIds.length > 0) attempts.push('device');
       if (storeId) attempts.push('store');
       attempts.push('none');
-
       for (const mode of attempts) {
-        const { data, error } = await run(mode);
-        if (error) {
-          if (isNotFound(error)) return null;
-          continue;
-        }
+        const { data, error } = await applySalesFilter(supabase.from(table).select(`${dateCol},sales_count`).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso).range(0, 9999), mode);
+        if (error) { if (isNotFound(error)) return null; continue; }
         return ((data as any[]) || []).reduce((acc, r) => acc + (Number(r?.sales_count) || 0), 0);
       }
-
       return undefined;
     };
-
     const countRows = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
-      const run = async (mode: 'device' | 'store' | 'none') => {
-        const q = applySalesFilter(
-          supabase
-            .from(table)
-            .select('*', { count: 'exact', head: true })
-            .eq('client_id', id)
-            .gte(dateCol, rangeStartIso)
-            .lte(dateCol, rangeEndIso),
-          mode,
-        );
-        return await q;
-      };
-
       const attempts: ('device' | 'store' | 'none')[] = [];
       if (deviceIds.length > 0) attempts.push('device');
       if (storeId) attempts.push('store');
       attempts.push('none');
-
       for (const mode of attempts) {
-        const { count, error } = await run(mode);
-        if (error) {
-          if (isNotFound(error)) return null;
-          continue;
-        }
+        const { count, error } = await applySalesFilter(supabase.from(table).select('*', { count: 'exact', head: true }).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso), mode);
+        if (error) { if (isNotFound(error)) return null; continue; }
         return Number(count) || 0;
       }
-
       return undefined;
     };
-
     const readFrom = async (table: 'sales_daily' | 'sales') => {
-      const a = await sumSalesCount(table, 'date');
-      if (typeof a === 'number') return a;
-      if (a === null) return null;
-
-      const b = await sumSalesCount(table, 'created_at');
-      if (typeof b === 'number') return b;
-      if (b === null) return null;
-
-      const c = await countRows(table, 'created_at');
-      if (typeof c === 'number') return c;
-      if (c === null) return null;
-
-      const d = await countRows(table, 'date');
-      if (typeof d === 'number') return d;
-      if (d === null) return null;
-
+      const a = await sumSalesCount(table, 'date');    if (typeof a === 'number') return a; if (a === null) return null;
+      const b = await sumSalesCount(table, 'created_at'); if (typeof b === 'number') return b; if (b === null) return null;
+      const c = await countRows(table, 'created_at');  if (typeof c === 'number') return c; if (c === null) return null;
+      const d = await countRows(table, 'date');        if (typeof d === 'number') return d; if (d === null) return null;
       return 0;
     };
-
-    if (salesSourceRef.current === 'sales_daily') {
-      const v = await readFrom('sales_daily');
-      if (v === null) { salesSourceRef.current = 'none'; return 0; }
-      return v;
-    }
-
-    if (salesSourceRef.current === 'sales') {
-      const v = await readFrom('sales');
-      if (v === null) { salesSourceRef.current = 'none'; return 0; }
-      return v;
-    }
-
-    const vd = await readFrom('sales_daily');
-    if (typeof vd === 'number') { salesSourceRef.current = 'sales_daily'; return vd; }
-
-    const vs = await readFrom('sales');
-    if (typeof vs === 'number') { salesSourceRef.current = 'sales'; return vs; }
-
+    if (salesSourceRef.current === 'sales_daily') { const v = await readFrom('sales_daily'); if (v === null) { salesSourceRef.current = 'none'; return 0; } return v ?? 0; }
+    if (salesSourceRef.current === 'sales')       { const v = await readFrom('sales');       if (v === null) { salesSourceRef.current = 'none'; return 0; } return v ?? 0; }
+    const vd = await readFrom('sales_daily'); if (typeof vd === 'number') { salesSourceRef.current = 'sales_daily'; return vd; }
+    const vs = await readFrom('sales');       if (typeof vs === 'number') { salesSourceRef.current = 'sales';       return vs; }
     salesSourceRef.current = 'none';
     return 0;
   }, [id, deviceIds, selectedStore?.id]);
 
   const fetchVisitorsFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
     if (!id) return 0;
-
-    let q = supabase
-      .from('visitor_analytics')
-      .select('*', { count: 'exact', head: true })
-      .eq('client_id', id)
-      .gte('timestamp', rangeStartIso)
-      .lte('timestamp', rangeEndIso);
-
+    let q = supabase.from('visitor_analytics').select('*', { count: 'exact', head: true })
+      .eq('client_id', id).gte('timestamp', rangeStartIso).lte('timestamp', rangeEndIso);
     if (deviceIds.length > 0) q = q.in('device_id', deviceIds);
-
     const { count, error } = await q;
-    if (error) {
-      console.warn('[Dashboard] Erro ao contar visitantes (trimestre):', error);
-      return 0;
-    }
+    if (error) { console.warn('[Dashboard] Erro ao contar visitantes (trimestre):', error); return 0; }
     return Number(count) || 0;
   }, [id, deviceIds]);
 
+  // ── loadQuarterData — CORRIGIDO ──────────────────────────────────────────
+  // Âncora em TODAY (não no date-picker). Mescla múltiplos rollup shards.
+  // Dispara rebuild automático se não há rollup coberto.
   const loadQuarterData = useCallback(async () => {
     if (!id) return;
-
     setIsLoadingQuarter(true);
     try {
-      const months = lastQuarterMonths(selectedEndDate);
+      // CORREÇÃO 1: sempre âncora em hoje
+      const today = new Date();
+      const months = lastQuarterMonths(today);
+      const quarterStart = months[0].startIso;
+      const quarterEnd   = months[months.length - 1].endIso;
+      const qStartDay    = quarterStart.slice(0, 10);
+      const qEndDay      = quarterEnd.slice(0, 10);
 
-      const rows: { label: string; visitors: number; sales: number }[] = [];
-      for (const month of months) {
-        let visitors = 0;
-        let sales = 0;
+      // CORREÇÃO 2: buscar rollups sobrepostos e mesclar visitors_per_day
+      let rollupVisitorsPerDay: Record<string, number> | null = null;
 
-        visitors = await fetchVisitorsFromDb(month.startIso, month.endIso);
-
-        sales = await fetchSalesFromDb(month.startIso, month.endIso);
-
-        rows.push({ label: month.label, visitors, sales });
-      }
-
-      setQuarterBars(rows);
-      setQuarterVisitorsTotal(rows.reduce((acc, r) => acc + (Number(r.visitors) || 0), 0));
-      setQuarterSalesTotal(rows.reduce((acc, r) => acc + (Number(r.sales) || 0), 0));
-    } catch (e) {
-      console.warn('[Dashboard] Erro ao carregar último trimestre:', e);
-      setQuarterBars([]);
-      setQuarterVisitorsTotal(0);
-      setQuarterSalesTotal(0);
-    } finally {
-      setIsLoadingQuarter(false);
-    }
-  }, [id, selectedEndDate, deviceIds, lastQuarterMonths, fetchSalesFromDb, fetchVisitorsFromDb]);
-
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
-  const loadCompareData = useCallback(async () => {
-    if (!id) return;
-
-    const dayCount = Math.max(1, Math.floor((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1);
-    const prevEnd = new Date(selectedStartDate.getTime() - 1);
-    const prevStart = new Date(prevEnd.getTime() - (dayCount - 1) * 86400000);
-
-    setIsLoadingCompare(true);
-    try {
       if (deviceIds.length === 0) {
         const { data: rollups } = await supabase
           .from('visitor_analytics_rollups')
-          .select('visitors_per_day')
+          .select('visitors_per_day, start, end, updated_at')
           .eq('client_id', id)
-          .eq('start', prevStart.toISOString())
-          .eq('end', prevEnd.toISOString())
+          .lte('start', quarterEnd)
+          .gte('end', quarterStart)
           .order('updated_at', { ascending: false })
-          .limit(1);
+          .limit(20);
 
+        if (rollups && rollups.length > 0) {
+          const merged: Record<string, number> = {};
+          for (const r of rollups as any[]) {
+            const vpd = r.visitors_per_day as Record<string, number> | null;
+            if (!vpd) continue;
+            for (const [dateStr, count] of Object.entries(vpd)) {
+              const d = dateStr.slice(0, 10);
+              if (d >= qStartDay && d <= qEndDay && !(d in merged)) {
+                merged[d] = Number(count) || 0;
+              }
+            }
+          }
+          if (Object.keys(merged).length > 0) {
+            rollupVisitorsPerDay = merged;
+            console.log(`[Quarter] Rollup mesclado — ${Object.keys(merged).length} dias, total: ${Object.values(merged).reduce((a, b) => a + b, 0)}`);
+          }
+        }
+      }
+
+      // CORREÇÃO 3: rebuild automático se não há rollup no trimestre
+      if (!rollupVisitorsPerDay && deviceIds.length === 0) {
+        console.log('[Quarter] Nenhum rollup — disparando rebuild...');
+        try {
+          const resp = await fetch('/api/sync-analytics', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: id, start: quarterStart, end: quarterEnd, rebuild_rollup: true }),
+          });
+          const json = resp.ok ? await resp.json() : null;
+          if (json?.dashboard?.visitors_per_day) {
+            const vpd = json.dashboard.visitors_per_day as Record<string, number>;
+            rollupVisitorsPerDay = {};
+            for (const [d, v] of Object.entries(vpd)) {
+              if (d >= qStartDay && d <= qEndDay) rollupVisitorsPerDay[d] = Number(v) || 0;
+            }
+            console.log(`[Quarter] Rebuild concluído — ${json.dashboard.total_visitors} visitantes`);
+          }
+        } catch (e) {
+          console.warn('[Quarter] Rebuild falhou, usando contagem de linhas:', e);
+        }
+      }
+
+      // Agrupa por mês
+      const rows: { label: string; visitors: number; sales: number }[] = [];
+      for (const month of months) {
+        let visitors = 0;
+        if (rollupVisitorsPerDay) {
+          const mStart = month.startIso.slice(0, 10);
+          const mEnd   = month.endIso.slice(0, 10);
+          for (const [dateStr, count] of Object.entries(rollupVisitorsPerDay)) {
+            if (dateStr >= mStart && dateStr <= mEnd) visitors += Number(count) || 0;
+          }
+        } else {
+          visitors = await fetchVisitorsFromDb(month.startIso, month.endIso);
+        }
+        const sales = await fetchSalesFromDb(month.startIso, month.endIso);
+        rows.push({ label: month.label, visitors, sales });
+      }
+
+      console.log('[Quarter] Resultado:', rows);
+      setQuarterBars(rows);
+      setQuarterVisitorsTotal(rows.reduce((acc, r) => acc + (Number(r.visitors) || 0), 0));
+      setQuarterSalesTotal(rows.reduce((acc, r)    => acc + (Number(r.sales)    || 0), 0));
+    } catch (e) {
+      console.warn('[Dashboard] Erro ao carregar último trimestre:', e);
+      setQuarterBars([]); setQuarterVisitorsTotal(0); setQuarterSalesTotal(0);
+    } finally {
+      setIsLoadingQuarter(false);
+    }
+  // selectedEndDate removido dos deps — trimestre é sempre hoje
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, deviceIds, lastQuarterMonths, fetchSalesFromDb, fetchVisitorsFromDb]);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const loadCompareData = useCallback(async () => {
+    if (!id) return;
+    const dayCount = Math.max(1, Math.floor((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1);
+    const prevEnd   = new Date(selectedStartDate.getTime() - 1);
+    const prevStart = new Date(prevEnd.getTime() - (dayCount - 1) * 86400000);
+    setIsLoadingCompare(true);
+    try {
+      if (deviceIds.length === 0) {
+        const prevStartDay = prevStart.toISOString().slice(0, 10);
+        const prevEndDay   = prevEnd.toISOString().slice(0, 10);
+        const { data: rollups } = await supabase.from('visitor_analytics_rollups').select('visitors_per_day')
+          .eq('client_id', id).lte('start', `${prevStartDay}T00:00:00`).gte('end', `${prevEndDay}T23:59:59.999Z`)
+          .order('updated_at', { ascending: false }).limit(1);
         const found = rollups?.[0] as any;
         if (found?.visitors_per_day) {
           setComparePrevVisitorsPerDay(found.visitors_per_day || {});
         } else {
-          const resp = await fetch('/api/sync-analytics', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: id, start: prevStart.toISOString(), end: prevEnd.toISOString(), rebuild_rollup: true }),
-          });
+          const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, start: prevStart.toISOString(), end: prevEnd.toISOString(), rebuild_rollup: true }) });
           const json = resp.ok ? await resp.json() : null;
           setComparePrevVisitorsPerDay(json?.dashboard?.visitors_per_day || {});
         }
       } else {
-        const resp = await fetch('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ client_id: id, start: prevStart.toISOString(), end: prevEnd.toISOString(), rebuild_rollup: true, devices: deviceIds }),
-        });
+        const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, start: prevStart.toISOString(), end: prevEnd.toISOString(), rebuild_rollup: true, devices: deviceIds }) });
         const json = resp.ok ? await resp.json() : null;
         setComparePrevVisitorsPerDay(json?.dashboard?.visitors_per_day || {});
       }
-    } catch (e) {
-      console.warn('[Dashboard] Erro ao carregar comparativo:', e);
-      setComparePrevVisitorsPerDay({});
-    } finally {
-      setIsLoadingCompare(false);
-    }
+    } catch (e) { console.warn('[Dashboard] Erro ao carregar comparativo:', e); setComparePrevVisitorsPerDay({}); }
+    finally { setIsLoadingCompare(false); }
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
   const loadWeekFlowData = useCallback(async () => {
     if (!id) return;
-
-    const end = new Date(selectedEndDate);
-    end.setUTCHours(23, 59, 59, 999);
-    const dow = end.getUTCDay();
-    const offset = (dow + 6) % 7;
+    const end = new Date(selectedEndDate); end.setUTCHours(23, 59, 59, 999);
+    const dow = end.getUTCDay(); const offset = (dow + 6) % 7;
     const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() - offset, 0, 0, 0, 0));
-
-    const startIso = start.toISOString();
-    const endIso = end.toISOString();
+    const startIso = start.toISOString(); const endIso = end.toISOString();
 
     const toWeekDays = (vpd: Record<string, number>) => {
       const days = [0, 0, 0, 0, 0, 0, 0];
       Object.entries(vpd || {}).forEach(([dateStr, count]) => {
-        const d = new Date(dateStr);
-        if (isNaN(d.getTime())) return;
-        const ud = d.getUTCDay();
-        const idx = ud === 0 ? 6 : ud - 1;
+        const d = new Date(dateStr); if (isNaN(d.getTime())) return;
+        const ud = d.getUTCDay(); const idx = ud === 0 ? 6 : ud - 1;
         days[idx] += Number(count) || 0;
       });
       return days;
@@ -837,437 +595,124 @@ export function ClientDashboard() {
 
     try {
       if (deviceIds.length === 0) {
-        const { data } = await supabase
-          .from('visitor_analytics_rollups')
-          .select('visitors_per_day')
-          .eq('client_id', id)
-          .eq('start', startIso)
-          .eq('end', endIso)
-          .order('updated_at', { ascending: false })
-          .limit(1);
-
+        const { data } = await supabase.from('visitor_analytics_rollups').select('visitors_per_day')
+          .eq('client_id', id).eq('start', startIso).eq('end', endIso)
+          .order('updated_at', { ascending: false }).limit(1);
         const found = data?.[0] as any;
-        if (found?.visitors_per_day) {
-          setDailyStats(toWeekDays(found.visitors_per_day || {}));
-          return;
-        }
-
-        const resp = await fetch('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
-        });
+        if (found?.visitors_per_day) { setDailyStats(toWeekDays(found.visitors_per_day || {})); return; }
+        const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }) });
         const json = resp.ok ? await resp.json() : null;
         setDailyStats(toWeekDays(json?.dashboard?.visitors_per_day || {}));
         return;
       }
-
-      const days = [0, 0, 0, 0, 0, 0, 0];
-      let from = 0;
-      const page = 1000;
-
+      const days = [0, 0, 0, 0, 0, 0, 0]; let from = 0; const page = 1000;
       while (true) {
-        const { data, error } = await supabase
-          .from('visitor_analytics')
-          .select('timestamp')
-          .eq('client_id', id)
-          .gte('timestamp', startIso)
-          .lte('timestamp', endIso)
-          .in('device_id', deviceIds)
-          .order('timestamp', { ascending: true })
-          .range(from, from + page - 1);
-
+        const { data, error } = await supabase.from('visitor_analytics').select('timestamp')
+          .eq('client_id', id).gte('timestamp', startIso).lte('timestamp', endIso)
+          .in('device_id', deviceIds).order('timestamp', { ascending: true }).range(from, from + page - 1);
         if (error) throw error;
         if (!data || data.length === 0) break;
-
         (data as any[]).forEach((r: any) => {
-          const t = new Date(r.timestamp);
-          if (isNaN(t.getTime())) return;
-          const ud = t.getUTCDay();
-          const idx = ud === 0 ? 6 : ud - 1;
-          days[idx] += 1;
+          const t = new Date(r.timestamp); if (isNaN(t.getTime())) return;
+          const ud = t.getUTCDay(); days[ud === 0 ? 6 : ud - 1] += 1;
         });
-
         if (data.length < page) break;
-        from += page;
-        if (from > 20000) break;
+        from += page; if (from > 20000) break;
       }
-
       setDailyStats(days);
-    } catch (e) {
-      console.warn('[Dashboard] Erro ao carregar semana:', e);
-      setDailyStats([0, 0, 0, 0, 0, 0, 0]);
-    }
+    } catch (e) { console.warn('[Dashboard] Erro ao carregar semana:', e); setDailyStats([0,0,0,0,0,0,0]); }
   }, [id, selectedEndDate, deviceIds]);
 
-  useEffect(() => {
-    loadWeekFlowData();
-  }, [loadWeekFlowData]);
-
-  useEffect(() => {
-    loadQuarterData();
-  }, [loadQuarterData]);
-
-  useEffect(() => {
-    loadCompareData();
-  }, [loadCompareData]);
-
+  useEffect(() => { loadWeekFlowData(); }, [loadWeekFlowData]);
+  useEffect(() => { loadQuarterData(); }, [loadQuarterData]);
+  useEffect(() => { loadCompareData(); }, [loadCompareData]);
 
   const refreshClientAndStores = useCallback(async () => {
     if (!id) return;
-
-    const { data: client } = await supabase
-      .from('clients')
-      .select('name, logo_url')
-      .eq('id', id)
-      .single();
+    const { data: client } = await supabase.from('clients').select('name, logo_url').eq('id', id).single();
     if (client) setClientData({ name: client.name, logo: client.logo_url });
-
-    const { data: storesData } = await supabase
-      .from('stores')
-      .select('id, name, city')
-      .eq('client_id', id);
-    const { data: devicesData } = await supabase
-      .from('devices')
-      .select('id, name, type, mac_address, status, store_id');
-    const { data: apiCfg } = await supabase
-      .from('client_api_configs')
-      .select(`api_endpoint, analytics_endpoint, api_key, custom_header_key,
-        custom_header_value, collection_start, collection_end, collect_tracks,
-        collect_face_quality, collect_glasses, collect_beard, collect_hair_color,
-        collect_hair_type, collect_headwear`)
-      .eq('client_id', id)
-      .single();
-
+    const { data: storesData }  = await supabase.from('stores').select('id, name, city').eq('client_id', id);
+    const { data: devicesData } = await supabase.from('devices').select('id, name, type, mac_address, status, store_id');
+    const { data: apiCfg }      = await supabase.from('client_api_configs')
+      .select('api_endpoint, analytics_endpoint, api_key, custom_header_key, custom_header_value, collection_start, collection_end, collect_tracks, collect_face_quality, collect_glasses, collect_beard, collect_hair_color, collect_hair_type, collect_headwear')
+      .eq('client_id', id).single();
     if (apiCfg) setApiConfig(apiCfg as ClientApiConfig);
 
     if (storesData) {
       const devicesByStore: Record<string, any[]> = {};
       (devicesData || []).forEach((device: any) => {
         if (!devicesByStore[device.store_id]) devicesByStore[device.store_id] = [];
-        devicesByStore[device.store_id].push({
-          id: device.id,
-          name: device.name,
-          status: device.status || 'offline',
-          type: device.type || 'dome',
-          resolution: '1080p',
-          macAddress: device.mac_address,
-        });
+        devicesByStore[device.store_id].push({ id: device.id, name: device.name, status: device.status || 'offline', type: device.type || 'dome', resolution: '1080p', macAddress: device.mac_address });
       });
-
       const seen = new Set<string>();
       const uniqueStores: StoreType[] = storesData
-        .filter((s: any) => {
-          if (seen.has(String(s.id))) return false;
-          seen.add(String(s.id));
-          return true;
-        })
-        .map((store: any) => ({
-          id: store.id,
-          name: store.name,
-          address: '',
-          city: store.city || '',
-          status: 'online',
-          cameras: devicesByStore[store.id] || [],
-        }));
+        .filter((s: any) => { if (seen.has(String(s.id))) return false; seen.add(String(s.id)); return true; })
+        .map((store: any) => ({ id: store.id, name: store.name, address: '', city: store.city || '', status: 'online', cameras: devicesByStore[store.id] || [] }));
       setStores(uniqueStores);
     }
   }, [id]);
 
-
-  const syncStoresFromExternal = useCallback(async () => {
-    if (!id) return;
-
-    setIsSyncingStores(true);
-    try {
-      setSyncMessage('Atualizando lojas...');
-
-      let cfg = apiConfig;
-      if (!cfg) {
-        const { data } = await supabase
-          .from('client_api_configs')
-          .select(`api_endpoint, analytics_endpoint, api_key, custom_header_key,
-            custom_header_value, collection_start, collection_end, collect_tracks,
-            collect_face_quality, collect_glasses, collect_beard, collect_hair_color,
-            collect_hair_type, collect_headwear`)
-          .eq('client_id', id)
-          .single();
-        if (data) {
-          cfg = data as ClientApiConfig;
-          setApiConfig(cfg);
-        }
-      }
-
-      if (!cfg) {
-        setSyncMessage('Erro: API não configurada');
-        return;
-      }
-
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      };
-
-      const ck = cfg.custom_header_key?.trim();
-      const cv = cfg.custom_header_value?.trim();
-      if (ck && cv) headers[ck] = cv;
-      else if (cfg.api_key?.trim()) headers['X-API-Token'] = cfg.api_key.trim();
-      else {
-        setSyncMessage('Erro: api_key não configurada');
-        return;
-      }
-
-      const baseUrl = '/api/proxy-displayforce';
-
-      const folderBody = { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 };
-      const foldersResponse = await fetch(baseUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint: 'folder/list', method: 'GET', headers, query: { recursive: true, limit: 100, offset: 0 }, fallbackBody: folderBody }),
-      });
-      if (!foldersResponse.ok) {
-        const errorText = await foldersResponse.text();
-        setSyncMessage(`Erro ao buscar lojas na API (${foldersResponse.status})`);
-        console.warn('[Stores Sync] Erro folders:', errorText);
-        return;
-      }
-
-      const foldersJson = await foldersResponse.json();
-      const folders = Array.isArray(foldersJson?.data) ? foldersJson.data : [];
-
-      const deviceBody = { id: [], name: [], parent_ids: [], recursive: true, params: ['id','name','parent_id','parent_ids','tags'], limit: 100, offset: 0 };
-      const devicesResponse = await fetch(baseUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ endpoint: 'device/list', method: 'GET', headers, query: { recursive: true, limit: 100, offset: 0 }, fallbackBody: deviceBody }),
-      });
-      if (!devicesResponse.ok) {
-        const errorText = await devicesResponse.text();
-        setSyncMessage(`Erro ao buscar dispositivos na API (${devicesResponse.status})`);
-        console.warn('[Stores Sync] Erro devices:', errorText);
-        return;
-      }
-
-      const devicesJson = await devicesResponse.json();
-      const devices = Array.isArray(devicesJson?.data) ? devicesJson.data : [];
-
-      if (folders.length === 0) {
-        setSyncMessage('Nenhuma loja encontrada na API');
-        return;
-      }
-
-      const { data: dbStores } = await supabase
-        .from('stores')
-        .select('id, name, city')
-        .eq('client_id', id);
-
-      const nameToStore = new Map<string, { id: string; name: string; city?: string | null }>();
-      (dbStores || []).forEach((s: any) => {
-        if (!s?.name || !s?.id) return;
-        nameToStore.set(String(s.name).trim().toLowerCase(), { id: s.id, name: s.name, city: s.city });
-      });
-
-      const storeIdsUsed: string[] = [];
-      const folderToStoreId = new Map<string, string>();
-
-      for (const folder of folders) {
-        const folderName = String(folder?.name || '').trim();
-        if (!folderName) continue;
-
-        const norm = folderName.toLowerCase();
-        const existing = nameToStore.get(norm);
-        const storeId = existing?.id || crypto.randomUUID();
-        const city = existing?.city || 'Não informada';
-
-        folderToStoreId.set(String(folder.id), storeId);
-        storeIdsUsed.push(storeId);
-
-        await supabase.from('stores').upsert({ id: storeId, client_id: id, name: folderName, city });
-      }
-
-      const { data: existingDevs } = await supabase
-        .from('devices')
-        .select('id, store_id, mac_address')
-        .in('store_id', storeIdsUsed);
-
-      const devMapByStore = new Map<string, Map<string, string>>();
-      (existingDevs || []).forEach((d: any) => {
-        if (!d?.store_id) return;
-        if (!devMapByStore.has(d.store_id)) devMapByStore.set(d.store_id, new Map());
-        const m = devMapByStore.get(d.store_id)!;
-        if (d.mac_address) m.set(String(d.mac_address), String(d.id));
-      });
-
-      for (const folder of folders) {
-        const storeId = folderToStoreId.get(String(folder.id));
-        if (!storeId) continue;
-
-        const storeDevMap = devMapByStore.get(storeId) || new Map<string, string>();
-        const seenMacs = new Set<string>();
-
-        const storeDevices = devices.filter((device: any) => {
-          const pid = device?.parent_id != null ? String(device.parent_id) : '';
-          return pid === String(folder.id);
-        });
-
-        const payload = storeDevices
-          .map((device: any) => {
-            const mac = String(device?.id ?? '').trim();
-            if (!mac) return null;
-            if (seenMacs.has(mac)) return null;
-            seenMacs.add(mac);
-
-            const existingId = storeDevMap.get(mac);
-            const devId = existingId || crypto.randomUUID();
-            return {
-              id: devId,
-              store_id: storeId,
-              name: String(device?.name || mac),
-              type: 'camera',
-              mac_address: mac,
-              status: device?.connection_state === 'online' ? 'online' : 'offline',
-            };
-          })
-          .filter(Boolean) as any[];
-
-        if (payload.length > 0) {
-          await supabase.from('devices').upsert(payload);
-        }
-      }
-
-      await refreshClientAndStores();
-      setSyncMessage(`✅ Lojas atualizadas: ${folders.length}`);
-    } catch (e) {
-      console.warn('[Stores Sync] Erro:', e);
-      setSyncMessage('Erro ao atualizar lojas');
-    } finally {
-      setIsSyncingStores(false);
-    }
-  }, [id, apiConfig, refreshClientAndStores]);
-
-  // ── Fetch client info, stores, api config ─────────────────────────────────
-  useEffect(() => {
-    refreshClientAndStores();
-  }, [refreshClientAndStores]);
-
   const syncStoresFromServer = useCallback(async () => {
     if (!id) return;
-
     setIsSyncingStores(true);
     setSyncMessage('Atualizando lojas...');
-
     try {
-      const resp = await fetch('/api/sync-analytics', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_id: id, sync_stores: true }),
-      });
-
-      if (!resp.ok) {
-        const txt = await resp.text();
-        console.warn('[Stores Sync] Erro API:', txt);
-        setSyncMessage(`Erro ao atualizar lojas (${resp.status})`);
-        return;
-      }
-
+      const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, sync_stores: true }) });
+      if (!resp.ok) { const txt = await resp.text(); console.warn('[Stores Sync] Erro API:', txt); setSyncMessage(`Erro ao atualizar lojas (${resp.status})`); return; }
       const json = await resp.json();
       await refreshClientAndStores();
-      const s = Number(json?.stores_upserted) || 0;
-      setSyncMessage(`✅ Lojas atualizadas: ${s}`);
-    } catch (e) {
-      console.warn('[Stores Sync] Erro:', e);
-      setSyncMessage('Erro ao atualizar lojas');
-    } finally {
-      setIsSyncingStores(false);
-    }
+      setSyncMessage(`✅ Lojas atualizadas: ${Number(json?.stores_upserted) || 0}`);
+    } catch (e) { console.warn('[Stores Sync] Erro:', e); setSyncMessage('Erro ao atualizar lojas'); }
+    finally { setIsSyncingStores(false); }
   }, [id, refreshClientAndStores]);
+
+  useEffect(() => { refreshClientAndStores(); }, [refreshClientAndStores]);
 
   useEffect(() => {
     if (!id) return;
-
     let cancelled = false;
-
     const run = async () => {
-      if (cancelled) return;
-      if (syncingRef.current || isSyncingStores) return;
-      if (document.visibilityState !== 'visible') return;
-
+      if (cancelled || syncingRef.current || isSyncingStores || document.visibilityState !== 'visible') return;
       await refreshClientAndStores();
       await syncStoresFromServer();
       await syncFromApi(true);
-
-      await loadData();
-      await loadWeekFlowData();
-      await loadQuarterData();
-      await loadCompareData();
-
+      await loadData(); await loadWeekFlowData(); await loadQuarterData(); await loadCompareData();
       setLastUpdate(new Date());
     };
-
     void run();
     const t = setInterval(() => { void run(); }, 10 * 60 * 1000);
     return () => { cancelled = true; clearInterval(t); };
   }, [id, refreshClientAndStores, syncStoresFromServer, syncFromApi, isSyncingStores, loadData, loadWeekFlowData, loadQuarterData, loadCompareData]);
 
-  // ── Widget config ─────────────────────────────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-
     const resolveIds = (widgetsConfig: any): string[] | null => {
       if (Array.isArray(widgetsConfig)) return widgetsConfig.filter((x) => typeof x === 'string');
       if (widgetsConfig && Array.isArray(widgetsConfig.widget_ids)) return widgetsConfig.widget_ids.filter((x: any) => typeof x === 'string');
       return null;
     };
-
     (async () => {
       if (!id) return;
-
       const fetchConfig = async (scope: 'global' | 'client') => {
-        const q = supabase
-          .from('dashboard_configs')
-          .select('widgets_config, updated_at')
-          .eq('layout_name', scope)
-          .order('updated_at', { ascending: false })
-          .limit(1);
-
-        const { data } = scope === 'global'
-          ? await q.is('client_id', null)
-          : await q.eq('client_id', id);
-
+        const q = supabase.from('dashboard_configs').select('widgets_config, updated_at').eq('layout_name', scope).order('updated_at', { ascending: false }).limit(1);
+        const { data } = scope === 'global' ? await q.is('client_id', null) : await q.eq('client_id', id);
         return data?.[0]?.widgets_config ?? null;
       };
-
       let widgetsConfig = await fetchConfig('client');
       if (!widgetsConfig) widgetsConfig = await fetchConfig('global');
-
       let ids = resolveIds(widgetsConfig);
-
       if (!ids) {
-        const clientConfig = localStorage.getItem(`dashboard-config-${id}`);
-        const globalConfig = localStorage.getItem('dashboard-config-global');
-        ids = resolveIds(clientConfig ? JSON.parse(clientConfig) : null) || resolveIds(globalConfig ? JSON.parse(globalConfig) : null);
+        const cc = localStorage.getItem(`dashboard-config-${id}`);
+        const gc = localStorage.getItem('dashboard-config-global');
+        ids = resolveIds(cc ? JSON.parse(cc) : null) || resolveIds(gc ? JSON.parse(gc) : null);
       }
-
-      const finalIds = ids && ids.length
-        ? ids
-        : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
-
-      const active = finalIds
-        .map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid))
-        .filter(Boolean) as WidgetType[];
-
-      if (!cancelled) {
-        setActiveWidgets(active);
-        setIsLoadingConfig(false);
-      }
+      const finalIds = ids && ids.length ? ids : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+      const active = finalIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
+      if (!cancelled) { setActiveWidgets(active); setIsLoadingConfig(false); }
     })();
-
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [id]);
 
-  // ── Navigation from location state ────────────────────────────────────────
   useEffect(() => {
     if (location.state?.initialView === 'store' && location.state?.storeId) {
       const store = stores.find((s) => s.id === location.state.storeId);
@@ -1279,20 +724,14 @@ export function ClientDashboard() {
   const goToStore = (store: StoreType) => { setSelectedStore(store); setView('network'); setSelectedCamera(null); };
 
   const periodSeries = useMemo(() => {
-    const labels: string[] = [];
-    const values: number[] = [];
-
-    const start = new Date(selectedStartDate);
-    start.setUTCHours(0, 0, 0, 0);
-    const end = new Date(selectedEndDate);
-    end.setUTCHours(0, 0, 0, 0);
-
+    const labels: string[] = []; const values: number[] = [];
+    const start = new Date(selectedStartDate); start.setUTCHours(0, 0, 0, 0);
+    const end   = new Date(selectedEndDate);   end.setUTCHours(0, 0, 0, 0);
     for (let d = start; d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
       const key = d.toISOString().slice(0, 10);
       labels.push(d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'UTC' }));
       values.push(Number(visitorsPerDayMap[key] || 0));
     }
-
     return { labels, values };
   }, [selectedStartDate, selectedEndDate, visitorsPerDayMap]);
 
@@ -1308,28 +747,22 @@ export function ClientDashboard() {
 
   const compareSeries = useMemo(() => {
     const dayCount = Math.max(1, periodSeries.values.length);
-    const prevEnd = new Date(selectedStartDate.getTime() - 1);
+    const prevEnd   = new Date(selectedStartDate.getTime() - 1);
     const prevStart = new Date(prevEnd.getTime() - (dayCount - 1) * 86400000);
-
     const prev: number[] = [];
-    const start = new Date(prevStart);
-    start.setUTCHours(0, 0, 0, 0);
-    const end = new Date(prevEnd);
-    end.setUTCHours(0, 0, 0, 0);
-
+    const start = new Date(prevStart); start.setUTCHours(0, 0, 0, 0);
+    const end   = new Date(prevEnd);   end.setUTCHours(0, 0, 0, 0);
     for (let d = start; d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
-      const key = d.toISOString().slice(0, 10);
-      prev.push(Number(comparePrevVisitorsPerDay[key] || 0));
+      prev.push(Number(comparePrevVisitorsPerDay[d.toISOString().slice(0, 10)] || 0));
     }
-
     while (prev.length < dayCount) prev.push(0);
     return { labels: periodSeries.labels, current: periodSeries.values, previous: prev.slice(0, dayCount) };
   }, [periodSeries.labels, periodSeries.values, selectedStartDate, comparePrevVisitorsPerDay]);
 
   const getStats = () => [
-    { label: 'Total Visitantes', value: totalVisitors.toLocaleString(), icon: Users },
+    { label: 'Total Visitantes',    value: totalVisitors.toLocaleString(),    icon: Users },
     { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(), icon: BarChart2 },
-    { label: 'Tempo Médio Visita', value: formatDuration(avgVisitSeconds), icon: Clock },
+    { label: 'Tempo Médio Visita',  value: formatDuration(avgVisitSeconds),   icon: Clock },
     { label: 'Idade Média', value: avgAge == null ? '-' : `${avgAge.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} anos`, icon: Users },
   ];
 
@@ -1339,29 +772,13 @@ export function ClientDashboard() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500">
       <div className="flex flex-col gap-4">
-        {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-sm text-gray-500">
-          <button onClick={() => navigate('/clientes')} className="hover:text-emerald-400 transition-colors">
-            Clientes
-          </button>
+          <button onClick={() => navigate('/clientes')} className="hover:text-emerald-400 transition-colors">Clientes</button>
           <ChevronRight size={14} />
-          <button
-            onClick={goToNetwork}
-            className={`hover:text-emerald-400 transition-colors ${view === 'network' && !selectedStore ? 'text-white font-medium' : ''}`}
-          >
-            {clientName}
-          </button>
-          {selectedStore && (
-            <>
-              <ChevronRight size={14} />
-              <button onClick={() => goToStore(selectedStore)} className="hover:text-emerald-400 transition-colors text-white font-medium">
-                {selectedStore.name}
-              </button>
-            </>
-          )}
+          <button onClick={goToNetwork} className={`hover:text-emerald-400 transition-colors ${view === 'network' && !selectedStore ? 'text-white font-medium' : ''}`}>{clientName}</button>
+          {selectedStore && (<><ChevronRight size={14} /><button onClick={() => goToStore(selectedStore)} className="hover:text-emerald-400 transition-colors text-white font-medium">{selectedStore.name}</button></>)}
         </div>
 
-        {/* Header */}
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
           <div className="flex items-center gap-4 sm:gap-6">
             <div className="h-16 w-16 sm:h-24 sm:min-w-[100px] flex items-center justify-center overflow-hidden group relative cursor-pointer">
@@ -1378,62 +795,35 @@ export function ClientDashboard() {
               )}
             </div>
             <div>
-              <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2">
-                <Globe className="text-emerald-500" />
-                Dashboard Geral
-              </h1>
-              <p className="text-sm sm:text-base text-gray-400 mt-1">
-                Monitorando {stores.length} lojas nesta rede
-              </p>
-              {!apiConfig?.api_key && (
-                <p className="text-xs text-yellow-400 mt-1">
-                  API não configurada ⚠️
-                </p>
-              )}
+              <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2"><Globe className="text-emerald-500" />Dashboard Geral</h1>
+              <p className="text-sm sm:text-base text-gray-400 mt-1">Monitorando {stores.length} lojas nesta rede</p>
+              {!apiConfig?.api_key && <p className="text-xs text-yellow-400 mt-1">API não configurada ⚠️</p>}
               {syncMessage && (
-                <p className={`text-xs mt-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : syncMessage.startsWith('Erro') ? 'text-red-400' : 'text-yellow-400'}`}>
-                  {syncMessage}
-                </p>
+                <p className={`text-xs mt-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : syncMessage.startsWith('Erro') ? 'text-red-400' : 'text-yellow-400'}`}>{syncMessage}</p>
               )}
             </div>
           </div>
 
-          {/* Controls */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 w-full lg:w-auto">
-            {/* Store selector */}
             <div className="relative w-full sm:w-auto">
               <select
                 className="bg-gray-900 border border-gray-800 text-white pl-10 pr-8 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-sm w-full sm:min-w-[180px]"
-                onChange={(e) => {
-                  const storeId = e.target.value;
-                  if (storeId === 'all') goToNetwork();
-                  else { const store = stores.find((s) => s.id === storeId); if (store) goToStore(store); }
-                }}
+                onChange={(e) => { const sid = e.target.value; if (sid === 'all') goToNetwork(); else { const s = stores.find((s) => s.id === sid); if (s) goToStore(s); } }}
                 value={selectedStore?.id || 'all'}
               >
                 <option value="all" style={{ backgroundColor: '#111827', color: 'white' }}>Rede Global</option>
-                {stores.map((store) => (
-                  <option key={store.id} value={store.id} style={{ backgroundColor: '#111827', color: 'white' }}>
-                    {store.name}
-                  </option>
-                ))}
+                {stores.map((store) => <option key={store.id} value={store.id} style={{ backgroundColor: '#111827', color: 'white' }}>{store.name}</option>)}
               </select>
               <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
             </div>
 
-            {/* Date picker + last update */}
             <div className="flex flex-col items-end w-full sm:w-auto">
               <div className="relative w-full sm:w-auto">
-                <button
-                  onClick={() => setShowDatePicker(!showDatePicker)}
-                  className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors"
-                >
+                <button onClick={() => setShowDatePicker(!showDatePicker)} className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors">
                   <div className="flex items-center gap-2 flex-nowrap">
                     <Calendar size={16} className="text-gray-500" />
-                    <span className="text-sm whitespace-nowrap">
-                      {selectedStartDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })} → {selectedEndDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })}
-                    </span>
+                    <span className="text-sm whitespace-nowrap">{selectedStartDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })} → {selectedEndDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</span>
                   </div>
                   <ChevronDown size={14} className="text-gray-500" />
                 </button>
@@ -1442,43 +832,23 @@ export function ClientDashboard() {
                     <div className="flex flex-col sm:flex-row items-end gap-3">
                       <div className="w-full sm:w-auto">
                         <label className="block text-xs text-gray-400">Início</label>
-                        <input type="date"
-                          value={selectedStartDate.toISOString().slice(0, 10)}
-                          onChange={(e) => {
-                            autoTodayRef.current = false;
-                            const d = new Date(`${e.target.value}T00:00:00.000Z`);
-                            if (!isNaN(d.getTime())) setSelectedStartDate(d);
-                          }}
-                          className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
-                        />
+                        <input type="date" value={selectedStartDate.toISOString().slice(0, 10)}
+                          onChange={(e) => { autoTodayRef.current = false; const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setSelectedStartDate(d); }}
+                          className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
                       </div>
                       <div className="w-full sm:w-auto">
                         <label className="block text-xs text-gray-400">Fim</label>
-                        <input type="date"
-                          value={selectedEndDate.toISOString().slice(0, 10)}
-                          onChange={(e) => {
-                            autoTodayRef.current = false;
-                            const d = new Date(`${e.target.value}T23:59:59.999Z`);
-                            if (!isNaN(d.getTime())) setSelectedEndDate(d);
-                          }}
-                          className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700"
-                        />
+                        <input type="date" value={selectedEndDate.toISOString().slice(0, 10)}
+                          onChange={(e) => { autoTodayRef.current = false; const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setSelectedEndDate(d); }}
+                          className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
                       </div>
-                      <button onClick={() => setShowDatePicker(false)} className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md">
-                        Aplicar
-                      </button>
+                      <button onClick={() => setShowDatePicker(false)} className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md">Aplicar</button>
                     </div>
                   </div>
                 )}
               </div>
-
-              {lastUpdate && (
-                <div className="mt-1 text-[10px] text-gray-500 w-full sm:w-auto text-right">
-                  Atualizado: {lastUpdate.toLocaleString('pt-BR')}
-                </div>
-              )}
+              {lastUpdate && <div className="mt-1 text-[10px] text-gray-500 w-full sm:w-auto text-right">Atualizado: {lastUpdate.toLocaleString('pt-BR')}</div>}
             </div>
-
           </div>
         </div>
       </div>
@@ -1491,11 +861,9 @@ export function ClientDashboard() {
               <p className="text-xs text-blue-400 font-bold uppercase tracking-wider">{stat.label}</p>
             </div>
             <div className="p-4 text-center">
-              {isLoadingData ? (
-                <div className="h-8 bg-gray-800 rounded animate-pulse mx-auto w-24" />
-              ) : (
-                <p className="text-2xl font-bold text-white tracking-tight">{stat.value}</p>
-              )}
+              {isLoadingData
+                ? <div className="h-8 bg-gray-800 rounded animate-pulse mx-auto w-24" />
+                : <p className="text-2xl font-bold text-white tracking-tight">{stat.value}</p>}
             </div>
           </div>
         ))}
@@ -1515,56 +883,29 @@ export function ClientDashboard() {
                 if (!Component) return null;
 
                 let colSpan = 'lg:col-span-6';
-                if (widget.size === 'full') colSpan = 'lg:col-span-12';
-                if (widget.size === 'third') colSpan = 'lg:col-span-4';
+                if (widget.size === 'full')    colSpan = 'lg:col-span-12';
+                if (widget.size === 'third')   colSpan = 'lg:col-span-4';
                 if (widget.size === 'quarter') colSpan = 'lg:col-span-3';
-                if (widget.size === '2/3') colSpan = 'lg:col-span-8';
+                if (widget.size === '2/3')     colSpan = 'lg:col-span-8';
 
                 const widgetProps: any = { view: 'network' };
-                if (widget.id === 'flow_trend') widgetProps.dailyData = dailyStats;
-                if (widget.id === 'hourly_flow') widgetProps.hourlyData = hourlyStats;
-                if (widget.id === 'age_pyramid') { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'gender_dist') { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'attributes') widgetProps.attrData = attributeStats;
-                if (widget.id === 'kpi_flow_stats') {
-                  widgetProps.totalVisitors = totalVisitors;
-                  widgetProps.avgVisitorsPerDay = avgVisitorsPerDay;
-                  widgetProps.avgVisitSeconds = avgVisitSeconds;
-                }
-                if (widget.id === 'chart_age_ranges') widgetProps.ageData = ageStats;
-                if (widget.id === 'chart_vision') widgetProps.attrData = attributeStats;
-                if (widget.id === 'chart_facial_hair') widgetProps.attrData = attributeStats;
-                if (widget.id === 'chart_hair_type') widgetProps.hairTypeData = hairTypeData;
-                if (widget.id === 'chart_hair_color') widgetProps.hairColorData = hairColorData;
-                if (widget.id === 'kpi_store_quarter') {
-                  widgetProps.visitors = quarterVisitorsTotal;
-                  widgetProps.sales = quarterSalesTotal;
-                  widgetProps.loading = isLoadingQuarter;
-                }
-                if (widget.id === 'kpi_store_period') {
-                  widgetProps.visitors = totalVisitors;
-                  widgetProps.sales = 0;
-                  widgetProps.loading = isLoadingData;
-                }
-                if (widget.id === 'chart_sales_quarter') {
-                  widgetProps.quarterData = quarterBars;
-                  widgetProps.loading = isLoadingQuarter;
-                }
-                if (widget.id === 'chart_sales_daily') {
-                  widgetProps.labels = periodSeries.labels;
-                  widgetProps.visitors = periodSeries.values;
-                  widgetProps.loading = isLoadingData;
-                }
-                if (widget.id === 'chart_sales_period_bar') {
-                  widgetProps.periodData = periodWeeks;
-                  widgetProps.loading = isLoadingData;
-                }
-                if (widget.id === 'chart_sales_period_line') {
-                  widgetProps.labels = compareSeries.labels;
-                  widgetProps.current = compareSeries.current;
-                  widgetProps.previous = compareSeries.previous;
-                  widgetProps.loading = isLoadingCompare;
-                }
+                if (widget.id === 'flow_trend')             widgetProps.dailyData = dailyStats;
+                if (widget.id === 'hourly_flow')            widgetProps.hourlyData = hourlyStats;
+                if (widget.id === 'age_pyramid')          { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'gender_dist')          { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'attributes')             widgetProps.attrData = attributeStats;
+                if (widget.id === 'kpi_flow_stats')       { widgetProps.totalVisitors = totalVisitors; widgetProps.avgVisitorsPerDay = avgVisitorsPerDay; widgetProps.avgVisitSeconds = avgVisitSeconds; }
+                if (widget.id === 'chart_age_ranges')       widgetProps.ageData = ageStats;
+                if (widget.id === 'chart_vision')           widgetProps.attrData = attributeStats;
+                if (widget.id === 'chart_facial_hair')      widgetProps.attrData = attributeStats;
+                if (widget.id === 'chart_hair_type')        widgetProps.hairTypeData = hairTypeData;
+                if (widget.id === 'chart_hair_color')       widgetProps.hairColorData = hairColorData;
+                if (widget.id === 'kpi_store_quarter')    { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
+                if (widget.id === 'kpi_store_period')     { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }
+                if (widget.id === 'chart_sales_quarter')  { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
+                if (widget.id === 'chart_sales_daily')    { widgetProps.labels = periodSeries.labels; widgetProps.visitors = periodSeries.values; widgetProps.loading = isLoadingData; }
+                if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
+                if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
 
                 return (
                   <div key={widget.id} className={`col-span-1 ${colSpan} animate-in fade-in zoom-in-95 duration-500`}>

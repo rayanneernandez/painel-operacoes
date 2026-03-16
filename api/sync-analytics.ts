@@ -437,12 +437,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const mac = String(d?.id ?? "").trim();
           if (!mac) return;
           const existingId = devIdByStoreMac.get(`${storeId}:${mac}`);
+          const extId = Number(mac);
           devicesPayload.push({
             id: existingId || crypto.randomUUID(),
             store_id: storeId,
             name: String(d?.name || mac),
             type: "camera",
             mac_address: mac,
+            external_id: Number.isFinite(extId) ? extId : null,
             status: d?.connection_state === "online" ? "online" : "offline",
           });
         });
