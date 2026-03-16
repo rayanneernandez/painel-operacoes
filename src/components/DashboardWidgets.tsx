@@ -561,13 +561,33 @@ function ChartDonut({ labels, values, colors, title }: {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const total = values.reduce((a, b) => a + b, 0);
 
+  // Garante que todos os segmentos com valor > 0 aparecem com a cor correta
+  // e segmentos zerados ficam totalmente transparentes (não cinza padrão)
+  const safeColors = values.map((v, i) =>
+    v > 0 ? (colors[i] ?? '#6b7280') : 'transparent'
+  );
+  const safeBorder = values.map((v) =>
+    v > 0 ? '#111827' : 'transparent'
+  );
+
   useChartJs(canvasRef, () => {
     if (total === 0) return null;
     return {
       type: 'doughnut',
-      data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: '#111827', hoverOffset: 8 }] },
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          backgroundColor: safeColors,
+          borderColor: safeBorder,
+          borderWidth: 2,
+          hoverOffset: 8,
+        }],
+      },
       options: {
-        responsive: true, maintainAspectRatio: false, cutout: '65%',
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout: '65%',
         plugins: {
           legend: { display: false },
           tooltip: {
@@ -577,6 +597,7 @@ function ChartDonut({ labels, values, colors, title }: {
             padding: CJ.tooltipPadding,
             titleFont: CJ.titleFont,
             bodyFont: CJ.bodyFont,
+            filter: (item: any) => Number(item.raw) > 0,
             callbacks: {
               label: (ctx: any) => {
                 const v = Number(ctx.raw);
@@ -588,7 +609,7 @@ function ChartDonut({ labels, values, colors, title }: {
         },
       },
     };
-  }, [JSON.stringify(values)]);
+  }, [JSON.stringify(values), JSON.stringify(safeColors)]);
 
   return (
     <div className="flex flex-col items-center gap-3">
@@ -600,10 +621,12 @@ function ChartDonut({ labels, values, colors, title }: {
       {total > 0 && (
         <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
           {labels.map((l, i) => (
-            <span key={i} className="flex items-center gap-1 text-[11px] text-gray-300">
-              <span className="w-2.5 h-2.5 rounded-sm inline-block flex-shrink-0" style={{ background: colors[i] }} />
-              {l} ({total > 0 ? ((values[i] / total) * 100).toFixed(1) : 0}%)
-            </span>
+            values[i] > 0 && (
+              <span key={i} className="flex items-center gap-1 text-[11px] text-gray-300">
+                <span className="w-2.5 h-2.5 rounded-sm inline-block flex-shrink-0" style={{ background: colors[i] ?? '#6b7280' }} />
+                {l} ({total > 0 ? ((values[i] / total) * 100).toFixed(1) : 0}%)
+              </span>
+            )
           ))}
         </div>
       )}
