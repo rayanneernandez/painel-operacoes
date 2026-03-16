@@ -252,12 +252,9 @@ export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: numbe
     data: {
       labels: order.map((a) => lblMap[a] ?? a),
       datasets: [{
-        label: 'Visitantes',
-        data: vals,
+        label: 'Visitantes', data: vals,
         backgroundColor: vals.map(() => CJ.male),
-        borderRadius: 4,
-        borderSkipped: false,
-        hoverBackgroundColor: '#93c5fd',
+        borderRadius: 4, borderSkipped: false, hoverBackgroundColor: '#93c5fd',
       }],
     },
     options: {
@@ -265,7 +262,8 @@ export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: numbe
       plugins: {
         legend: { display: false },
         tooltip: {
-          backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1, padding: 10,
+          backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth: 1,
+          padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont,
           callbacks: {
             title: (items: any[]) => items[0]?.label ?? '',
             label: (ctx: any) => `  visitantes : ${Number(ctx.raw).toLocaleString()}`,
@@ -337,15 +335,20 @@ export const WidgetHourlyFlow = ({ view, hourlyData, genderData, totalVisitors }
       responsive: true, maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: false },
-        tooltip: {
-          backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1, padding: 10,
-          callbacks: {
-            title: (items: any[]) => items[0]?.label ?? '',
-            label: (ctx: any) => `  ${ctx.dataset.label} : ${Number(ctx.raw).toLocaleString()}`,
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: CJ.bg,
+            borderColor: 'rgba(255,255,255,0.12)',
+            borderWidth: 1,
+            padding: CJ.tooltipPadding,
+            titleFont: CJ.titleFont,
+            bodyFont: CJ.bodyFont,
+            callbacks: {
+              title: (items: any[]) => items[0]?.label ?? '',
+              label: (ctx: any) => `  ${ctx.dataset.label} : ${Number(ctx.raw).toLocaleString()}`,
+            },
           },
         },
-      },
       scales: {
         x: {
           grid: { color: CJ.grid },
@@ -430,7 +433,8 @@ export const WidgetSalesQuarter = ({ quarterData, loading }: { quarterData?: { l
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1, padding: 10,
+            backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth: 1,
+            padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont,
             callbacks: {
               title: (items: any[]) => items[0]?.label ?? '',
               label: (ctx: any) => { const v = Number(ctx.raw); return `  Visitantes: ${v >= 1000 ? `${(v/1000).toFixed(1)}k` : v.toLocaleString('pt-BR')}`; },
