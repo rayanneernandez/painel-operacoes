@@ -987,7 +987,7 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_hair_color')       widgetProps.hairColorData = hairColorData;
                 if (widget.id === 'kpi_store_quarter')    { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
                 if (widget.id === 'kpi_store_period')     { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }
-                if (widget.id === 'chart_sales_quarter')  { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
+                if (widget.id === 'campaigns') widgetProps.clientId = id;
                 if (widget.id === 'chart_sales_daily')    { widgetProps.labels = periodSeries.labels; widgetProps.visitors = periodSeries.values; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }

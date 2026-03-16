@@ -635,19 +635,89 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
 };
 
 // ── WidgetCampaigns ──────────────────────────────────────────────────────────
-export const WidgetCampaigns = ({ view }: { view: string }) => (
-  <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full">
-    <h3 className="font-bold text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider"><Activity size={14} className="text-emerald-500" />Engajamento em Campanhas {view==='network'?'(Rede)':''}</h3>
-    <div className="overflow-x-auto">
-      <table className="w-full text-left text-xs text-gray-400">
-        <thead className="text-gray-500 uppercase border-b border-gray-800">
-          <tr><th className="pb-2 font-medium">Campanha</th><th className="pb-2 font-medium">Início</th><th className="pb-2 font-medium">Visitantes</th><th className="pb-2 font-medium">Tempo Médio</th><th className="pb-2 font-medium">Atenção</th></tr>
-        </thead>
-        <tbody className="divide-y divide-gray-800" />
-      </table>
+export const WidgetCampaigns = ({ view, clientId }: { view: string; clientId?: string }) => {
+  const [rows, setRows]       = React.useState<any[]>([]);
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!clientId) return;
+    setLoading(true);
+    import('../lib/supabase').then(({ default: supabase }) => {
+      supabase
+        .from('campaigns')
+        .select('name,start_date,end_date,duration_days,duration_hms,visitors,avg_attention_sec')
+        .eq('client_id', clientId)
+        .order('start_date', { ascending: false })
+        .limit(50)
+        .then(({ data }) => { setRows(data || []); setLoading(false); });
+    });
+  }, [clientId]);
+
+  const fmtDate = (d: string | null) =>
+    d ? new Date(d).toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '—';
+
+  const fmtSec = (s: number) => {
+    const m = Math.floor(s / 60); const sec = s % 60;
+    return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
+  };
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
+          <Activity size={14} className="text-emerald-500" />
+          Engajamento em Campanhas {view === 'network' ? '(Rede)' : ''}
+        </h3>
+        {clientId && (
+          <a
+            href={`/clientes/${clientId}/campanhas`}
+            className="text-[10px] text-emerald-400 hover:text-emerald-300 border border-emerald-800 hover:border-emerald-600 px-2 py-1 rounded-md transition-colors"
+          >
+            + Importar CSV
+          </a>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-10 text-gray-500 text-sm">Carregando...</div>
+      ) : rows.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-10 gap-2 text-gray-500 text-sm">
+          <p>Nenhuma campanha importada.</p>
+          {clientId && (
+            <a href={`/clientes/${clientId}/campanhas`} className="text-emerald-400 hover:underline text-xs">
+              Clique aqui para importar o relatório da Displayforce
+            </a>
+          )}
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="text-gray-500 uppercase border-b border-gray-800">
+              <tr>
+                <th className="pb-2 pr-4 font-medium">Campanha</th>
+                <th className="pb-2 pr-4 font-medium">Início</th>
+                <th className="pb-2 pr-4 font-medium">Fim</th>
+                <th className="pb-2 pr-4 font-medium text-right">Visitantes</th>
+                <th className="pb-2 font-medium text-right">Atenção</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {rows.map((r, i) => (
+                <tr key={i} className="hover:bg-gray-800/50 transition-colors">
+                  <td className="py-2 pr-4 text-white font-medium max-w-[180px] truncate">{r.name || '—'}</td>
+                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td>
+                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td>
+                  <td className="py-2 pr-4 text-emerald-400 text-right font-medium">{Number(r.visitors||0).toLocaleString('pt-BR')}</td>
+                  <td className="py-2 text-blue-400 text-right font-medium">{r.avg_attention_sec > 0 ? fmtSec(r.avg_attention_sec) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
-  </div>
-);
+  );
+};
 
 // ── WidgetKPIFlowStats ───────────────────────────────────────────────────────
 export const WidgetKPIFlowStats = ({ totalVisitors, avgVisitorsPerDay, avgVisitSeconds }: { totalVisitors?: number; avgVisitorsPerDay?: number; avgVisitSeconds?: number }) => {
