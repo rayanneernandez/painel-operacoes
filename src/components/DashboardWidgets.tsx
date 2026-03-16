@@ -465,7 +465,7 @@ export type WidgetType = { id: string; title: string; type: 'chart' | 'table' | 
 
 export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'kpi_flow_stats',      title: 'Resumo de Fluxo',                  type: 'kpi',   size: 'full',  description: 'Total Visitantes, Média Dia, Tempo Médio' },
-  { id: 'kpi_store_quarter',   title: 'Loja Último Trimestre',            type: 'kpi',   size: 'half',  description: 'KPIs de Visitantes, Vendas e Conversão' },
+
   { id: 'flow_trend',          title: 'Tendências de Fluxo (Semanal)',    type: 'chart', size: 'half',  description: 'Gráfico de linha com fluxo diário' },
   { id: 'hourly_flow',         title: 'Fluxo por Hora',                   type: 'chart', size: 'half',  description: 'Gráfico de linha com média horária por gênero' },
   { id: 'chart_sales_quarter', title: 'Visitantes Último Trimestre',      type: 'chart', size: 'half',  description: 'Total de visitantes por mês' },
@@ -624,11 +624,37 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
   );
 };
 
+// Normaliza dados que podem vir como true/false, yes/no ou categorias
+function normalizeBoolOrCategory(
+  data: { label: string; value: number }[] | undefined,
+  trueLabel: string,
+  falseLabel: string,
+): { labels: string[]; values: number[] } {
+  if (!data || data.length === 0) return { labels: [], values: [] };
+
+  // Verifica se tem labels booleanas (true/false/yes/no/1/0)
+  const boolKeys = new Set(['true', 'false', 'yes', 'no', '1', '0']);
+  const isBool = data.every((d) => boolKeys.has(String(d.label).toLowerCase().trim()));
+
+  if (isBool) {
+    const trueVal  = data.find((d) => ['true','yes','1'].includes(String(d.label).toLowerCase()))?.value ?? 0;
+    const falseVal = data.find((d) => ['false','no','0'].includes(String(d.label).toLowerCase()))?.value ?? 0;
+    if (trueVal === 0 && falseVal === 0) return { labels: [], values: [] };
+    // Normaliza para percentual se não estiver
+    const total = trueVal + falseVal;
+    const tPct = total > 0 ? Number(((trueVal / total) * 100).toFixed(1)) : 0;
+    const fPct = total > 0 ? Number(((falseVal / total) * 100).toFixed(1)) : 0;
+    return { labels: [trueLabel, falseLabel], values: [tPct, fPct] };
+  }
+
+  // Dados categóricos normais
+  const items = data.filter((d) => Number(d.value) > 0);
+  return { labels: items.map((d) => d.label), values: items.map((d) => Number(d.value)) };
+}
+
 export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: string; value: number }[] }) => {
-  const items  = (hairTypeData || []).filter((d) => Number(d.value) > 0);
-  const labels = items.map((d) => d.label);
-  const values = items.map((d) => Number(d.value));
-  const colors = ['#3b82f6', '#eab308', '#ef4444', '#94a3b8', '#8b5cf6', '#10b981'];
+  const { labels, values } = normalizeBoolOrCategory(hairTypeData, 'Com Cabelo', 'Careca/Curto');
+  const colors = ['#3b82f6', '#94a3b8', '#eab308', '#ef4444', '#8b5cf6', '#10b981'];
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
       <h3 className="font-bold text-gray-900 dark:text-white mb-3 uppercase text-xs tracking-wider">Tipo de Cabelo</h3>
@@ -638,14 +664,12 @@ export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: strin
 };
 
 export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: string; value: number }[] }) => {
-  const items  = (hairColorData || []).filter((d) => Number(d.value) > 0);
-  const labels = items.map((d) => d.label);
-  const values = items.map((d) => Number(d.value));
-  const colors = ['#1f2937', '#eab308', '#78350f', '#94a3b8', '#ef4444', '#3b82f6'];
+  const { labels, values } = normalizeBoolOrCategory(hairColorData, 'Com Cor', 'Sem Cor');
+  const colorPalette = ['#1f2937', '#eab308', '#78350f', '#94a3b8', '#ef4444', '#3b82f6', '#10b981'];
   return (
     <div className="bg-white dark:bg-gray-900 border border-gray-200 dark:border-gray-800 rounded-xl p-4 h-full shadow-sm dark:shadow-none">
       <h3 className="font-bold text-gray-900 dark:text-white mb-3 uppercase text-xs tracking-wider">Cor de Cabelo</h3>
-      <ChartDonut labels={labels} values={values} colors={colors.slice(0, labels.length)} title="Cor de Cabelo" />
+      <ChartDonut labels={labels} values={values} colors={colorPalette.slice(0, labels.length)} title="Cor de Cabelo" />
     </div>
   );
 };
@@ -658,7 +682,7 @@ export const WIDGET_MAP: Record<string, React.FC<any>> = {
   'attributes':          WidgetAttributes,
   'campaigns':           WidgetCampaigns,
   'kpi_flow_stats':      WidgetKPIFlowStats,
-  'kpi_store_quarter':   WidgetKPIStoreQuarter,
+
   'chart_sales_quarter': WidgetSalesQuarter,
   'chart_age_ranges':    WidgetAgeRanges,
   'chart_vision':        WidgetVision,
