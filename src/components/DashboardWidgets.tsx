@@ -512,11 +512,18 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
 
 // ── WidgetAttributes ─────────────────────────────────────────────────────────
 export const WidgetAttributes = ({ attrData }: { view?: string; attrData?: { label: string; value: number }[] }) => {
-  const data = attrData && attrData.length ? attrData : [{ label:'Óculos',value:0 },{ label:'Barba',value:0 },{ label:'Máscara',value:0 },{ label:'Chapéu/Boné',value:0 }];
+  // Filtra apenas os 4 atributos principais, ignorando prefixos internos
+  const data = (attrData || [])
+    .filter(a => !a.label.startsWith('_'))
+    .filter(a => ['Óculos','Barba','Máscara','Chapéu/Boné'].includes(a.label));
+  const display = data.length > 0 ? data : [
+    { label:'Óculos', value:0 }, { label:'Barba', value:0 },
+    { label:'Máscara', value:0 }, { label:'Chapéu/Boné', value:0 },
+  ];
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full">
       <h3 className="font-bold text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider"><Users size={14} className="text-orange-500" />Atributos</h3>
-      <HorizontalBarChart data={data} color="bg-orange-500" />
+      <HorizontalBarChart data={display} color="bg-orange-500" />
     </div>
   );
 };
