@@ -547,7 +547,14 @@ export const WidgetKPIStoreQuarter = ({ visitors, sales, loading }: { visitors?:
   );
 };
 
-// ── Donut com Chart.js (tooltip maior, dados reais) ─────────────────────────
+// ── Paleta vibrante para donuts ──────────────────────────────────────────────
+const DONUT_PALETTES: Record<string, string[]> = {
+  vision:      ['#06b6d4', '#0e7490'],
+  facial_hair: ['#f97316', '#1d4ed8'],
+  hair_type:   ['#8b5cf6', '#06b6d4', '#f97316', '#10b981', '#f43f5e', '#eab308'],
+  hair_color:  ['#f59e0b', '#1f2937', '#b45309', '#6b7280', '#ef4444', '#3b82f6'],
+};
+
 function ChartDonut({ labels, values, colors, title }: {
   labels: string[]; values: number[]; colors: string[]; title: string;
 }) {
@@ -558,18 +565,18 @@ function ChartDonut({ labels, values, colors, title }: {
     if (total === 0) return null;
     return {
       type: 'doughnut',
-      data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 0, hoverOffset: 6 }] },
+      data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: '#111827', hoverOffset: 8 }] },
       options: {
-        responsive: true, maintainAspectRatio: false, cutout: '68%',
+        responsive: true, maintainAspectRatio: false, cutout: '65%',
         plugins: {
           legend: { display: false },
           tooltip: {
             backgroundColor: CJ.bg,
             borderColor: 'rgba(255,255,255,0.12)',
             borderWidth: 1,
-            padding: { top: 10, bottom: 10, left: 14, right: 14 },
-            titleFont: { size: 13, weight: 'bold' },
-            bodyFont: { size: 13 },
+            padding: CJ.tooltipPadding,
+            titleFont: CJ.titleFont,
+            bodyFont: CJ.bodyFont,
             callbacks: {
               label: (ctx: any) => {
                 const v = Number(ctx.raw);
@@ -593,7 +600,7 @@ function ChartDonut({ labels, values, colors, title }: {
       {total > 0 && (
         <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
           {labels.map((l, i) => (
-            <span key={i} className="flex items-center gap-1 text-[11px] text-gray-400">
+            <span key={i} className="flex items-center gap-1 text-[11px] text-gray-300">
               <span className="w-2.5 h-2.5 rounded-sm inline-block flex-shrink-0" style={{ background: colors[i] }} />
               {l} ({total > 0 ? ((values[i] / total) * 100).toFixed(1) : 0}%)
             </span>
