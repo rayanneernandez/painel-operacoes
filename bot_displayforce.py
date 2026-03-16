@@ -41,7 +41,7 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 DISPLAYFORCE_URL    = "https://id.displayforce.ai/#/platforms"
 DISPLAYFORCE_EMAIL  = "bruno.lyra@globaltera.com.br"
 DISPLAYFORCE_PASS   = "Tony@2023"
-RELATORIO_EMAIL     = "rayanne.ernandez@globaltera.com"   # e-mail que recebe o relatório
+RELATORIO_EMAIL     = "rayanne.ernandez@globaltera.com.br"  # e-mail que recebe o relatório
 
 # E-mail IMAP para receber o relatório da DisplayForce
 # Senha no formato "xxxx xxxx xxxx xxxx" = Google App Password (Gmail/Workspace)
@@ -63,7 +63,7 @@ SUPABASE_KEY        = (
 INTERVALO_MINUTOS   = 10         # frequência de atualização
 DOWNLOAD_DIR        = Path("./downloads_displayforce")
 LOG_FILE            = "bot_displayforce.log"
-TIMEOUT_EMAIL_SEG   = 180        # aguarda até 3 min pelo e-mail da DisplayForce
+TIMEOUT_EMAIL_SEG   = 300        # aguarda até 5 min pelo e-mail da DisplayForce
 HEADLESS            = True       # False para ver o browser abrindo (útil para debug)
 
 # ──────────────────────────────────────────────────────────────
@@ -273,8 +273,11 @@ def _obter_ultimo_uid() -> int:
             imap.select("INBOX")
             _, data = imap.search(None, "ALL")
             uids = data[0].split()
-            return int(uids[-1]) if uids else 0
-    except Exception:
+            uid_atual = int(uids[-1]) if uids else 0
+            log.info(f"  📬 IMAP conectado — {len(uids)} e-mails na caixa, último UID: {uid_atual}")
+            return uid_atual
+    except Exception as e:
+        log.error(f"  ❌ Erro ao conectar ao IMAP ({IMAP_SERVER}) com {IMAP_EMAIL}: {e}")
         return 0
 
 
@@ -366,16 +369,24 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
     try:
         log.info(f"  Exportando relatório para: {nome_cliente}")
 
-        # ── 1. Aguarda a lista de plataformas/clientes carregar e rola tudo ─
-        page.wait_for_timeout(3000)
+        # ── 1. Garante que estamos na lista de plataformas ───────────────
+        # Volta sempre para a página principal antes de cada cliente
+        if "id.displayforce.ai" not in page.url or "platforms" not in page.url:
+            page.goto("https://id.displayforce.ai/#/platforms")
+            page.wait_for_timeout(4000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
 
-        # Rola até o fim para carregar todos os cards (lista pode ser lazy/paginada)
-        url_antes = page.url
+        page.wait_for_timeout(2000)
+
+        # Rola para carregar todos os cards
         for _ in range(6):
             page.keyboard.press("End")
-            page.wait_for_timeout(800)
+            page.wait_for_timeout(600)
         page.keyboard.press("Home")
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(800)
 
         # Lista TODOS os textos da página para diagnóstico completo
         try:
@@ -387,88 +398,95 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
 
         _screenshot_debug(page, f"01_plataformas_{nome_cliente}")
 
-        # ── 2. Localiza e clica no card do cliente via JavaScript ───────────
-        # Os cards da DisplayForce são elementos com onClick no container pai,
-        # não em âncoras/botões — por isso usamos JS para encontrar o pai clicável.
+        # ── 2. Navega diretamente pelo href do link do cliente ────────────
+        # Pegar o href evita problemas com eventos de clique em SPAs React
         nome_lower = nome_cliente.strip().lower()
         url_antes_clique = page.url
+        cliente_clicado = False
 
-        js_clicar_plataforma = f"""
-        () => {{
-            const alvo = '{nome_lower}';
-            // Percorre todos os elementos de texto puro
-            const walker = document.createTreeWalker(
-                document.body, NodeFilter.SHOW_TEXT, null, false
-            );
-            let node;
-            while (node = walker.nextNode()) {{
-                const txt = node.textContent.trim().toLowerCase();
-                if (txt === alvo || txt.includes(alvo)) {{
-                    // Sobe na árvore DOM procurando o primeiro ancestral clicável
-                    let el = node.parentElement;
-                    for (let i = 0; i < 8; i++) {{
-                        if (!el) break;
-                        const tag   = el.tagName.toLowerCase();
-                        const role  = (el.getAttribute('role') || '').toLowerCase();
-                        const style = window.getComputedStyle(el);
-                        const hasClick = typeof el.onclick === 'function' ||
-                                         el.getAttribute('onclick');
-                        if (tag === 'a' || tag === 'button' ||
-                            role === 'button' || role === 'link' ||
-                            style.cursor === 'pointer' || hasClick) {{
-                            el.click();
-                            return 'clicado:' + tag + '.' + el.className.substring(0, 60);
+        # Extrai o href do link da plataforma via JS
+        href_cliente = page.evaluate(f"""
+            () => {{
+                const alvo = '{nome_lower}';
+                // Tenta primeiro pelos links com classe platformName (descoberto no debug)
+                const seletores = [
+                    'a[class*="platformName"]',
+                    'a[class*="platform"]',
+                    'a[href*="platform"]',
+                    'li a', 'a'
+                ];
+                for (const sel of seletores) {{
+                    const links = document.querySelectorAll(sel);
+                    for (const link of links) {{
+                        const txt = link.textContent.trim().toLowerCase();
+                        if (txt === alvo || txt.includes(alvo)) {{
+                            // Retorna href absoluto ou relativo
+                            return link.href || link.getAttribute('href');
                         }}
-                        el = el.parentElement;
-                    }}
-                    // Fallback: clica no pai direto do texto
-                    if (node.parentElement) {{
-                        node.parentElement.click();
-                        return 'fallback_pai:' + node.parentElement.tagName;
                     }}
                 }}
+                return null;
             }}
-            return null;
-        }}
-        """
+        """)
 
-        log.info(f"  Tentando clicar via JS no card '{nome_lower}'...")
-        resultado_js = page.evaluate(js_clicar_plataforma)
-        log.info(f"  JS resultado: {resultado_js}")
-        page.wait_for_timeout(3000)
+        log.info(f"  href encontrado para '{nome_lower}': {href_cliente}")
 
-        cliente_clicado = False
-        if resultado_js and page.url != url_antes_clique:
-            cliente_clicado = True
-            log.info(f"  ✔ Cliente clicado via JS (URL mudou): {page.url}")
-        elif resultado_js:
-            # JS encontrou e clicou, mas URL não mudou ainda — aguarda mais
-            page.wait_for_timeout(3000)
+        if href_cliente and href_cliente not in ("", "javascript:void(0)", "#", None):
+            # Navega diretamente para o URL do cliente
+            page.goto(href_cliente)
+            page.wait_for_timeout(4000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=15000)
+            except Exception:
+                pass
+            page.wait_for_timeout(2000)
+
             if page.url != url_antes_clique:
                 cliente_clicado = True
-                log.info(f"  ✔ Cliente clicado via JS (URL mudou após espera): {page.url}")
+                log.info(f"  ✔ Navegou via href direto: {page.url}")
             else:
-                log.warning(f"  ⚠ JS clicou mas URL não mudou — tentando Playwright como fallback")
+                log.warning(f"  ⚠ goto não mudou URL, ainda em: {page.url}")
+        else:
+            log.warning(f"  href inválido ou não encontrado: '{href_cliente}'")
 
-        # Fallback Playwright: tenta clicar diretamente no item da lista
+        # Fallback: tenta subdomain (padrão: https://{slug}.displayforce.ai/)
         if not cliente_clicado:
-            for nome_var in [nome_lower, nome_cliente.strip(), nome_cliente.strip().upper()]:
-                try:
-                    el = page.get_by_text(nome_var, exact=True).first
-                    if el.is_visible(timeout=2000):
-                        el.scroll_into_view_if_needed()
-                        el.click()
-                        page.wait_for_timeout(2500)
-                        if page.url != url_antes_clique:
+            for slug in [nome_lower.strip(), nome_lower.strip().replace(" ", "")]:
+                for padrao_url in [
+                    f"https://{slug}.displayforce.ai/",
+                    f"https://{slug}.displayforce.ai/n/#/",
+                    f"https://id.displayforce.ai/#/platform/{slug}",
+                ]:
+                    try:
+                        log.info(f"  Tentando URL direta: {padrao_url}")
+                        page.goto(padrao_url)
+                        page.wait_for_timeout(4000)
+                        try:
+                            page.wait_for_load_state("networkidle", timeout=10000)
+                        except Exception:
+                            pass
+                        url_atual = page.url
+                        # Sucesso se não voltou para login nem para a lista de plataformas do id.
+                        nao_voltou = (
+                            "login" not in url_atual.lower() and
+                            url_atual != url_antes_clique and
+                            not (url_atual.rstrip("/") == "https://id.displayforce.ai/#/platforms")
+                        )
+                        if nao_voltou:
                             cliente_clicado = True
-                            log.info(f"  ✔ Cliente clicado (Playwright exato, URL mudou): '{nome_var}'")
+                            log.info(f"  ✔ Navegou via URL direta: {url_atual}")
                             break
-                except Exception:
-                    continue
+                    except Exception:
+                        continue
+                if cliente_clicado:
+                    break
 
         if not cliente_clicado:
             _screenshot_debug(page, f"02_sem_cliente_{nome_cliente}")
-            log.warning(f"  ❌ Não foi possível navegar até o cliente '{nome_cliente}' — pulando")
+            # Volta para a lista de plataformas
+            page.goto("https://id.displayforce.ai/#/platforms")
+            page.wait_for_timeout(2000)
+            log.warning(f"  ❌ Não foi possível navegar até '{nome_cliente}' — pulando")
             return False
 
         # Aguarda a página do cliente carregar (SPA)
@@ -490,74 +508,117 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
         except Exception as ex:
             log.warning(f"  Não foi possível listar textos: {ex}")
 
-        # ── 3. Clicar em "Insights & dados" no menu lateral esquerdo ─────
-        insights_clicado = _clicar_texto(page, [
-            "Insights & dados",
-            "Insights e dados",
-            "Insights",
-            "Dados",
-            "Analytics",
-        ], timeout_ms=8000, descricao="menu Insights")
+        # ── 3. Navega para Insights de Visitantes ────────────────────────
+        # URL confirmada pelo DevTools: https://{slug}.displayforce.ai/n/#/stats/visitors
+        # "Insights & dados" no DOM aponta para /n/#/stats/devices → trocamos por /stats/visitors
+        log.info("  Navegando para Insights de Visitantes (stats/visitors)...")
 
-        if not insights_clicado:
-            _screenshot_debug(page, f"04_sem_insights_{nome_cliente}")
-            log.warning("  'Insights & dados' não encontrado — tentando continuar mesmo assim")
+        # Derivar URL: pegar href de "Insights & dados" e substituir /devices por /visitors
+        href_insights_dados = page.evaluate("""
+            () => {
+                for (const a of document.querySelectorAll('a[href]')) {
+                    const txt = (a.textContent || '').trim().toLowerCase();
+                    if (txt.includes('insights') && txt.includes('dados')) {
+                        return a.href;
+                    }
+                }
+                return null;
+            }
+        """)
+        log.info(f"  href 'Insights & dados': {href_insights_dados}")
+
+        if href_insights_dados and '/stats/' in str(href_insights_dados):
+            url_visitors_direto = href_insights_dados.replace('/stats/devices', '/stats/visitors').split('?')[0]
         else:
-            page.wait_for_timeout(2000)
+            # Fallback: construir a partir da URL atual
+            url_atual_base = page.url
+            if '/n/#' in url_atual_base:
+                url_visitors_direto = url_atual_base.split('/n/#')[0] + '/n/#/stats/visitors'
+            else:
+                partes = url_atual_base.rstrip('/').rstrip('#').rstrip('/')
+                url_visitors_direto = partes + '/n/#/stats/visitors'
 
-        _screenshot_debug(page, f"05_pos_insights_{nome_cliente}")
+        log.info(f"  URL Visitors Insights calculada: {url_visitors_direto}")
+        page.goto(url_visitors_direto)
+        page.wait_for_timeout(4000)
+        try:
+            page.wait_for_load_state("networkidle", timeout=15000)
+        except Exception:
+            pass
+        log.info(f"  ✔ Navegou para: {page.url}")
 
-        # ── 4. Clicar em "Visitors Insights" no painel direito ───────────
-        visitors_clicado = _clicar_texto(page, [
-            "Visitors Insights",
-            "Visitor Insights",
-            "Visitors",
-            "Visitantes",
-            "Fluxo de visitantes",
-        ], timeout_ms=8000, descricao="Visitors Insights")
+        _screenshot_debug(page, f"06_visitors_aberto_{nome_cliente}")
+        log.info(f"  URL após Visitors Insights: {page.url}")
 
-        if not visitors_clicado:
-            _screenshot_debug(page, f"06_sem_visitors_{nome_cliente}")
-            log.warning("  'Visitors Insights' não encontrado — tentando continuar")
-        else:
-            page.wait_for_timeout(3000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
-
-        _screenshot_debug(page, f"07_visitors_aberto_{nome_cliente}")
+        # ── DIAGNÓSTICO: mostra textos da página Visitors Insights ────────
+        try:
+            textos_vis = page.locator("button, a, [class*='btn'], [role='button']").all_text_contents()
+            textos_limpos = [t.strip() for t in textos_vis if t.strip() and len(t.strip()) < 100]
+            unicos = list(dict.fromkeys(textos_limpos))
+            log.info(f"  📋 Botões/links na página ({len(unicos)}): {unicos[:30]}")
+        except Exception:
+            pass
 
         # ── 5. Selecionar período nos filtros ─────────────────────────────
         _selecionar_periodo(page, data_inicio, data_fim)
         page.wait_for_timeout(1500)
 
         # ── 6. Clicar em "Enviar relatório" / "Export" ───────────────────
-        _screenshot_debug(page, f"08_pre_enviar_{nome_cliente}")
+        _screenshot_debug(page, f"07_pre_enviar_{nome_cliente}")
+
+        # Diagnóstico: lista todos os botões visíveis para encontrar o nome certo
+        try:
+            btns = page.locator("button:visible, [role='button']:visible, a:visible").all_text_contents()
+            btns_limpos = list(dict.fromkeys([b.strip() for b in btns if b.strip() and len(b.strip()) < 80]))
+            log.info(f"  📋 Botões visíveis na página: {btns_limpos[:25]}")
+        except Exception:
+            pass
 
         enviar_clicado = _clicar_texto(page, [
+            "ENVIAR RELATÓRIO",    # confirmado no DevTools (all-caps)
+            "ENVIAR RELATORIO",
             "Enviar relatório",
             "Enviar Relatório",
+            "Enviar por e-mail",
+            "Enviar por email",
+            "Exportar relatório",
             "Exportar",
             "Export",
-            "Exportar relatório",
             "Enviar",
+            "Send",
             "Download",
-        ], timeout_ms=8000, descricao="botão exportar")
+            "Relatório",
+        ], timeout_ms=5000, descricao="botão exportar")
 
         if not enviar_clicado:
-            # Tenta por ícone/aria-label
-            try:
-                page.locator(
-                    "button[aria-label*='export'], button[aria-label*='enviar'], "
-                    "[data-testid*='export'], [data-testid*='send']"
-                ).first.click(timeout=5000)
-                log.info("  ✔ Botão de export clicado via aria-label")
-                enviar_clicado = True
-            except Exception:
-                _screenshot_debug(page, f"09_sem_botao_enviar_{nome_cliente}")
-                log.error("  ❌ Botão de enviar relatório não encontrado")
-                return False
+            # Tenta por data-for, aria-label / SVG icon buttons
+            for sel_export in [
+                "button[data-for='sendReport']",   # confirmado no DevTools
+                "[data-for='sendReport']",
+                "button[aria-label*='envi']",
+                "button[aria-label*='ENVI']",
+                "button[aria-label*='export']",
+                "button[aria-label*='relat']",
+                "button[title*='envi']",
+                "button[title*='export']",
+                "[data-testid*='export']",
+                "[data-testid*='send']",
+                "[data-testid*='relat']",
+            ]:
+                try:
+                    el = page.locator(sel_export).first
+                    if el.is_visible(timeout=2000):
+                        el.click()
+                        log.info(f"  ✔ Botão export clicado via {sel_export}")
+                        enviar_clicado = True
+                        break
+                except Exception:
+                    continue
+
+        if not enviar_clicado:
+            _screenshot_debug(page, f"08_sem_botao_enviar_{nome_cliente}")
+            log.error("  ❌ Botão de enviar relatório não encontrado — veja screenshot e log de botões acima")
+            return False
 
         page.wait_for_timeout(2000)
         _screenshot_debug(page, f"10_modal_email_{nome_cliente}")
