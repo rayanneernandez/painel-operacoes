@@ -491,9 +491,10 @@ export function ClientDashboard() {
         }
       }
 
-      // CORREÇÃO 3: rebuild automático se não há rollup no trimestre
+      // CORREÇÃO 3: rebuild para o trimestre inteiro se não há rollup
+      // Faz uma única chamada cobrindo os 3 meses para ser mais eficiente
       if (!rollupVisitorsPerDay && deviceIds.length === 0) {
-        console.log('[Quarter] Nenhum rollup — disparando rebuild...');
+        console.log('[Quarter] Nenhum rollup — disparando rebuild do trimestre inteiro...');
         try {
           const resp = await fetch('/api/sync-analytics', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -506,11 +507,36 @@ export function ClientDashboard() {
             for (const [d, v] of Object.entries(vpd)) {
               if (d >= qStartDay && d <= qEndDay) rollupVisitorsPerDay[d] = Number(v) || 0;
             }
-            console.log(`[Quarter] Rebuild concluído — ${json.dashboard.total_visitors} visitantes`);
+            console.log(`[Quarter] Rebuild trimestre — ${json.dashboard.total_visitors} visitantes em ${Object.keys(rollupVisitorsPerDay).length} dias`);
           }
         } catch (e) {
           console.warn('[Quarter] Rebuild falhou, usando contagem de linhas:', e);
         }
+      }
+
+      // CORREÇÃO 4: se ainda sem rollup (rebuild retornou vazio), tenta mês a mês
+      if (!rollupVisitorsPerDay && deviceIds.length === 0) {
+        console.log('[Quarter] Rebuild geral sem dados — tentando mês a mês...');
+        const merged: Record<string, number> = {};
+        for (const month of months) {
+          try {
+            const resp = await fetch('/api/sync-analytics', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ client_id: id, start: month.startIso, end: month.endIso, rebuild_rollup: true }),
+            });
+            const json = resp.ok ? await resp.json() : null;
+            if (json?.dashboard?.visitors_per_day) {
+              const vpd = json.dashboard.visitors_per_day as Record<string, number>;
+              for (const [d, v] of Object.entries(vpd)) {
+                const ds = d.slice(0, 10);
+                if (ds >= qStartDay && ds <= qEndDay && !(ds in merged)) merged[ds] = Number(v) || 0;
+              }
+            }
+          } catch (e) {
+            console.warn(`[Quarter] Rebuild mês ${month.label} falhou:`, e);
+          }
+        }
+        if (Object.keys(merged).length > 0) rollupVisitorsPerDay = merged;
       }
 
       // Agrupa por mês

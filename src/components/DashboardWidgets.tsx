@@ -348,6 +348,8 @@ export const WidgetSalesQuarter = ({
             borderSkipped: false,
             yAxisID: 'yVisitors',
             order: 2,
+            barPercentage: hasSales ? 0.5 : 0.6,
+            categoryPercentage: 0.7,
           },
           ...(hasSales
             ? [{
@@ -358,6 +360,8 @@ export const WidgetSalesQuarter = ({
                 borderSkipped: false,
                 yAxisID: 'ySales',
                 order: 1,
+                barPercentage: 0.5,
+                categoryPercentage: 0.7,
               }]
             : []),
         ],
@@ -369,8 +373,24 @@ export const WidgetSalesQuarter = ({
         plugins: {
           legend: { display: false },
           tooltip: {
+            backgroundColor: 'rgba(10,10,20,0.92)',
+            borderColor: 'rgba(255,255,255,0.1)',
+            borderWidth: 1,
+            padding: 10,
             callbacks: {
-              label: (ctx: any) => ` ${ctx.dataset.label}: ${Number(ctx.raw).toLocaleString('pt-BR')}`,
+              title: (items: any[]) => items[0]?.label ?? '',
+              label: (ctx: any) => {
+                const v = Number(ctx.raw);
+                const fmt = v >= 1000 ? `${(v / 1000).toFixed(1)}k` : v.toLocaleString('pt-BR');
+                return `  ${ctx.dataset.label}: ${fmt}`;
+              },
+              afterBody: (items: any[]) => {
+                if (!hasSales) return [];
+                const vis  = Number(items.find((i: any) => i.dataset.label === 'Visitantes')?.raw ?? 0);
+                const sal  = Number(items.find((i: any) => i.dataset.label === 'Vendas')?.raw ?? 0);
+                const conv = vis > 0 ? ((sal / vis) * 100).toFixed(1) : '0.0';
+                return [`  Conversão: ${conv}%`];
+              },
             },
           },
         },
@@ -421,17 +441,25 @@ export const WidgetSalesQuarter = ({
       </h3>
 
       {/* Legenda */}
-      <div className="flex gap-4 text-[10px] text-gray-500">
+      <div className="flex gap-4 text-[10px] text-gray-500 flex-wrap">
         <span className="flex items-center gap-1">
           <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: '#1D9E75' }} />
           Visitantes{' '}
           <strong className="text-white">{loading ? '…' : totalVisitors.toLocaleString('pt-BR')}</strong>
         </span>
         {hasSales && (
-          <span className="flex items-center gap-1">
-            <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: '#378ADD' }} />
-            Vendas <strong className="text-white">{totalSales.toLocaleString('pt-BR')}</strong>
-          </span>
+          <>
+            <span className="flex items-center gap-1">
+              <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: '#378ADD' }} />
+              Vendas <strong className="text-white">{totalSales.toLocaleString('pt-BR')}</strong>
+            </span>
+            <span className="flex items-center gap-1 text-emerald-400">
+              Conversão: <strong>{totalVisitors > 0 ? ((totalSales / totalVisitors) * 100).toFixed(1) : '0.0'}%</strong>
+            </span>
+          </>
+        )}
+        {!hasSales && !loading && (
+          <span className="text-gray-600 italic">Sem dados de vendas cadastrados</span>
         )}
       </div>
 
