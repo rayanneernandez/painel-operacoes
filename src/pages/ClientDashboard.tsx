@@ -167,14 +167,66 @@ export function ClientDashboard() {
     setGenderStats([{ label: 'Masculino', value: Math.round(gp.male ?? 0) }, { label: 'Feminino', value: Math.round(gp.female ?? 0) }]);
 
     const ap: any = rollup.attributes_percent ?? {};
+
+    // ── Atributos simples para widget de barras ──────────────────────────────
+    const glassesRaw   = ap.glasses      ?? {};
+    const facialRaw    = ap.facial_hair  ?? {};
+
+    // Detecta se o backend salvou categorias reais ou apenas true/false
+    const glassesHasCats = Object.keys(glassesRaw).some(k => ['usual','dark','none'].includes(k));
+    const facialHasCats  = Object.keys(facialRaw).some(k  => ['shaved','beard','goatee','bristle','mustache'].includes(k));
+
+    // Valor resumido para o widget Atributos Gerais (barra horizontal)
+    const glassesTotal = glassesHasCats
+      ? Math.round((Number(glassesRaw.usual ?? 0) + Number(glassesRaw.dark ?? 0)))
+      : Math.round(glassesRaw.true ?? 0);
+    const facialTotal = facialHasCats
+      ? Math.round(Object.entries(facialRaw).filter(([k]) => k !== 'shaved').reduce((a, [, v]) => a + Number(v), 0))
+      : Math.round(facialRaw.true ?? 0);
+
     setAttributeStats([
-      { label: 'Óculos', value: Math.round(ap.glasses?.true ?? 0) },
-      { label: 'Barba', value: Math.round(ap.facial_hair?.true ?? 0) },
-      { label: 'Máscara', value: 0 },
+      { label: 'Óculos',      value: glassesTotal },
+      { label: 'Barba',       value: facialTotal },
+      { label: 'Máscara',     value: 0 },
       { label: 'Chapéu/Boné', value: Math.round(ap.headwear?.true ?? 0) },
     ]);
+
+    // ── Dados categóricos para widgets especializados ────────────────────────
+    // Glasses → passado via attrData para WidgetVision
+    // Facial hair → passado via attrData para WidgetFacialHair
+    // Usamos hairTypeData/hairColorData para os dados de cabelo normalmente
+    // e guardamos glasses/facial nos próprios estados de attr com prefixo especial
+
+    // Dados de óculos para WidgetVision
+    const glassesData = glassesHasCats
+      ? Object.entries(glassesRaw)
+          .filter(([, v]) => Number(v) > 0)
+          .map(([k, v]) => ({ label: k, value: Number(v) }))
+      : [{ label: 'Óculos', value: glassesTotal }];
+
+    // Dados de pelos para WidgetFacialHair
+    const facialData = facialHasCats
+      ? Object.entries(facialRaw)
+          .filter(([, v]) => Number(v) > 0)
+          .map(([k, v]) => ({ label: k, value: Number(v) }))
+      : [{ label: 'Barba', value: facialTotal }];
+
+    // Reutiliza hairTypeData para glasses e hairColorData para facial_hair
+    // Os widgets corretos recebem os dados certos via widgetProps abaixo
     setHairTypeData(pctMapToTopData(ap.hair_type));
     setHairColorData(pctMapToTopData(ap.hair_color));
+
+    // Guarda dados categóricos de visão e pelos nos attrStats com labels especiais
+    // WidgetVision e WidgetFacialHair detectam pelo label
+    setAttributeStats([
+      { label: 'Óculos',      value: glassesTotal },
+      { label: 'Barba',       value: facialTotal },
+      { label: 'Máscara',     value: 0 },
+      { label: 'Chapéu/Boné', value: Math.round(ap.headwear?.true ?? 0) },
+      // Dados categóricos embutidos com prefixo _glasses_ e _facial_
+      ...glassesData.map(d => ({ label: `_glasses_${d.label}`, value: d.value })),
+      ...facialData.map(d  => ({ label: `_facial_${d.label}`,  value: d.value })),
+    ]);
 
     // Pirâmide etária: usa gender_percent para dividir corretamente M/F por faixa
     const agePct: Record<string, number> = rollup.age_pyramid_percent ?? {};
