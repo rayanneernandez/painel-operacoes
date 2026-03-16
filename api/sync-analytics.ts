@@ -99,15 +99,6 @@ function toBool(val: any): boolean | null {
   }
   return null;
 }
-function facialHairToBool(val: any): boolean | null {
-  const b = toBool(val); if (b !== null) return b;
-  if (typeof val === "string") {
-    const s = val.trim().toLowerCase();
-    if (["shaved","none","no","false","0"].includes(s)) return false;
-    if (s.length > 0) return true;
-  }
-  return null;
-}
 function headwearToBool(val: any): boolean | null {
   const b = toBool(val); if (b !== null) return b;
   if (typeof val === "string") {
@@ -136,9 +127,16 @@ function buildAndDeduplicateRows(combined: any[], client_id: string) {
       timestamp: startTs, end_timestamp: endTs,
       age: typeof visit.age === "number" ? Math.round(visit.age) : null,
       gender: normalizeGender(visit),
-      attributes: { face_quality: visit.face_quality ?? null, glasses: visit.glasses ?? null, facial_hair: visit.facial_hair ?? null, hair_color: visit.hair_color ?? null, hair_type: visit.hair_type ?? null, headwear: visit.headwear ?? null },
-      visit_time_seconds: visitTimeSeconds,
-      dwell_time_seconds: dwellTimeSeconds,
+      attributes: {
+        face_quality: visit.face_quality ?? null,
+        glasses:      visit.glasses      ?? null,
+        facial_hair:  visit.facial_hair  ?? null,
+        hair_color:   visit.hair_color   ?? null,
+        hair_type:    visit.hair_type    ?? null,
+        headwear:     visit.headwear     ?? null,
+      },
+      visit_time_seconds:   visitTimeSeconds,
+      dwell_time_seconds:   dwellTimeSeconds,
       contact_time_seconds: contactTimeSeconds,
       raw_data: visit,
     });
@@ -146,15 +144,8 @@ function buildAndDeduplicateRows(combined: any[], client_id: string) {
   return Array.from(dedupMap.values());
 }
 
-// ── Read ALL rows from DB for client+period using pagination ─────────────────
-// Supabase PostgREST caps at 1000 rows per request (max_rows setting).
-// Strategy:
-//   1. First call uses HEAD request with count=exact to get total without fetching data
-//   2. Then paginate in chunks of 1000 until all rows are fetched
 async function fetchAllDBRows(client_id: string, rangeStart: string, rangeEnd: string, deviceNums: number[]): Promise<any[]> {
   const PAGE = 1000;
-
-  // Step 1: Get exact count via HEAD (no data transfer, very fast)
   let knownTotal: number | null = null;
   try {
     let countQ = supabase
@@ -170,13 +161,11 @@ async function fetchAllDBRows(client_id: string, rangeStart: string, rangeEnd: s
       console.log(`[fetchAllDBRows] Total no banco (HEAD): ${knownTotal}`);
     }
   } catch (e) {
-    console.warn("[fetchAllDBRows] HEAD count falhou, paginando sem total conhecido:", e);
+    console.warn("[fetchAllDBRows] HEAD count falhou:", e);
   }
 
-  // Step 2: Paginate and fetch all rows
   const all: any[] = [];
   let from = 0;
-
   while (true) {
     let q = supabase
       .from("visitor_analytics")
@@ -187,31 +176,26 @@ async function fetchAllDBRows(client_id: string, rangeStart: string, rangeEnd: s
       .order("timestamp", { ascending: true })
       .range(from, from + PAGE - 1);
     if (deviceNums.length > 0) q = q.in("device_id", deviceNums);
-
     const { data, error } = await q;
-    if (error) { console.error(`[fetchAllDBRows] Erro na página offset=${from}:`, error); break; }
+    if (error) { console.error(`[fetchAllDBRows] Erro offset=${from}:`, error); break; }
     if (!data || data.length === 0) break;
-
     all.push(...data);
-    console.log(`[fetchAllDBRows] Lidos ${all.length}${knownTotal ? ` / ${knownTotal}` : ""} (página offset=${from})`);
-
-    // Stop conditions
+    console.log(`[fetchAllDBRows] Lidos ${all.length}${knownTotal ? ` / ${knownTotal}` : ""}`);
     if (knownTotal !== null && all.length >= knownTotal) break;
     if (data.length < PAGE) break;
     from += PAGE;
   }
-
-  console.log(`[fetchAllDBRows] ✅ Total final: ${all.length} registros`);
+  console.log(`[fetchAllDBRows] ✅ Total: ${all.length}`);
   return all;
 }
 
-// ── Build full rollup stats from DB rows ─────────────────────────────────────
+// ── buildRollup — salva categorias REAIS de glasses, facial_hair, hair_color, hair_type ──
 function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEnd: string) {
   const startMs = Date.parse(rangeStart), endMs = Date.parse(rangeEnd);
   const daysInRange = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs
     ? Math.max(1, Math.ceil((endMs - startMs + 1) / 86400000)) : 1;
 
-  const perDayCount: Record<string, number> = {};
+  const perDayCount:  Record<string, number> = {};
   const perHourTotal: Record<string, number> = {};
   for (let h = 0; h < 24; h++) perHourTotal[String(h)] = 0;
 
@@ -219,10 +203,14 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     "0-9":0,"10-17":0,"18-24":0,"25-34":0,"35-44":0,"45-54":0,"55-64":0,"65-74":0,"75+":0,unknown:0
   };
   const genderCounts: Record<string, number> = { male:0, female:0, unknown:0 };
-  const attrCounts: Record<string, Record<string, number>> = {
-    glasses:{true:0,false:0,unknown:0}, facial_hair:{true:0,false:0,unknown:0},
-    headwear:{true:0,false:0,unknown:0}, hair_color:{}, hair_type:{}
-  };
+
+  // Contadores categóricos — sem converter para bool
+  const glassesCount:    Record<string, number> = {};
+  const facialHairCount: Record<string, number> = {};
+  const headwearCount:   Record<string, number> = {};
+  const hairColorCount:  Record<string, number> = {};
+  const hairTypeCount:   Record<string, number> = {};
+
   let glassesKnown=0, facialHairKnown=0, headwearKnown=0, hairColorKnown=0, hairTypeKnown=0;
   let sumVisit=0, cntVisit=0, sumDwell=0, cntDwell=0, sumContact=0, cntContact=0;
 
@@ -237,58 +225,101 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
         perHourTotal[h] = (perHourTotal[h] ?? 0) + 1;
       }
     }
-    if (typeof row.age === "number" && Number.isFinite(row.age)) {
-      const b = bucketAge(Math.round(row.age)); ageCounts[b] = (ageCounts[b]??0)+1;
-    } else ageCounts.unknown += 1;
 
-    if (row.gender === 1) genderCounts.male++;
+    if (typeof row.age === "number" && Number.isFinite(row.age)) {
+      const b = bucketAge(Math.round(row.age));
+      ageCounts[b] = (ageCounts[b] ?? 0) + 1;
+    } else {
+      ageCounts.unknown += 1;
+    }
+
+    if (row.gender === 1)      genderCounts.male++;
     else if (row.gender === 2) genderCounts.female++;
-    else genderCounts.unknown++;
+    else                       genderCounts.unknown++;
 
     const a = row.attributes || {};
-    const glb = toBool(a.glasses);
-    if (glb !== null) { attrCounts.glasses[String(glb)]++; glassesKnown++; } else attrCounts.glasses.unknown++;
-    const fhb = facialHairToBool(a.facial_hair);
-    if (fhb !== null) { attrCounts.facial_hair[String(fhb)]++; facialHairKnown++; } else attrCounts.facial_hair.unknown++;
-    const hwb = headwearToBool(a.headwear);
-    if (hwb !== null) { attrCounts.headwear[String(hwb)]++; headwearKnown++; } else attrCounts.headwear.unknown++;
-    if (typeof a.hair_color === "string" && a.hair_color.trim()) {
-      attrCounts.hair_color[a.hair_color] = (attrCounts.hair_color[a.hair_color]??0)+1; hairColorKnown++;
-    }
-    if (typeof a.hair_type === "string" && a.hair_type.trim()) {
-      attrCounts.hair_type[a.hair_type] = (attrCounts.hair_type[a.hair_type]??0)+1; hairTypeKnown++;
+
+    // ── Glasses: categoria real (usual, dark, none) ────────────────────────
+    const gVal = a.glasses;
+    if (gVal !== null && gVal !== undefined) {
+      const gKey = String(gVal).trim().toLowerCase();
+      const gNorm = ["true","yes","1","on"].includes(gKey)    ? "usual"
+                  : ["false","no","0","off"].includes(gKey)   ? "none"
+                  : gKey || null;
+      if (gNorm) {
+        glassesCount[gNorm] = (glassesCount[gNorm] ?? 0) + 1;
+        glassesKnown++;
+      }
     }
 
+    // ── Facial hair: categoria real (shaved, beard, goatee, bristle…) ──────
+    const fVal = a.facial_hair;
+    if (fVal !== null && fVal !== undefined) {
+      const fKey = String(fVal).trim().toLowerCase();
+      const fNorm = fKey === "true"  ? "beard"
+                  : fKey === "false" ? "shaved"
+                  : fKey || null;
+      if (fNorm) {
+        facialHairCount[fNorm] = (facialHairCount[fNorm] ?? 0) + 1;
+        facialHairKnown++;
+      }
+    }
+
+    // ── Headwear: bool (true/false) ────────────────────────────────────────
+    const hwb = headwearToBool(a.headwear);
+    if (hwb !== null) {
+      headwearCount[String(hwb)] = (headwearCount[String(hwb)] ?? 0) + 1;
+      headwearKnown++;
+    }
+
+    // ── Hair color: categoria real (black, brown, blond…) ─────────────────
+    if (typeof a.hair_color === "string" && a.hair_color.trim()) {
+      const hck = a.hair_color.trim().toLowerCase();
+      hairColorCount[hck] = (hairColorCount[hck] ?? 0) + 1;
+      hairColorKnown++;
+    }
+
+    // ── Hair type: categoria real (normal, high_temple, bald…) ───────────
+    if (typeof a.hair_type === "string" && a.hair_type.trim()) {
+      const htk = a.hair_type.trim().toLowerCase();
+      hairTypeCount[htk] = (hairTypeCount[htk] ?? 0) + 1;
+      hairTypeKnown++;
+    }
+
+    // ── Tempos ──────────────────────────────────────────────────────────────
     if (typeof row.visit_time_seconds === "number" && Number.isFinite(row.visit_time_seconds)) {
       sumVisit += row.visit_time_seconds; cntVisit++;
     } else if (startTs && endTs) {
       const s = Date.parse(startTs), e = Date.parse(endTs);
       if (Number.isFinite(s) && Number.isFinite(e) && e >= s) { sumVisit += Math.round((e-s)/1000); cntVisit++; }
     }
-    if (typeof row.dwell_time_seconds === "number" && Number.isFinite(row.dwell_time_seconds)) { sumDwell += row.dwell_time_seconds; cntDwell++; }
+    if (typeof row.dwell_time_seconds   === "number" && Number.isFinite(row.dwell_time_seconds))   { sumDwell   += row.dwell_time_seconds;   cntDwell++;   }
     if (typeof row.contact_time_seconds === "number" && Number.isFinite(row.contact_time_seconds)) { sumContact += row.contact_time_seconds; cntContact++; }
   }
 
-  const totalVisitors = rows.length;
+  const totalVisitors    = rows.length;
   const avgVisitorsPerDay = Number((totalVisitors / daysInRange).toFixed(2));
   const perHourAvg: Record<string,number> = {};
-  for (let h = 0; h < 24; h++) perHourAvg[String(h)] = Number(((perHourTotal[String(h)]??0) / daysInRange).toFixed(2));
+  for (let h = 0; h < 24; h++) {
+    perHourAvg[String(h)] = Number(((perHourTotal[String(h)] ?? 0) / daysInRange).toFixed(2));
+  }
 
   const n = Math.max(rows.length, 1);
+
   return {
     client_id, start: rangeStart, end: rangeEnd,
-    total_visitors: totalVisitors,
+    total_visitors:      totalVisitors,
     avg_visitors_per_day: avgVisitorsPerDay,
-    visitors_per_day: perDayCount,
+    visitors_per_day:    perDayCount,
     visitors_per_hour_avg: perHourAvg,
     age_pyramid_percent: percentMap(ageCounts, n),
-    gender_percent: percentMap(genderCounts, n),
+    gender_percent:      percentMap(genderCounts, n),
     attributes_percent: {
-      glasses:     glassesKnown    > 0 ? percentMap({true:attrCounts.glasses.true,    false:attrCounts.glasses.false},    glassesKnown)    : {},
-      facial_hair: facialHairKnown > 0 ? percentMap({true:attrCounts.facial_hair.true,false:attrCounts.facial_hair.false},facialHairKnown) : {},
-      headwear:    headwearKnown   > 0 ? percentMap({true:attrCounts.headwear.true,   false:attrCounts.headwear.false},   headwearKnown)   : {},
-      hair_color:  hairColorKnown  > 0 ? percentMap(attrCounts.hair_color, hairColorKnown) : {},
-      hair_type:   hairTypeKnown   > 0 ? percentMap(attrCounts.hair_type,  hairTypeKnown)  : {},
+      glasses:     glassesKnown    > 0 ? percentMap(glassesCount,    glassesKnown)    : {},
+      facial_hair: facialHairKnown > 0 ? percentMap(facialHairCount, facialHairKnown) : {},
+      headwear:    headwearKnown   > 0 ? percentMap(headwearCount,   headwearKnown)   : {},
+      hair_color:  hairColorKnown  > 0 ? percentMap(hairColorCount,  hairColorKnown)  : {},
+      hair_type:   hairTypeKnown   > 0 ? percentMap(hairTypeCount,   hairTypeKnown)   : {},
     },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_dwell_time_seconds:   cntDwell   > 0 ? Number((sumDwell   / cntDwell).toFixed(2))   : null,
@@ -297,14 +328,11 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   };
 }
 
-// Server-side lock: prevents concurrent rebuild_rollup for the same client+period
-// (Vercel functions share memory within the same instance)
 const _serverRebuilding = new Set<string>();
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") return bad(res, 405, { error: "Method Not Allowed" });
-
 
     const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup, sync_stores } = (req.body as any) ?? {};
 
@@ -326,7 +354,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const analyticsUrl = `${(cfg.api_endpoint||"https://api.displayforce.ai").replace(/\/$/,"")}${cfg.analytics_endpoint?.startsWith("/")?cfg.analytics_endpoint:`/${cfg.analytics_endpoint||"public/v1/stats/visitor/list"}`}`;
 
     const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
-
     const ck = cfg.custom_header_key?.trim();
     const cv = cfg.custom_header_value?.trim();
     if (ck && cv) {
@@ -337,16 +364,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return bad(res, 400, { error: "api_key não configurada" });
     }
 
+    // ── sync_stores ──────────────────────────────────────────────────────────
     if (sync_stores === true) {
       const base = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
-
       const fetchWithFallback = async (url: string, body: any) => {
         let r = await fetch(`${url}?recursive=true&limit=100&offset=0`, { method: "GET", headers });
         if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
         return r;
       };
 
-      const folderUrl = `${base}/public/v1/folder/list`;
+      const folderUrl  = `${base}/public/v1/folder/list`;
       const folderBody = { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 };
       const foldersResp = await fetchWithFallback(folderUrl, folderBody);
       if (!foldersResp.ok) {
@@ -356,7 +383,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const foldersJson: any = await foldersResp.json();
       const folders = Array.isArray(foldersJson?.data) ? foldersJson.data : [];
 
-      const deviceUrl = `${base}/public/v1/device/list`;
+      const deviceUrl  = `${base}/public/v1/device/list`;
       const deviceBody = { id: [], name: [], parent_ids: [], recursive: true, params: ["id","name","parent_id","parent_ids","tags"], limit: 100, offset: 0 };
       const devicesResp = await fetchWithFallback(deviceUrl, deviceBody);
       if (!devicesResp.ok) {
@@ -364,17 +391,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return bad(res, devicesResp.status, { error: "Erro ao buscar dispositivos na API", details: txt });
       }
       const devicesJson: any = await devicesResp.json();
-      const devices = Array.isArray(devicesJson?.data) ? devicesJson.data : [];
+      const devicesData = Array.isArray(devicesJson?.data) ? devicesJson.data : [];
 
       if (folders.length === 0) {
         return ok(res, { message: "Nenhuma loja encontrada na API", stores_upserted: 0, devices_upserted: 0 });
       }
 
-      const { data: dbStores } = await supabase
-        .from("stores")
-        .select("id,name,city")
-        .eq("client_id", client_id);
-
+      const { data: dbStores } = await supabase.from("stores").select("id,name,city").eq("client_id", client_id);
       const nameToStore = new Map<string, { id: string; city?: string | null }>();
       (dbStores || []).forEach((s: any) => {
         const n = String(s?.name || "").trim().toLowerCase();
@@ -384,27 +407,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const folderToStoreId = new Map<string, string>();
       const storesPayload: any[] = [];
-
       for (const f of folders) {
         const folderId = String(f?.id ?? "").trim();
         const name = String(f?.name || "").trim();
         if (!folderId || !name) continue;
-
-        const key = name.toLowerCase();
-        const existing = nameToStore.get(key);
-        const storeId = existing?.id || crypto.randomUUID();
+        const existing = nameToStore.get(name.toLowerCase());
+        const storeId  = existing?.id || crypto.randomUUID();
         folderToStoreId.set(folderId, storeId);
-        storesPayload.push({
-          id: storeId,
-          client_id,
-          name,
-          city: existing?.city ?? "Não informada",
-        });
+        storesPayload.push({ id: storeId, client_id, name, city: existing?.city ?? "Não informada" });
       }
-
-      if (storesPayload.length > 0) {
-        await supabase.from("stores").upsert(storesPayload);
-      }
+      if (storesPayload.length > 0) await supabase.from("stores").upsert(storesPayload);
 
       const storeIds = storesPayload.map((s) => s.id).filter(Boolean);
       const { data: dbDevs } = storeIds.length
@@ -413,29 +425,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const devIdByStoreMac = new Map<string, string>();
       (dbDevs || []).forEach((d: any) => {
-        const sid = String(d?.store_id || "");
-        const mac = String(d?.mac_address || "").trim();
-        const did = String(d?.id || "");
+        const sid = String(d?.store_id || ""); const mac = String(d?.mac_address || "").trim(); const did = String(d?.id || "");
         if (!sid || !mac || !did) return;
         devIdByStoreMac.set(`${sid}:${mac}`, did);
       });
 
       const devicesByFolder = new Map<string, any[]>();
-      devices.forEach((d: any) => {
-        const pid = d?.parent_id;
-        if (pid == null) return;
-        const k = String(pid);
-        const arr = devicesByFolder.get(k) || [];
-        arr.push(d);
-        devicesByFolder.set(k, arr);
+      devicesData.forEach((d: any) => {
+        const pid = d?.parent_id; if (pid == null) return;
+        const k = String(pid); const arr = devicesByFolder.get(k) || []; arr.push(d); devicesByFolder.set(k, arr);
       });
 
       const devicesPayload: any[] = [];
       folderToStoreId.forEach((storeId, folderId) => {
         const list = devicesByFolder.get(folderId) || [];
         list.forEach((d: any) => {
-          const mac = String(d?.id ?? "").trim();
-          if (!mac) return;
+          const mac = String(d?.id ?? "").trim(); if (!mac) return;
           const existingId = devIdByStoreMac.get(`${storeId}:${mac}`);
           const extId = Number(mac);
           devicesPayload.push({
@@ -449,79 +454,56 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
         });
       });
+      if (devicesPayload.length > 0) await supabase.from("devices").upsert(devicesPayload);
 
-      if (devicesPayload.length > 0) {
-        await supabase.from("devices").upsert(devicesPayload);
-      }
-
-      return ok(res, {
-        message: "Lojas sincronizadas",
-        stores_upserted: storesPayload.length,
-        devices_upserted: devicesPayload.length,
-      });
+      return ok(res, { message: "Lojas sincronizadas", stores_upserted: storesPayload.length, devices_upserted: devicesPayload.length });
     }
 
     const now = new Date();
-    const rangeStart = String(start  || cfg.collection_start || "2025-01-01T00:00:00.000Z");
-    const rangeEnd   = String(end    || cfg.collection_end   || now.toISOString());
+    const rangeStart = String(start || cfg.collection_start || "2025-01-01T00:00:00.000Z");
+    const rangeEnd   = String(end   || cfg.collection_end   || now.toISOString());
 
     const baseBody: any = {
       start: rangeStart, end: rangeEnd,
-      tracks: cfg.collect_tracks ?? true,
+      tracks:       cfg.collect_tracks      ?? true,
       face_quality: cfg.collect_face_quality ?? true,
-      glasses: cfg.collect_glasses ?? true,
-      facial_hair: cfg.collect_beard ?? true,
-      hair_color: cfg.collect_hair_color ?? true,
-      hair_type: cfg.collect_hair_type ?? true,
-      headwear: cfg.collect_headwear ?? true,
+      glasses:      cfg.collect_glasses      ?? true,
+      facial_hair:  cfg.collect_beard        ?? true,
+      hair_color:   cfg.collect_hair_color   ?? true,
+      hair_type:    cfg.collect_hair_type    ?? true,
+      headwear:     cfg.collect_headwear     ?? true,
       additional_attributes: ["smile","pitch","yaw","x","y","height"],
     };
     if (Array.isArray(devices) && devices.length > 0) baseBody.devices = devices;
 
-    const limit    = 1000;
-    let   offset   = Number.isFinite(Number(incomingOffset)) ? Number(incomingOffset) : 0;
+    const limit      = 1000;
+    let   offset     = Number.isFinite(Number(incomingOffset)) ? Number(incomingOffset) : 0;
     const combined: any[] = [];
-    const startedAt = Date.now();
-
-    // MAX_MS must stay well under Vercel's 30s function timeout.
-    // Normal sync: 6s per call (frontend retries with next_offset until done=true).
-    // force_full_sync: 20s — used only for manual "Sincronizar" button clicks.
-    const MAX_MS    = force_full_sync ? 20000 : 6000;
-    const MAX_PAGES = force_full_sync ? 500 : 50;
-
+    const startedAt  = Date.now();
+    const MAX_MS     = force_full_sync ? 20000 : 6000;
+    const MAX_PAGES  = force_full_sync ? 500   : 50;
     const deviceNums = Array.isArray(devices) ? (devices as any[]).map(Number).filter(Number.isFinite) : [];
 
-    // ── rebuild_rollup: uses SQL function (SECURITY DEFINER) — bypasses RLS ─────
-    // The SQL function build_visitor_rollup() runs as postgres owner, ignoring RLS.
-    // It aggregates all data server-side in one query — no row pagination needed.
-    // Create the function first by running create_rollup_function.sql in Supabase.
+    // ── rebuild_rollup ────────────────────────────────────────────────────────
     if (rebuild_rollup === true) {
       if (deviceNums.length > 0) {
         const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
         if (rows.length === 0) {
-          return ok(res, {
-            message: "Sem dados no banco para o período informado",
-            start: rangeStart, end: rangeEnd,
-            externalFetched: 0, raw_upserted_new: 0,
-            total_in_db: 0, next_offset: null, done: true,
-            dashboard: null, stored_rollup: false,
-          });
+          return ok(res, { message: "Sem dados no banco", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, total_in_db: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
         }
-
         const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
         return ok(res, {
           message: "Rollup recalculado (filtro por dispositivo)",
-          start: rangeStart, end: rangeEnd,
-          externalFetched: 0, raw_upserted_new: 0,
+          start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0,
           total_in_db: rr.total_visitors, next_offset: null, done: true,
           dashboard: {
-            total_visitors: rr.total_visitors,
-            avg_visitors_per_day: rr.avg_visitors_per_day,
-            visitors_per_day: rr.visitors_per_day,
+            total_visitors:        rr.total_visitors,
+            avg_visitors_per_day:  rr.avg_visitors_per_day,
+            visitors_per_day:      rr.visitors_per_day,
             visitors_per_hour_avg: rr.visitors_per_hour_avg,
-            gender_percent: rr.gender_percent,
-            attributes_percent: rr.attributes_percent,
-            age_pyramid_percent: rr.age_pyramid_percent,
+            gender_percent:        rr.gender_percent,
+            attributes_percent:    rr.attributes_percent,
+            age_pyramid_percent:   rr.age_pyramid_percent,
             avg_times_seconds: { avg_visit_time_seconds: rr.avg_visit_time_seconds, avg_dwell_time_seconds: rr.avg_dwell_time_seconds },
           },
           stored_rollup: false,
@@ -529,17 +511,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const lockKey = `${client_id}:${rangeStart}:${rangeEnd}`;
-
-      // If another request is already rebuilding for same client+period, return early
       if (_serverRebuilding.has(lockKey)) {
-        console.log(`[rebuild_rollup] Já em andamento para client=${client_id}, ignorando chamada duplicada`);
-        // Return the existing rollup from DB if available
-        const { data: existing } = await supabase
-          .from("visitor_analytics_rollups")
-          .select("*")
-          .eq("client_id", client_id)
-          .order("updated_at", { ascending: false })
-          .limit(1);
+        const { data: existing } = await supabase.from("visitor_analytics_rollups").select("*").eq("client_id", client_id).order("updated_at", { ascending: false }).limit(1);
         if (existing?.[0]) {
           const r = existing[0];
           return ok(res, {
@@ -563,9 +536,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[rebuild_rollup] Chamando função SQL para client=${client_id}`);
 
       const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
-        p_client_id: client_id,
-        p_start:     rangeStart,
-        p_end:       rangeEnd,
+        p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd,
       });
 
       if (rpcErr) {
@@ -574,165 +545,106 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return bad(res, 500, { error: "Erro ao calcular rollup via SQL", details: rpcErr });
       }
 
-      const stats = rpcData as any;
+      const stats        = rpcData as any;
       const totalVisitors = Number(stats?.total_visitors ?? 0);
       console.log(`[rebuild_rollup] Total via SQL: ${totalVisitors}`);
 
       if (totalVisitors === 0) {
-        return ok(res, {
-          message: "Sem dados no banco para o período informado",
-          start: rangeStart, end: rangeEnd,
-          externalFetched: 0, raw_upserted_new: 0,
-          total_in_db: 0, next_offset: null, done: true,
-          dashboard: null, stored_rollup: false,
-        });
+        _serverRebuilding.delete(lockKey);
+        return ok(res, { message: "Sem dados no banco", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, total_in_db: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
       }
 
-      // Build rollup row from SQL results and save to cache table
-      const daysInRange = Math.max(1, Math.ceil((Date.parse(rangeEnd) - Date.parse(rangeStart)) / 86400000));
       const rollupRow = {
-        client_id,
-        start: rangeStart,
-        end:   rangeEnd,
+        client_id, start: rangeStart, end: rangeEnd,
         total_visitors:           totalVisitors,
-        avg_visitors_per_day:     stats.avg_visitors_per_day ?? 0,
-        visitors_per_day:         stats.visitors_per_day ?? {},
-        visitors_per_hour_avg:    stats.visitors_per_hour_avg ?? {},
-        age_pyramid_percent:      stats.age_pyramid_percent ?? {},
-        gender_percent:           stats.gender_percent ?? {},
-        attributes_percent:       stats.attributes_percent ?? {},
-        avg_visit_time_seconds:   stats.avg_visit_time_seconds ?? null,
+        avg_visitors_per_day:     stats.avg_visitors_per_day     ?? 0,
+        visitors_per_day:         stats.visitors_per_day         ?? {},
+        visitors_per_hour_avg:    stats.visitors_per_hour_avg    ?? {},
+        age_pyramid_percent:      stats.age_pyramid_percent      ?? {},
+        gender_percent:           stats.gender_percent           ?? {},
+        attributes_percent:       stats.attributes_percent       ?? {},
+        avg_visit_time_seconds:   stats.avg_visit_time_seconds   ?? null,
         avg_dwell_time_seconds:   null,
         avg_contact_time_seconds: null,
         updated_at: new Date().toISOString(),
       };
 
-      const { error: saveErr } = await supabase
-        .from("visitor_analytics_rollups")
-        .upsert(rollupRow, { onConflict: "client_id,start,end" });
+      const { error: saveErr } = await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict: "client_id,start,end" });
       if (saveErr) console.error("[rebuild_rollup] Erro ao salvar rollup:", saveErr);
       else console.log(`[rebuild_rollup] Rollup salvo ✅ total_visitors=${totalVisitors}`);
 
       _serverRebuilding.delete(lockKey);
       return ok(res, {
         message: "Rollup recalculado via SQL",
-        start: rangeStart, end: rangeEnd,
-        externalFetched: 0, raw_upserted_new: 0,
+        start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0,
         total_in_db: totalVisitors, next_offset: null, done: true,
         dashboard: {
-          total_visitors:       totalVisitors,
-          avg_visitors_per_day: rollupRow.avg_visitors_per_day,
-          visitors_per_day:     rollupRow.visitors_per_day,
+          total_visitors:        totalVisitors,
+          avg_visitors_per_day:  rollupRow.avg_visitors_per_day,
+          visitors_per_day:      rollupRow.visitors_per_day,
           visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
-          gender_percent:       rollupRow.gender_percent,
-          attributes_percent:   rollupRow.attributes_percent,
-          age_pyramid_percent:  rollupRow.age_pyramid_percent,
-          avg_times_seconds: {
-            avg_visit_time_seconds: rollupRow.avg_visit_time_seconds,
-            avg_dwell_time_seconds: null,
-          },
+          gender_percent:        rollupRow.gender_percent,
+          attributes_percent:    rollupRow.attributes_percent,
+          age_pyramid_percent:   rollupRow.age_pyramid_percent,
+          avg_times_seconds: { avg_visit_time_seconds: rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds: null },
         },
         stored_rollup: !saveErr,
       });
     }
 
-    // ✅ FIX: track the pagination total from the API to know when we are truly done.
+    // ── Paginação da API externa ──────────────────────────────────────────────
     let apiReportedTotal: number | null = null;
     let lastSig: string | null = null;
     let pageCount = 0;
 
     while (true) {
-      // ✅ FIX: check time BEFORE fetching, but only break if we've already collected
-      // at least some pages — never stop on the very first page.
-      if (pageCount > 0 && Date.now() - startedAt > MAX_MS) {
-        console.log(`[Sync] Tempo limite atingido após ${pageCount} páginas, offset=${offset}`);
-        break;
-      }
-      if (++pageCount > MAX_PAGES) {
-        console.log(`[Sync] Limite de páginas atingido: ${MAX_PAGES}`);
-        break;
-      }
+      if (pageCount > 0 && Date.now() - startedAt > MAX_MS) { console.log(`[Sync] Tempo limite após ${pageCount} páginas`); break; }
+      if (++pageCount > MAX_PAGES) { console.log(`[Sync] Limite de páginas: ${MAX_PAGES}`); break; }
 
       const resp = await fetch(analyticsUrl, { method:"POST", headers, body: JSON.stringify({...baseBody, limit, offset}) });
-      if (!resp.ok) {
-        const txt = await resp.text();
-        return bad(res, resp.status, { error: "Erro na API externa", details: txt });
-      }
+      if (!resp.ok) { const txt = await resp.text(); return bad(res, resp.status, { error: "Erro na API externa", details: txt }); }
 
       const json = await resp.json();
       const page = Array.isArray(json?.payload) ? json.payload : [];
 
-      // ✅ FIX: capture the API-reported total on first page and reuse it.
       if (apiReportedTotal === null) {
         const totalNum = Number(json?.pagination?.total);
         if (Number.isFinite(totalNum) && totalNum > 0) apiReportedTotal = totalNum;
       }
 
       if (page.length > 0) {
-        const first: any = page[0];
-        const last: any = page[page.length - 1];
-        const sig = sha256(JSON.stringify([
-          offset,
-          page.length,
-          first?.visitor_id ?? null,
-          first?.start ?? first?.timestamp ?? null,
-          last?.visitor_id ?? null,
-          last?.start ?? last?.timestamp ?? null,
-        ]));
-        // ✅ FIX: duplicate page detection resets offset to signal done, not re-zero
-        if (lastSig && sig === lastSig) {
-          console.log("[Sync] Página duplicada detectada — parando paginação.");
-          offset = 0;
-          break;
-        }
+        const first: any = page[0]; const last: any = page[page.length - 1];
+        const sig = sha256(JSON.stringify([offset, page.length, first?.visitor_id??null, first?.start??first?.timestamp??null, last?.visitor_id??null, last?.start??last?.timestamp??null]));
+        if (lastSig && sig === lastSig) { console.log("[Sync] Página duplicada — parando."); offset = 0; break; }
         lastSig = sig;
         combined.push(...page);
       }
 
-      // ✅ FIX: proper termination — stop when page is short, or we've hit the reported total
-      if (page.length < limit) {
-        offset = 0;
-        break;
-      }
-      if (apiReportedTotal !== null && offset + page.length >= apiReportedTotal) {
-        offset = 0;
-        break;
-      }
-      if (page.length === 0) {
-        offset = 0;
-        break;
-      }
+      if (page.length < limit)                                              { offset = 0; break; }
+      if (apiReportedTotal !== null && offset + page.length >= apiReportedTotal) { offset = 0; break; }
+      if (page.length === 0)                                                { offset = 0; break; }
 
       offset += limit;
-      if (offset > 10_000_000) {
-        console.warn("[Sync] offset muito alto, interrompendo por segurança");
-        break;
-      }
+      if (offset > 10_000_000) { console.warn("[Sync] offset muito alto"); break; }
     }
 
-    // ✅ FIX: offset === 0 means we finished naturally; otherwise we timed out mid-pagination
     const next_offset = offset === 0 ? null : offset;
     const done = next_offset === null;
 
-    // ── If no new data from API, use SQL RPC to rebuild rollup from DB ──────────
+    // ── Sem dados novos da API → rebuild do banco ─────────────────────────────
     if (combined.length === 0) {
       if (deviceNums.length > 0) {
         const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
-        if (rows.length === 0) {
-          return ok(res, { message: "Sem dados no período informado", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
-        }
+        if (rows.length === 0) return ok(res, { message: "Sem dados", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
         const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
         return ok(res, {
-          message: "Sem dados novos na API — rollup recalculado (filtro por dispositivo)",
+          message: "Sem dados novos na API — rollup recalculado (dispositivo)",
           start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0,
           total_in_db: rr.total_visitors, next_offset: null, done: true,
           dashboard: {
-            total_visitors: rr.total_visitors,
-            avg_visitors_per_day: rr.avg_visitors_per_day,
-            visitors_per_day: rr.visitors_per_day,
-            visitors_per_hour_avg: rr.visitors_per_hour_avg,
-            gender_percent: rr.gender_percent,
-            attributes_percent: rr.attributes_percent,
+            total_visitors: rr.total_visitors, avg_visitors_per_day: rr.avg_visitors_per_day,
+            visitors_per_day: rr.visitors_per_day, visitors_per_hour_avg: rr.visitors_per_hour_avg,
+            gender_percent: rr.gender_percent, attributes_percent: rr.attributes_percent,
             age_pyramid_percent: rr.age_pyramid_percent,
             avg_times_seconds: { avg_visit_time_seconds: rr.avg_visit_time_seconds, avg_dwell_time_seconds: rr.avg_dwell_time_seconds },
           },
@@ -740,21 +652,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       }
 
-      const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
-        p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd,
-      });
+      const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", { p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd });
       if (!rpcErr && rpcData) {
         const stats = rpcData as any;
         const totalVisitors = Number(stats?.total_visitors ?? 0);
         if (totalVisitors > 0) {
           const rollupRow = {
             client_id, start: rangeStart, end: rangeEnd,
-            total_visitors: totalVisitors,
-            avg_visitors_per_day: stats.avg_visitors_per_day ?? 0,
-            visitors_per_day: stats.visitors_per_day ?? {},
-            visitors_per_hour_avg: stats.visitors_per_hour_avg ?? {},
-            age_pyramid_percent: stats.age_pyramid_percent ?? {},
-            gender_percent: stats.gender_percent ?? {},
+            total_visitors: totalVisitors, avg_visitors_per_day: stats.avg_visitors_per_day ?? 0,
+            visitors_per_day: stats.visitors_per_day ?? {}, visitors_per_hour_avg: stats.visitors_per_hour_avg ?? {},
+            age_pyramid_percent: stats.age_pyramid_percent ?? {}, gender_percent: stats.gender_percent ?? {},
             attributes_percent: stats.attributes_percent ?? {},
             avg_visit_time_seconds: stats.avg_visit_time_seconds ?? null,
             avg_dwell_time_seconds: null, avg_contact_time_seconds: null,
@@ -766,12 +673,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0,
             total_in_db: totalVisitors, next_offset: null, done: true,
             dashboard: {
-              total_visitors: totalVisitors,
-              avg_visitors_per_day: rollupRow.avg_visitors_per_day,
-              visitors_per_day: rollupRow.visitors_per_day,
-              visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
-              gender_percent: rollupRow.gender_percent,
-              attributes_percent: rollupRow.attributes_percent,
+              total_visitors: totalVisitors, avg_visitors_per_day: rollupRow.avg_visitors_per_day,
+              visitors_per_day: rollupRow.visitors_per_day, visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
+              gender_percent: rollupRow.gender_percent, attributes_percent: rollupRow.attributes_percent,
               age_pyramid_percent: rollupRow.age_pyramid_percent,
               avg_times_seconds: { avg_visit_time_seconds: rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds: null },
             },
@@ -779,10 +683,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           });
         }
       }
-      return ok(res, { message: "Sem dados no período informado", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
+      return ok(res, { message: "Sem dados", start: rangeStart, end: rangeEnd, externalFetched: 0, raw_upserted_new: 0, next_offset: null, done: true, dashboard: null, stored_rollup: false });
     }
 
-    // ── Upsert new rows ───────────────────────────────────────────────────────
+    // ── Upsert novos registros ────────────────────────────────────────────────
     const toUpsert = buildAndDeduplicateRows(combined, client_id);
     let upserted = 0;
     for (let i = 0; i < toUpsert.length; i += 500) {
@@ -793,18 +697,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       else upserted += data?.length ?? 0;
     }
 
-    // ── After upserting new rows, return done status ─────────────────────────
-    // ✅ We do NOT rebuild the rollup here — the dashboard will call rebuild_rollup
-    // separately after all pages are done. This avoids double DB reads and timeouts.
     return ok(res, {
       message: done ? "Sincronização concluída" : "Sincronização parcial — continue chamando",
       start: rangeStart, end: rangeEnd,
       externalFetched: combined.length, raw_upserted_new: upserted,
-      total_in_db: null,
-      next_offset, done,
-      dashboard: null,
-      stored_rollup: false,
+      total_in_db: null, next_offset, done, dashboard: null, stored_rollup: false,
     });
+
   } catch (err: any) {
     console.error("Erro inesperado:", err);
     return bad(res, 500, { error: "Erro inesperado", details: err?.message || String(err) });
