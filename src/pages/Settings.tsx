@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2 } from 'lucide-react';
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
@@ -9,7 +9,11 @@ export function Settings() {
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
   const [availableWidgets, setAvailableWidgets] = useState<WidgetType[]>([]);
   const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
-  
+
+  const SPANS = [3, 4, 6, 8, 12] as const;
+  type Span = typeof SPANS[number];
+  const [widgetLayout, setWidgetLayout] = useState<Record<string, { colSpanLg?: Span; heightPx?: number }>>({});
+
   // Clients State
   const [clients, setClients] = useState<{ id: string; name: string }[]>([]);
 
@@ -32,10 +36,46 @@ export function Settings() {
     fetchClients();
   }, []);
 
-  const resolveWidgetIds = (widgetsConfig: any): string[] | null => {
-    if (Array.isArray(widgetsConfig)) return widgetsConfig.filter((x) => typeof x === 'string');
-    if (widgetsConfig && Array.isArray(widgetsConfig.widget_ids)) return widgetsConfig.widget_ids.filter((x: any) => typeof x === 'string');
-    return null;
+  const normalizeSpan = (v: any) => {
+    const n = Number(v);
+    return (SPANS as readonly number[]).includes(n) ? (n as (typeof SPANS)[number]) : null;
+  };
+
+  const defaultSpanForSize = (size: WidgetType['size']) => {
+    if (size === 'full') return 12;
+    if (size === 'third') return 4;
+    if (size === 'quarter') return 3;
+    if (size === '2/3') return 8;
+    return 6;
+  };
+
+  const clampNum = (v: any, min: number, max: number, fallback: number) => {
+    const n = Number(v);
+    if (!Number.isFinite(n)) return fallback;
+    return Math.min(max, Math.max(min, n));
+  };
+
+  const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> } => {
+    const ids = Array.isArray(widgetsConfig)
+      ? widgetsConfig.filter((x) => typeof x === 'string')
+      : widgetsConfig && Array.isArray(widgetsConfig.widget_ids)
+        ? widgetsConfig.widget_ids.filter((x: any) => typeof x === 'string')
+        : null;
+
+    const rawLayout = widgetsConfig && typeof widgetsConfig === 'object' ? (widgetsConfig.widget_layout ?? widgetsConfig.widgetLayout) : null;
+    const wl: Record<string, { colSpanLg?: Span; heightPx?: number }> = {};
+    if (rawLayout && typeof rawLayout === 'object') {
+      for (const [wid, cfg] of Object.entries(rawLayout)) {
+        const id = String(wid);
+        const span = normalizeSpan((cfg as any)?.colSpanLg ?? cfg);
+        const heightPx = clampNum((cfg as any)?.heightPx, 180, 1200, NaN);
+
+        if (span) wl[id] = { ...(wl[id] || {}), colSpanLg: span };
+        if (Number.isFinite(heightPx)) wl[id] = { ...(wl[id] || {}), heightPx: Math.round(heightPx) };
+      }
+    }
+
+    return { ids, widgetLayout: wl };
   };
 
   useEffect(() => {
@@ -62,20 +102,20 @@ export function Settings() {
       let widgetsConfig = await fetchConfig(isGlobal ? 'global' : 'client');
       if (!widgetsConfig && !isGlobal) widgetsConfig = await fetchConfig('global');
 
-      let ids = resolveWidgetIds(widgetsConfig);
+      let resolved = resolveDashboardConfig(widgetsConfig);
 
-      if (!ids) {
+      if (!resolved.ids) {
         const storageKey = isGlobal ? 'dashboard-config-global' : `dashboard-config-${selectedScope}`;
         const savedConfig = localStorage.getItem(storageKey);
-        if (savedConfig) ids = resolveWidgetIds(JSON.parse(savedConfig));
-        if (!ids && !isGlobal) {
+        if (savedConfig) resolved = resolveDashboardConfig(JSON.parse(savedConfig));
+        if (!resolved.ids && !isGlobal) {
           const globalConfig = localStorage.getItem('dashboard-config-global');
-          if (globalConfig) ids = resolveWidgetIds(JSON.parse(globalConfig));
+          if (globalConfig) resolved = resolveDashboardConfig(JSON.parse(globalConfig));
         }
       }
 
-      const finalIds = ids && ids.length
-        ? ids
+      const finalIds = resolved.ids && resolved.ids.length
+        ? resolved.ids
         : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'journey', 'campaigns'];
 
       const active = finalIds
@@ -86,6 +126,7 @@ export function Settings() {
       if (!cancelled) {
         setActiveWidgets(active);
         setAvailableWidgets(available);
+        setWidgetLayout(resolved.widgetLayout);
       }
     })();
 
@@ -103,8 +144,110 @@ export function Settings() {
   const removeWidget = (widget: WidgetType) => {
     setAvailableWidgets([...availableWidgets, widget]);
     setActiveWidgets(activeWidgets.filter(w => w.id !== widget.id));
+    setWidgetLayout((prev) => {
+      const next = { ...prev };
+      delete next[widget.id];
+      return next;
+    });
     setSaveStatus('idle');
   };
+
+  const previewGridRef = useRef<HTMLDivElement | null>(null);
+  const resizingRef = useRef<null | {
+    mode: 'x' | 'y';
+    widgetId: string;
+    startX: number;
+    startY: number;
+    startSpan: number;
+    defaultSpan: number;
+    gridWidth: number;
+    startHeight: number;
+  }>(null);
+
+  const closestSpan = (n: number): Span => {
+    let best: Span = SPANS[0];
+    let bestDist = Number.POSITIVE_INFINITY;
+    for (const s of SPANS) {
+      const d = Math.abs(s - n);
+      if (d < bestDist) { best = s; bestDist = d; }
+    }
+    return best;
+  };
+
+  const onResizeMove = useCallback((e: MouseEvent) => {
+    const r = resizingRef.current;
+    if (!r) return;
+
+    if (r.mode === 'x') {
+      const colW = Math.max(1, r.gridWidth / 12);
+      const raw = r.startSpan + (e.clientX - r.startX) / colW;
+      const snapped = closestSpan(Math.max(3, Math.min(12, Math.round(raw))));
+
+      setWidgetLayout((prev) => {
+        const next = { ...prev };
+        const prevCfg = next[r.widgetId] || {};
+        if (Number(snapped) === Number(r.defaultSpan)) {
+          const { heightPx } = prevCfg as any;
+          if (heightPx == null) delete next[r.widgetId];
+          else next[r.widgetId] = { heightPx };
+        } else {
+          next[r.widgetId] = { ...prevCfg, colSpanLg: snapped };
+        }
+        return next;
+      });
+      setSaveStatus('idle');
+      return;
+    }
+
+    const nextHeight = clampNum(r.startHeight + (e.clientY - r.startY), 180, 1200, r.startHeight);
+    const snappedH = Math.round(nextHeight / 10) * 10;
+
+    setWidgetLayout((prev) => {
+      const next = { ...prev };
+      const prevCfg = next[r.widgetId] || {};
+      next[r.widgetId] = { ...prevCfg, heightPx: snappedH };
+      return next;
+    });
+    setSaveStatus('idle');
+  }, []);
+
+  const stopResize = useCallback(() => {
+    resizingRef.current = null;
+    window.removeEventListener('mousemove', onResizeMove);
+    window.removeEventListener('mouseup', stopResize);
+  }, [onResizeMove]);
+
+  const startResizeX = useCallback((e: React.MouseEvent, widget: WidgetType) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (window.innerWidth < 1024) return;
+
+    const current = Number(widgetLayout[widget.id]?.colSpanLg) || defaultSpanForSize(widget.size);
+    const def = defaultSpanForSize(widget.size);
+    const gridWidth = previewGridRef.current?.getBoundingClientRect().width || window.innerWidth;
+
+    resizingRef.current = { mode: 'x', widgetId: widget.id, startX: e.clientX, startY: 0, startSpan: current, defaultSpan: def, gridWidth, startHeight: 0 };
+    window.addEventListener('mousemove', onResizeMove);
+    window.addEventListener('mouseup', stopResize);
+  }, [onResizeMove, stopResize, widgetLayout]);
+
+  const startResizeY = useCallback((e: React.MouseEvent, widget: WidgetType) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (window.innerWidth < 1024) return;
+
+    const card = (e.currentTarget as HTMLElement).parentElement as HTMLElement | null;
+    const rect = card?.getBoundingClientRect();
+    const startHeight = rect?.height || 320;
+
+    resizingRef.current = { mode: 'y', widgetId: widget.id, startX: 0, startY: e.clientY, startSpan: 0, defaultSpan: 0, gridWidth: 0, startHeight };
+    window.addEventListener('mousemove', onResizeMove);
+    window.addEventListener('mouseup', stopResize);
+  }, [onResizeMove, stopResize]);
+
+  useEffect(() => () => stopResize(), [stopResize]);
 
   const moveWidget = (index: number, direction: 'up' | 'down') => {
     const newWidgets = [...activeWidgets];
@@ -157,6 +300,14 @@ export function Settings() {
       const clientId = isGlobal ? null : selectedScope;
       const widgetIds = activeWidgets.map((w) => w.id);
 
+      const widgetLayoutPayload: Record<string, { colSpanLg?: number; heightPx?: number }> = {};
+      Object.entries(widgetLayout).forEach(([wid, cfg]) => {
+        const span = normalizeSpan((cfg as any)?.colSpanLg);
+        const h = clampNum((cfg as any)?.heightPx, 180, 1200, NaN);
+        if (span) widgetLayoutPayload[wid] = { ...(widgetLayoutPayload[wid] || {}), colSpanLg: span };
+        if (Number.isFinite(h)) widgetLayoutPayload[wid] = { ...(widgetLayoutPayload[wid] || {}), heightPx: Math.round(h) };
+      });
+
       const findQ = supabase
         .from('dashboard_configs')
         .select('id, updated_at')
@@ -172,7 +323,7 @@ export function Settings() {
       const payload = {
         layout_name: layoutName,
         client_id: clientId,
-        widgets_config: widgetIds,
+        widgets_config: { widget_ids: widgetIds, widget_layout: widgetLayoutPayload },
         updated_at: new Date().toISOString(),
       };
 
@@ -185,7 +336,7 @@ export function Settings() {
       }
 
       const storageKey = isGlobal ? 'dashboard-config-global' : `dashboard-config-${selectedScope}`;
-      localStorage.setItem(storageKey, JSON.stringify(widgetIds));
+      localStorage.setItem(storageKey, JSON.stringify({ widget_ids: widgetIds, widget_layout: widgetLayoutPayload }));
 
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
@@ -291,6 +442,7 @@ export function Settings() {
                       <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Layout Ativo ({selectedScope === 'global' ? 'Global' : 'Rede Selecionada'})</h3>
                       <p className="text-xs text-gray-500">Arraste para reordenar</p>
                    </div>
+
                    <div className="bg-gray-950/50 border border-gray-800 rounded-2xl p-6 min-h-[400px] space-y-3">
                       {activeWidgets.map((widget, index) => (
                         <div key={widget.id} className="flex items-center gap-4 bg-gray-900 border border-gray-800 p-4 rounded-xl group hover:border-indigo-500/50 transition-all shadow-sm">
@@ -335,19 +487,25 @@ export function Settings() {
                   </div>
                 </div>
                 
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6">
+                <div ref={previewGridRef} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6 p-6">
                   {activeWidgets.map((widget, index) => {
                     const Component = WIDGET_MAP[widget.id];
                     if (!Component) return null;
 
-                    // Grid Span Logic
-                    let colSpan = 'lg:col-span-6'; // half default
-                    if (widget.size === 'full') colSpan = 'lg:col-span-12';
-                    if (widget.size === 'third') colSpan = 'lg:col-span-4';
-                    if (widget.size === 'quarter') colSpan = 'lg:col-span-3';
-                    if (widget.size === '2/3') colSpan = 'lg:col-span-8';
+                    let spanLg = Number(widgetLayout[widget.id]?.colSpanLg) || defaultSpanForSize(widget.size);
+                    if (![3, 4, 6, 8, 12].includes(spanLg)) spanLg = defaultSpanForSize(widget.size);
+
+                    let lgSpan = 'lg:col-span-6';
+                    if (spanLg === 12) lgSpan = 'lg:col-span-12';
+                    if (spanLg === 8) lgSpan = 'lg:col-span-8';
+                    if (spanLg === 4) lgSpan = 'lg:col-span-4';
+                    if (spanLg === 3) lgSpan = 'lg:col-span-3';
+
+                    const mdSpan = spanLg >= 8 ? 'md:col-span-2' : 'md:col-span-1';
 
                     const isDragging = draggedIndex === index;
+                    const heightPx = Number(widgetLayout[widget.id]?.heightPx);
+                    const widgetStyle = Number.isFinite(heightPx) ? { height: Math.round(heightPx) } : undefined;
 
                     return (
                       <div 
@@ -356,22 +514,36 @@ export function Settings() {
                         onDragStart={(e) => handleDragStart(e, index)}
                         onDragOver={(e) => handleDragOver(e, index)}
                         onDragEnd={handleDragEnd}
-                        className={`col-span-1 ${colSpan} relative group transition-all duration-300 ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-indigo-500 rounded-xl' : ''}`}
+                        style={widgetStyle}
+                        className={`col-span-1 ${mdSpan} ${lgSpan} relative group transition-all duration-300 flex flex-col ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-indigo-500 rounded-xl' : ''}`}
                       >
-                        {/* Drag Handle Overlay */}
-                        <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex gap-1 bg-gray-900/90 p-1.5 rounded-lg backdrop-blur-sm border border-gray-700 shadow-xl cursor-move">
-                           <div className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Arrastar para mover">
-                             <GripVertical size={16} />
-                           </div>
-                           <button 
-                             onClick={() => removeWidget(widget)}
-                             className="p-1.5 hover:bg-red-500/20 rounded text-gray-300 hover:text-red-400 ml-1 border-l border-gray-700 pl-2 transition-colors"
-                             title="Remover"
-                           >
-                             <X size={14} />
-                           </button>
+                        <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-gray-900/90 p-1.5 rounded-lg backdrop-blur-sm border border-gray-700 shadow-xl cursor-move">
+                          <div className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Arrastar para mover">
+                            <GripVertical size={16} />
+                          </div>
+                          <button
+                            type="button"
+                            onMouseDown={(e) => e.stopPropagation()}
+                            onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeWidget(widget); }}
+                            className="p-1.5 hover:bg-red-500/20 rounded text-gray-300 hover:text-red-400 ml-1 border-l border-gray-700 pl-2 transition-colors"
+                            title="Remover"
+                          >
+                            <X size={14} />
+                          </button>
                         </div>
-                        <div className={isDragging ? 'pointer-events-none' : ''}>
+                        <div
+                          className="absolute top-0 right-0 z-20 h-full w-2 cursor-ew-resize opacity-0 group-hover:opacity-100 transition-opacity"
+                          title={window.innerWidth >= 1024 ? 'Puxe para redimensionar largura' : 'Redimensionamento disponível no desktop'}
+                          onMouseDown={(e) => startResizeX(e, widget)}
+                          onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                        />
+                        <div
+                          className="absolute bottom-0 left-0 z-20 w-full h-2 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity"
+                          title={window.innerWidth >= 1024 ? 'Puxe para redimensionar altura' : 'Redimensionamento disponível no desktop'}
+                          onMouseDown={(e) => startResizeY(e, widget)}
+                          onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                        />
+                        <div className={`${isDragging ? 'pointer-events-none' : ''} flex-1 min-h-0`}>
                           <Component view="network" />
                         </div>
                       </div>

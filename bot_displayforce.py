@@ -7,22 +7,23 @@
   Fluxo:
     1. Busca clientes ativos no Supabase
     2. Acessa DisplayForce e exporta relatório via e-mail
-    3. Lê o e-mail com o anexo Excel
+    3. Lê o e-mail, extrai o LINK de download (não anexo) e baixa o ZIP
     4. Processa os dados e insere na tabela `campaigns` do Supabase
     5. O widget "Engajamento em Campanhas" no dashboard é atualizado automaticamente
 ==============================================================
   REQUISITOS:
-    pip install playwright supabase pandas openpyxl schedule imap-tools
+    pip install playwright supabase pandas openpyxl schedule imap-tools requests
     playwright install chromium
 ==============================================================
 """
 
+import io
 import os
 import re
 import time
 import imaplib
 import email
-import tempfile
+import zipfile
 import logging
 import schedule
 import threading
@@ -30,6 +31,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import pandas as pd
+import requests
 from supabase import create_client, Client
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
@@ -38,21 +40,20 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 # ──────────────────────────────────────────────────────────────
 
 # DisplayForce
-DISPLAYFORCE_URL    = "https://id.displayforce.ai/#/platforms"
-DISPLAYFORCE_EMAIL  = "bruno.lyra@globaltera.com.br"
-DISPLAYFORCE_PASS   = "Tony@2023"
-RELATORIO_EMAIL     = "rayanne.ernandez@globaltera.com.br"  # e-mail que recebe o relatório
+DISPLAYFORCE_URL   = "https://id.displayforce.ai/#/platforms"
+DISPLAYFORCE_EMAIL = "bruno.lyra@globaltera.com.br"
+DISPLAYFORCE_PASS  = "Tony@2023"
+RELATORIO_EMAIL    = "rayanne.ernandez@globaltera.com.br"  # e-mail que recebe o relatório
 
 # E-mail IMAP para receber o relatório da DisplayForce
-# Senha no formato "xxxx xxxx xxxx xxxx" = Google App Password (Gmail/Workspace)
-IMAP_SERVER         = "imap.gmail.com"
-IMAP_PORT           = 993
-IMAP_EMAIL          = "rayanne.ernandez@globaltera.com.br"  # e-mail completo para login IMAP
-IMAP_PASSWORD       = "nfav lshi hfax jhvu"                 # Google App Password
+IMAP_SERVER   = "outlook.office365.com"
+IMAP_PORT     = 993
+IMAP_EMAIL    = "rayanne.ernandez@globaltera.com.br"
+IMAP_PASSWORD = "nfav lshi hfax jhvu"
 
 # Supabase
-SUPABASE_URL        = "https://zkzpvaabjchwnnvuwuls.supabase.co"
-SUPABASE_KEY        = (
+SUPABASE_URL = "https://zkzpvaabjchwnnvuwuls.supabase.co"
+SUPABASE_KEY = (
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
     ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprenB2YWFiamNod25udnV3dWxzIiwicm9sZSI6"
     "InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTU3OTYyOSwiZXhwIjoyMDg3MTU1NjI5fQ"
@@ -60,11 +61,11 @@ SUPABASE_KEY        = (
 )
 
 # Configurações gerais
-INTERVALO_MINUTOS   = 10         # frequência de atualização
-DOWNLOAD_DIR        = Path("./downloads_displayforce")
-LOG_FILE            = "bot_displayforce.log"
-TIMEOUT_EMAIL_SEG   = 300        # aguarda até 5 min pelo e-mail da DisplayForce
-HEADLESS            = True       # False para ver o browser abrindo (útil para debug)
+INTERVALO_MINUTOS = 10
+DOWNLOAD_DIR      = Path("./downloads_displayforce")
+LOG_FILE          = "bot_displayforce.log"
+TIMEOUT_EMAIL_SEG = 300   # aguarda até 5 min pelo e-mail da DisplayForce
+HEADLESS          = True  # False para ver o browser (debug)
 
 # ──────────────────────────────────────────────────────────────
 # LOGGING
@@ -89,8 +90,7 @@ def get_supabase() -> Client:
 
 
 def buscar_clientes() -> list[dict]:
-    """Retorna todos os clientes ativos do Supabase."""
-    sb = get_supabase()
+    sb  = get_supabase()
     res = sb.table("clients").select("id, name").eq("status", "active").execute()
     clientes = res.data or []
     log.info(f"Clientes encontrados no Supabase: {[c['name'] for c in clientes]}")
@@ -98,11 +98,9 @@ def buscar_clientes() -> list[dict]:
 
 
 def upsert_campanhas(registros: list[dict]) -> int:
-    """Insere/atualiza campanhas no Supabase. Retorna quantidade de registros salvos."""
     if not registros:
         return 0
-    sb = get_supabase()
-    # Usa upsert com a constraint única (client_id, name, start_date, end_date)
+    sb  = get_supabase()
     res = sb.table("campaigns").upsert(
         registros,
         on_conflict="client_id,name,start_date,end_date"
@@ -117,7 +115,6 @@ def upsert_campanhas(registros: list[dict]) -> int:
 # ──────────────────────────────────────────────────────────────
 
 def parse_tempo_atencao(valor: str) -> int:
-    """Converte 'mm:ss' → segundos. Ex: '00:30' → 30, '01:15' → 75."""
     try:
         if not valor or str(valor).strip() in ("", "nan", "—"):
             return 0
@@ -132,7 +129,6 @@ def parse_tempo_atencao(valor: str) -> int:
 
 
 def parse_data(valor) -> str | None:
-    """Converte datas no formato 'DD/MM/YYYY HH:MM:SS' para ISO 8601."""
     try:
         if pd.isna(valor) or str(valor).strip() in ("", "nan"):
             return None
@@ -151,16 +147,8 @@ def parse_data(valor) -> str | None:
 
 
 def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
-    """
-    Lê o Excel da DisplayForce e retorna lista de registros no formato da tabela campaigns.
-
-    Colunas esperadas no Excel:
-        MIDIA_VALIDADA | INICIO_EXIBIÇÃO | FIM_EXIBIÇÃO | Tempo (Dias) |
-        Tempo (hh:mm:ss) | VISITANTES | TEMPO_MED ATENÇÃO (mm:ss)
-    """
     log.info(f"  Processando Excel: {caminho_arquivo}")
     try:
-        # Tenta ler como xlsx; se falhar, tenta como csv
         try:
             df = pd.read_excel(caminho_arquivo, engine="openpyxl")
         except Exception:
@@ -169,11 +157,9 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
         log.error(f"  Erro ao ler arquivo: {e}")
         return []
 
-    # Normaliza nomes das colunas (remove espaços extras, acentos parciais etc.)
     df.columns = [str(c).strip() for c in df.columns]
     log.info(f"  Colunas encontradas: {list(df.columns)}")
 
-    # Mapeamento flexível de colunas
     COL_MAP = {
         "name":          ["MIDIA_VALIDADA", "MÍDIA_VALIDADA", "MIDIA VALIDADA", "Campanha", "Campaign"],
         "start_date":    ["INICIO_EXIBIÇÃO", "INÍCIO_EXIBIÇÃO", "INICIO EXIBIÇÃO", "Início", "Start"],
@@ -189,17 +175,16 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
         for op in opcoes:
             if op in df.columns:
                 return op
-            # busca parcial
             for col in df.columns:
                 if op.lower() in col.lower():
                     return col
         return None
 
-    mapa = {campo: encontrar_coluna(df, opcoes) for campo, opcoes in COL_MAP.items()}
+    mapa  = {campo: encontrar_coluna(df, opcoes) for campo, opcoes in COL_MAP.items()}
     log.info(f"  Mapeamento de colunas: {mapa}")
 
     registros = []
-    agora = datetime.now(timezone.utc).isoformat()
+    agora     = datetime.now(timezone.utc).isoformat()
 
     for _, row in df.iterrows():
         nome = str(row.get(mapa["name"], "")).strip() if mapa["name"] else ""
@@ -210,7 +195,7 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
             "client_id":         client_id,
             "name":              nome,
             "start_date":        parse_data(row.get(mapa["start_date"])) if mapa["start_date"] else None,
-            "end_date":          parse_data(row.get(mapa["end_date"])) if mapa["end_date"] else None,
+            "end_date":          parse_data(row.get(mapa["end_date"]))   if mapa["end_date"]   else None,
             "duration_days":     _to_float(row.get(mapa["duration_days"])) if mapa["duration_days"] else None,
             "duration_hms":      str(row.get(mapa["duration_hms"], "")).strip() if mapa["duration_hms"] else None,
             "visitors":          _to_int(row.get(mapa["visitors"])) if mapa["visitors"] else 0,
@@ -238,83 +223,197 @@ def _to_float(val) -> float | None:
 
 
 # ──────────────────────────────────────────────────────────────
-# IMAP — aguardar e baixar o e-mail da DisplayForce
+# IMAP + DOWNLOAD — aguardar e-mail e baixar o arquivo
 # ──────────────────────────────────────────────────────────────
 
-def baixar_relatorio_email(timeout_seg: int = TIMEOUT_EMAIL_SEG) -> str | None:
-    """
-    Aguarda o e-mail da DisplayForce e retorna o caminho do arquivo baixado.
-    Verifica a caixa de entrada do IMAP a cada 15 segundos.
-    """
-    log.info(f"  Aguardando e-mail com relatório em {IMAP_EMAIL}...")
-    DOWNLOAD_DIR.mkdir(exist_ok=True)
-    inicio = time.time()
-    ultimo_uid = _obter_ultimo_uid()
-
-    while time.time() - inicio < timeout_seg:
-        try:
-            caminho = _verificar_email_displayforce(ultimo_uid)
-            if caminho:
-                log.info(f"  Relatório baixado: {caminho}")
-                return caminho
-        except Exception as e:
-            log.warning(f"  Erro ao verificar e-mail: {e}")
-        time.sleep(15)
-
-    log.error("  ⏱️  Timeout: nenhum e-mail da DisplayForce recebido")
-    return None
-
-
 def _obter_ultimo_uid() -> int:
-    """Retorna o UID da mensagem mais recente para ignorar e-mails antigos."""
+    """Retorna UID da mensagem mais recente para ignorar e-mails antigos."""
     try:
         with imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT) as imap:
             imap.login(IMAP_EMAIL, IMAP_PASSWORD)
             imap.select("INBOX")
             _, data = imap.search(None, "ALL")
-            uids = data[0].split()
-            uid_atual = int(uids[-1]) if uids else 0
-            log.info(f"  📬 IMAP conectado — {len(uids)} e-mails na caixa, último UID: {uid_atual}")
-            return uid_atual
+            uids   = data[0].split()
+            ultimo = int(uids[-1]) if uids else 0
+            log.info(f"  📬 IMAP conectado — {len(uids)} e-mails na caixa, último UID: {ultimo}")
+            return ultimo
     except Exception as e:
-        log.error(f"  ❌ Erro ao conectar ao IMAP ({IMAP_SERVER}) com {IMAP_EMAIL}: {e}")
+        log.warning(f"  Erro ao obter último UID: {e}")
         return 0
 
 
+def _extrair_link_download(msg) -> str | None:
+    """
+    Varre o corpo HTML/texto do e-mail em busca do link de download.
+    Prioriza links com extensão de arquivo ou palavras-chave de relatório.
+    """
+    candidatos = []
+
+    for part in msg.walk():
+        ct = part.get_content_type()
+        if ct not in ("text/html", "text/plain"):
+            continue
+        try:
+            payload_bytes = part.get_payload(decode=True)
+            charset       = part.get_content_charset() or "utf-8"
+            corpo         = payload_bytes.decode(charset, errors="replace")
+        except Exception:
+            continue
+
+        # Coleta todos hrefs e URLs nuas
+        hrefs  = re.findall(r'href=["\']([^"\']+)["\']', corpo, re.IGNORECASE)
+        hrefs += re.findall(r'https?://\S+', corpo)
+
+        for href in hrefs:
+            href       = href.strip().rstrip(">).\"'")
+            href_lower = href.lower()
+
+            # Filtra irrelevantes
+            if any(x in href_lower for x in ("unsubscribe", "mailto:", "tracking", "pixel", "logo", ".png", ".jpg", ".gif")):
+                continue
+
+            # Prioridade 1: extensão de arquivo de dados
+            if any(href_lower.split("?")[0].endswith(ext) for ext in (".zip", ".xlsx", ".xls", ".csv")):
+                candidatos.insert(0, href)
+                continue
+
+            # Prioridade 2: URL com palavras-chave de download/relatório
+            if any(kw in href_lower for kw in (
+                "download", "report", "relatorio", "relatório",
+                "attachment", "export", "visitors", "arquivo", "file"
+            )):
+                candidatos.append(href)
+
+    # Remove duplicatas mantendo ordem
+    vistos, resultado = set(), []
+    for c in candidatos:
+        if c not in vistos:
+            vistos.add(c)
+            resultado.append(c)
+
+    if resultado:
+        log.info(f"  🔗 Links candidatos encontrados: {resultado}")
+        return resultado[0]
+    return None
+
+
+def _extrair_zip(conteudo_bytes: bytes, ts: str) -> str | None:
+    """Extrai o primeiro Excel/CSV de um ZIP em memória. Retorna caminho ou None."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(conteudo_bytes)) as z:
+            membros = [m for m in z.namelist() if Path(m).suffix.lower() in (".xlsx", ".xls", ".csv")]
+            if not membros:
+                log.warning(f"  ZIP não contém Excel/CSV. Arquivos dentro: {z.namelist()}")
+                return None
+            membro  = membros[0]
+            ext     = Path(membro).suffix.lower()
+            destino = DOWNLOAD_DIR / f"relatorio_{ts}{ext}"
+            destino.write_bytes(z.read(membro))
+            log.info(f"  📂 Extraído do ZIP: {membro} → {destino}")
+            return str(destino)
+    except zipfile.BadZipFile as e:
+        log.error(f"  ZIP inválido: {e}")
+        return None
+
+
+def _baixar_arquivo_url(url: str) -> str | None:
+    """
+    Faz GET na URL e salva o arquivo em DOWNLOAD_DIR.
+    Se for ZIP, extrai o primeiro Excel/CSV encontrado.
+    """
+    DOWNLOAD_DIR.mkdir(exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    try:
+        log.info(f"  ⬇️  Baixando arquivo de: {url}")
+        resp = requests.get(url, timeout=60, allow_redirects=True)
+        resp.raise_for_status()
+
+        # Detecta extensão pelo Content-Disposition ou pela URL
+        ext = ".zip"
+        cd  = resp.headers.get("Content-Disposition", "")
+        if cd:
+            m = re.search(r'filename=["\']?([^"\';\s]+)', cd)
+            if m:
+                ext = Path(m.group(1)).suffix.lower() or ext
+        else:
+            url_path = url.split("?")[0]
+            ext_url  = Path(url_path).suffix.lower()
+            if ext_url in (".zip", ".xlsx", ".xls", ".csv"):
+                ext = ext_url
+
+        conteudo = resp.content
+        log.info(f"  📦 {len(conteudo):,} bytes baixados (ext detectada: {ext})")
+
+        if ext == ".zip":
+            resultado = _extrair_zip(conteudo, ts)
+            if resultado:
+                return resultado
+            # Fallback: salva o ZIP mesmo assim
+            destino = DOWNLOAD_DIR / f"relatorio_{ts}.zip"
+            destino.write_bytes(conteudo)
+            log.warning(f"  ⚠️  ZIP sem Excel/CSV — salvo como: {destino}")
+            return str(destino)
+
+        destino = DOWNLOAD_DIR / f"relatorio_{ts}{ext}"
+        destino.write_bytes(conteudo)
+        log.info(f"  ✅ Arquivo salvo: {destino}")
+        return str(destino)
+
+    except requests.RequestException as e:
+        log.error(f"  ❌ Erro ao baixar arquivo: {e}")
+        return None
+
+
 def _verificar_email_displayforce(apos_uid: int) -> str | None:
-    """Verifica se chegou e-mail novo da DisplayForce com anexo Excel/ZIP."""
+    """
+    Verifica e-mails novos da DisplayForce.
+    Tenta primeiro anexo (compatibilidade futura), depois extrai link do corpo HTML.
+    """
     with imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT) as imap:
         imap.login(IMAP_EMAIL, IMAP_PASSWORD)
         imap.select("INBOX")
 
-        # Busca e-mails novos
         _, data = imap.search(None, f"UID {apos_uid + 1}:*")
-        uids = [u for u in data[0].split() if int(u) > apos_uid]
+        uids    = [u for u in data[0].split() if int(u) > apos_uid]
+
+        if uids:
+            log.info(f"  📨 {len(uids)} e-mail(s) novo(s) encontrado(s)")
 
         for uid in reversed(uids):  # mais recentes primeiro
             _, msg_data = imap.fetch(uid, "(RFC822)")
             msg = email.message_from_bytes(msg_data[0][1])
-            assunto = str(msg.get("Subject", "")).lower()
 
-            # Identifica e-mails da DisplayForce
-            remetente = str(msg.get("From", "")).lower()
+            assunto   = str(msg.get("Subject", "")).lower()
+            remetente = str(msg.get("From",    "")).lower()
+
             eh_displayforce = (
                 "displayforce" in remetente
+                or "displ"       in remetente
+                or "noreply"     in remetente   # noreply@displ.com
+                or "displ"       in assunto
                 or "displayforce" in assunto
-                or "relatório" in assunto
-                or "report" in assunto
-                or "visitors" in assunto
+                or "relatório"   in assunto
+                or "relatorio"   in assunto
+                or "report"      in assunto
+                or "visitors"    in assunto
+                or "visitor"     in assunto
             )
+
             if not eh_displayforce:
+                log.debug(f"  E-mail UID {uid} ignorado — de: {remetente} | assunto: {assunto}")
                 continue
 
-            # Procura anexo Excel ou ZIP
-            for part in msg.walk():
-                ct = part.get_content_type()
-                nome = part.get_filename() or ""
-                extensao = Path(nome).suffix.lower()
+            log.info(f"  ✉️  E-mail DisplayForce detectado (UID {uid}) | assunto: '{assunto}'")
 
-                if extensao in (".xlsx", ".xls", ".csv", ".zip") or ct in (
+            # ── Tenta encontrar anexo direto ──────────────────────────────
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            for part in msg.walk():
+                ct   = part.get_content_type()
+                nome = part.get_filename() or ""
+                ext  = Path(nome).suffix.lower()
+
+                if ext in (".xlsx", ".xls", ".csv", ".zip") or ct in (
                     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     "application/vnd.ms-excel",
                     "application/zip",
@@ -323,23 +422,51 @@ def _verificar_email_displayforce(apos_uid: int) -> str | None:
                     payload = part.get_payload(decode=True)
                     if not payload:
                         continue
-
-                    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    destino = DOWNLOAD_DIR / f"relatorio_{ts}{extensao}"
-
-                    # Se for ZIP, extrai o primeiro Excel/CSV
-                    if extensao == ".zip" or ct == "application/zip":
-                        import zipfile, io
-                        with zipfile.ZipFile(io.BytesIO(payload)) as z:
-                            for member in z.namelist():
-                                if Path(member).suffix.lower() in (".xlsx", ".xls", ".csv"):
-                                    destino = DOWNLOAD_DIR / f"relatorio_{ts}{Path(member).suffix.lower()}"
-                                    destino.write_bytes(z.read(member))
-                                    return str(destino)
+                    log.info(f"  📎 Anexo encontrado: {nome}")
+                    if ext == ".zip" or ct == "application/zip":
+                        resultado = _extrair_zip(payload, ts)
+                        if resultado:
+                            return resultado
                     else:
+                        destino = DOWNLOAD_DIR / f"relatorio_{ts}{ext or '.xlsx'}"
                         destino.write_bytes(payload)
+                        log.info(f"  📁 Anexo salvo: {destino}")
                         return str(destino)
 
+            # ── Sem anexo → extrai link do corpo HTML e baixa ─────────────
+            log.info("  📧 Sem anexo — buscando link de download no corpo do e-mail...")
+            link = _extrair_link_download(msg)
+            if link:
+                caminho = _baixar_arquivo_url(link)
+                if caminho:
+                    return caminho
+            else:
+                log.warning("  ⚠️  E-mail DisplayForce sem link/anexo reconhecível")
+
+    return None
+
+
+def baixar_relatorio_email(timeout_seg: int = TIMEOUT_EMAIL_SEG) -> str | None:
+    """
+    Aguarda o e-mail da DisplayForce e retorna o caminho do arquivo baixado.
+    Verifica a caixa IMAP a cada 15 segundos até timeout_seg.
+    """
+    log.info(f"  Aguardando e-mail com relatório em {IMAP_EMAIL}...")
+    DOWNLOAD_DIR.mkdir(exist_ok=True)
+    inicio     = time.time()
+    ultimo_uid = _obter_ultimo_uid()
+
+    while time.time() - inicio < timeout_seg:
+        try:
+            caminho = _verificar_email_displayforce(ultimo_uid)
+            if caminho:
+                log.info(f"  ✅ Relatório baixado: {caminho}")
+                return caminho
+        except Exception as e:
+            log.warning(f"  Erro ao verificar e-mail: {e}")
+        time.sleep(15)
+
+    log.error(f"  ⏱️  Timeout: nenhum e-mail da DisplayForce recebido em {timeout_seg}s")
     return None
 
 
@@ -347,18 +474,91 @@ def _verificar_email_displayforce(apos_uid: int) -> str | None:
 # PLAYWRIGHT — automação do browser na DisplayForce
 # ──────────────────────────────────────────────────────────────
 
-def _clicar_texto(page, opcoes: list, timeout_ms: int = 8000, descricao: str = "") -> bool:
-    """Tenta clicar num elemento por uma lista de textos possíveis. Retorna True se clicou."""
-    for texto in opcoes:
-        try:
-            el = page.get_by_text(texto, exact=False).first
-            if el.is_visible(timeout=timeout_ms):
-                el.click()
-                log.info(f"  ✔ Clicado: '{texto}'" + (f" ({descricao})" if descricao else ""))
-                return True
-        except Exception:
-            continue
-    return False
+def _screenshot(page, nome: str, cliente: str):
+    """Salva screenshot de debug."""
+    try:
+        ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
+        destino = DOWNLOAD_DIR / f"debug_{nome}_{cliente}_{ts}.png"
+        page.screenshot(path=str(destino))
+        log.info(f"  📸 Screenshot salvo: {destino}")
+    except Exception:
+        pass
+
+
+def fazer_login_displayforce(page) -> bool:
+    """Realiza login na DisplayForce. Retorna True se bem-sucedido."""
+    log.info("Acessando DisplayForce...")
+    page.goto(DISPLAYFORCE_URL)
+    page.wait_for_load_state("networkidle", timeout=30000)
+    page.wait_for_timeout(5000)
+
+    url_atual = page.url
+    log.info(f"  URL atual: {url_atual}")
+
+    # Se já estiver logado
+    if "login" not in url_atual.lower() and "platforms" in url_atual.lower():
+        log.info("  ✅ Já logado")
+        return True
+
+    try:
+        # ── Campo de e-mail ───────────────────────────────────────────────
+        inputs_visiveis = page.locator("input:visible").all()
+        if not inputs_visiveis:
+            log.error("  ❌ Nenhum input visível na página de login")
+            return False
+
+        log.info("  Usando primeiro input visível como campo de e-mail")
+        inputs_visiveis[0].fill(DISPLAYFORCE_EMAIL)
+        page.wait_for_timeout(300)
+
+        # ── Login em 1 etapa (e-mail + senha na mesma tela) ───────────────
+        senha_fields = page.locator("input[type='password']:visible").all()
+        if senha_fields:
+            log.info("  Login em 1 etapa: preenchendo senha diretamente")
+            senha_fields[0].fill(DISPLAYFORCE_PASS)
+            page.wait_for_timeout(300)
+        else:
+            # ── Login em 2 etapas: clicar em "Próximo" primeiro ───────────
+            log.info("  Login em 2 etapas: procurando botão Próximo/Continuar...")
+            btn_proximo = page.locator(
+                "button:visible"
+            ).filter(has_text=re.compile(r"próximo|proximo|next|continuar|continue|avançar", re.I)).first
+            btn_proximo.click(timeout=5000)
+            log.info("  Botão 'próximo' clicado")
+            page.wait_for_timeout(2000)
+
+            senha_field = page.locator("input[type='password']:visible").first
+            senha_field.wait_for(state="visible", timeout=8000)
+            log.info("  Campo de senha apareceu (step 2)")
+            senha_field.fill(DISPLAYFORCE_PASS)
+            page.wait_for_timeout(300)
+
+        # ── Botão de entrar ───────────────────────────────────────────────
+        btn_login = page.locator("button:visible").filter(
+            has_text=re.compile(r"entrar|login|sign.?in|acessar|confirmar", re.I)
+        ).first
+        btn_login.click(timeout=5000)
+        log.info(f"  Botão de login clicado")
+
+        page.wait_for_load_state("networkidle", timeout=20000)
+        page.wait_for_timeout(3000)
+
+        url_pos = page.url
+        log.info(f"  URL após login: {url_pos}")
+
+        if "login" not in url_pos.lower() or "platforms" in url_pos.lower():
+            log.info("  ✅ Login realizado com sucesso")
+            return True
+        else:
+            log.error("  ❌ Login falhou — verifique as credenciais")
+            return False
+
+    except PlaywrightTimeout as e:
+        log.error(f"  ❌ Timeout ao fazer login: {e}")
+        return False
+    except Exception as e:
+        log.error(f"  ❌ Erro inesperado no login: {e}")
+        return False
 
 
 def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_fim: str) -> bool:
@@ -368,343 +568,158 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
     """
     try:
         log.info(f"  Exportando relatório para: {nome_cliente}")
-
-        # ── 1. Garante que estamos na lista de plataformas ───────────────
-        # Volta sempre para a página principal antes de cada cliente
-        if "id.displayforce.ai" not in page.url or "platforms" not in page.url:
-            page.goto("https://id.displayforce.ai/#/platforms")
-            page.wait_for_timeout(4000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
-
-        page.wait_for_timeout(2000)
-
-        # Rola para carregar todos os cards
-        for _ in range(6):
-            page.keyboard.press("End")
-            page.wait_for_timeout(600)
-        page.keyboard.press("Home")
-        page.wait_for_timeout(800)
-
-        # Lista TODOS os textos da página para diagnóstico completo
-        try:
-            todos_textos = page.locator("body").all_text_contents()
-            texto_pagina = " | ".join(todos_textos)[:3000]
-            log.info(f"  📄 Conteúdo completo da página (trecho): {texto_pagina[:800]}")
-        except Exception:
-            pass
-
-        _screenshot_debug(page, f"01_plataformas_{nome_cliente}")
-
-        # ── 2. Navega diretamente pelo href do link do cliente ────────────
-        # Pegar o href evita problemas com eventos de clique em SPAs React
         nome_lower = nome_cliente.strip().lower()
-        url_antes_clique = page.url
-        cliente_clicado = False
 
-        # Extrai o href do link da plataforma via JS
-        href_cliente = page.evaluate(f"""
-            () => {{
-                const alvo = '{nome_lower}';
-                // Tenta primeiro pelos links com classe platformName (descoberto no debug)
-                const seletores = [
-                    'a[class*="platformName"]',
-                    'a[class*="platform"]',
-                    'a[href*="platform"]',
-                    'li a', 'a'
-                ];
-                for (const sel of seletores) {{
-                    const links = document.querySelectorAll(sel);
-                    for (const link of links) {{
-                        const txt = link.textContent.trim().toLowerCase();
-                        if (txt === alvo || txt.includes(alvo)) {{
-                            // Retorna href absoluto ou relativo
-                            return link.href || link.getAttribute('href');
-                        }}
-                    }}
-                }}
-                return null;
-            }}
-        """)
-
-        log.info(f"  href encontrado para '{nome_lower}': {href_cliente}")
-
-        if href_cliente and href_cliente not in ("", "javascript:void(0)", "#", None):
-            # Navega diretamente para o URL do cliente
-            page.goto(href_cliente)
-            page.wait_for_timeout(4000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=15000)
-            except Exception:
-                pass
-            page.wait_for_timeout(2000)
-
-            if page.url != url_antes_clique:
-                cliente_clicado = True
-                log.info(f"  ✔ Navegou via href direto: {page.url}")
-            else:
-                log.warning(f"  ⚠ goto não mudou URL, ainda em: {page.url}")
-        else:
-            log.warning(f"  href inválido ou não encontrado: '{href_cliente}'")
-
-        # Fallback: tenta subdomain (padrão: https://{slug}.displayforce.ai/)
-        if not cliente_clicado:
-            for slug in [nome_lower.strip(), nome_lower.strip().replace(" ", "")]:
-                for padrao_url in [
-                    f"https://{slug}.displayforce.ai/",
-                    f"https://{slug}.displayforce.ai/n/#/",
-                    f"https://id.displayforce.ai/#/platform/{slug}",
-                ]:
-                    try:
-                        log.info(f"  Tentando URL direta: {padrao_url}")
-                        page.goto(padrao_url)
-                        page.wait_for_timeout(4000)
-                        try:
-                            page.wait_for_load_state("networkidle", timeout=10000)
-                        except Exception:
-                            pass
-                        url_atual = page.url
-                        # Sucesso se não voltou para login nem para a lista de plataformas do id.
-                        nao_voltou = (
-                            "login" not in url_atual.lower() and
-                            url_atual != url_antes_clique and
-                            not (url_atual.rstrip("/") == "https://id.displayforce.ai/#/platforms")
-                        )
-                        if nao_voltou:
-                            cliente_clicado = True
-                            log.info(f"  ✔ Navegou via URL direta: {url_atual}")
-                            break
-                    except Exception:
-                        continue
-                if cliente_clicado:
-                    break
-
-        if not cliente_clicado:
-            _screenshot_debug(page, f"02_sem_cliente_{nome_cliente}")
-            # Volta para a lista de plataformas
-            page.goto("https://id.displayforce.ai/#/platforms")
-            page.wait_for_timeout(2000)
-            log.warning(f"  ❌ Não foi possível navegar até '{nome_cliente}' — pulando")
-            return False
-
-        # Aguarda a página do cliente carregar (SPA)
-        page.wait_for_timeout(4000)
-        try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            pass
+        # ── 1. Página de plataformas ──────────────────────────────────────
         page.wait_for_timeout(2000)
-        _screenshot_debug(page, f"03_cliente_aberto_{nome_cliente}")
+        conteudo = page.content()
+        log.info(f"  📄 Conteúdo completo da página (trecho): {conteudo[:500]}")
+        _screenshot(page, "01_plataformas", nome_cliente)
+
+        # Busca href direto pelo slug do cliente
+        hrefs_encontrados = re.findall(r'href=["\']([^"\']+)["\']', conteudo)
+        href_cliente = None
+        for h in hrefs_encontrados:
+            if nome_lower.replace(" ", "") in h.lower().replace("-", "").replace("_", ""):
+                href_cliente = h
+                break
+
+        if href_cliente:
+            log.info(f"  href encontrado para '{nome_lower}': {href_cliente}")
+            # Garante URL absoluta
+            if href_cliente.startswith("http"):
+                url_cliente = href_cliente
+            else:
+                url_cliente = f"https://id.displayforce.ai{href_cliente}"
+
+            page.goto(url_cliente)
+            page.wait_for_load_state("networkidle", timeout=20000)
+            page.wait_for_timeout(3000)
+            log.info(f"  ✔ Navegou via href direto: {page.url}")
+        else:
+            # Fallback: clica no texto do cliente
+            log.info(f"  href não encontrado, tentando clicar no texto '{nome_cliente}'")
+            cliente_loc = page.get_by_text(nome_cliente, exact=False).first
+            if not cliente_loc.is_visible(timeout=5000):
+                log.warning(f"  Cliente '{nome_cliente}' não encontrado — pulando")
+                return False
+            cliente_loc.click()
+            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_timeout(3000)
+
+        _screenshot(page, "03_cliente_aberto", nome_cliente)
         log.info(f"  URL após abrir cliente: {page.url}")
 
-        # ── DIAGNÓSTICO: imprime textos do menu/sidebar ────────────────────
-        try:
-            textos = page.locator("a, button, li, nav *, [class*='menu'] *, [class*='sidebar'] *").all_text_contents()
-            textos_limpos = [t.strip() for t in textos if t.strip() and len(t.strip()) < 80]
-            unicos = list(dict.fromkeys(textos_limpos))[:60]
-            log.info(f"  📋 Textos do menu/nav ({len(unicos)}): {unicos}")
-        except Exception as ex:
-            log.warning(f"  Não foi possível listar textos: {ex}")
+        # ── 2. Menu items disponíveis ──────────────────────────────────────
+        menu_texts = [el.inner_text().strip() for el in page.locator("nav a, nav button, aside a, aside button, [role='navigation'] a").all()]
+        log.info(f"  📋 Textos do menu/nav ({len(menu_texts)}): {menu_texts}")
 
-        # ── 3. Navega para Insights de Visitantes ────────────────────────
-        # URL confirmada pelo DevTools: https://{slug}.displayforce.ai/n/#/stats/visitors
-        # "Insights & dados" no DOM aponta para /n/#/stats/devices → trocamos por /stats/visitors
+        # ── 3. Navegar para Visitors Insights via URL calculada ────────────
         log.info("  Navegando para Insights de Visitantes (stats/visitors)...")
+        insights_href = None
+        for el in page.locator("a").all():
+            try:
+                txt  = el.inner_text().strip()
+                href = el.get_attribute("href") or ""
+                if "insights" in txt.lower() or "dados" in txt.lower():
+                    log.info(f"  href 'Insights & dados': {href}")
+                    # Calcula URL de visitors a partir do href de devices
+                    if "stats/devices" in href:
+                        insights_href = href.replace("stats/devices", "stats/visitors")
+                    elif "stats/" in href:
+                        base = href.rsplit("/", 1)[0]
+                        insights_href = f"{base}/visitors"
+                    else:
+                        # Tenta construir URL base da plataforma
+                        base_url = page.url.split("/n/#")[0]
+                        insights_href = f"{base_url}/n/#/stats/visitors"
+                    break
+            except Exception:
+                continue
 
-        # Derivar URL: pegar href de "Insights & dados" e substituir /devices por /visitors
-        href_insights_dados = page.evaluate("""
-            () => {
-                for (const a of document.querySelectorAll('a[href]')) {
-                    const txt = (a.textContent || '').trim().toLowerCase();
-                    if (txt.includes('insights') && txt.includes('dados')) {
-                        return a.href;
-                    }
-                }
-                return null;
-            }
-        """)
-        log.info(f"  href 'Insights & dados': {href_insights_dados}")
+        if not insights_href:
+            base_url      = page.url.split("/n/#")[0]
+            insights_href = f"{base_url}/n/#/stats/visitors"
 
-        if href_insights_dados and '/stats/' in str(href_insights_dados):
-            url_visitors_direto = href_insights_dados.replace('/stats/devices', '/stats/visitors').split('?')[0]
-        else:
-            # Fallback: construir a partir da URL atual
-            url_atual_base = page.url
-            if '/n/#' in url_atual_base:
-                url_visitors_direto = url_atual_base.split('/n/#')[0] + '/n/#/stats/visitors'
-            else:
-                partes = url_atual_base.rstrip('/').rstrip('#').rstrip('/')
-                url_visitors_direto = partes + '/n/#/stats/visitors'
+        # Adiciona timestamp para o mês atual
+        ts_ms = int(time.time() * 1000)
+        if "?" not in insights_href:
+            insights_href += f"?scale=month&date={ts_ms}"
 
-        log.info(f"  URL Visitors Insights calculada: {url_visitors_direto}")
-        page.goto(url_visitors_direto)
-        page.wait_for_timeout(4000)
-        try:
-            page.wait_for_load_state("networkidle", timeout=15000)
-        except Exception:
-            pass
+        log.info(f"  URL Visitors Insights calculada: {insights_href}")
+        page.goto(insights_href)
+        page.wait_for_load_state("networkidle", timeout=15000)
+        page.wait_for_timeout(2000)
         log.info(f"  ✔ Navegou para: {page.url}")
+        _screenshot(page, "06_visitors_aberto", nome_cliente)
 
-        _screenshot_debug(page, f"06_visitors_aberto_{nome_cliente}")
-        log.info(f"  URL após Visitors Insights: {page.url}")
-
-        # ── DIAGNÓSTICO: mostra textos da página Visitors Insights ────────
-        try:
-            textos_vis = page.locator("button, a, [class*='btn'], [role='button']").all_text_contents()
-            textos_limpos = [t.strip() for t in textos_vis if t.strip() and len(t.strip()) < 100]
-            unicos = list(dict.fromkeys(textos_limpos))
-            log.info(f"  📋 Botões/links na página ({len(unicos)}): {unicos[:30]}")
-        except Exception:
-            pass
-
-        # ── 5. Selecionar período nos filtros ─────────────────────────────
-        _selecionar_periodo(page, data_inicio, data_fim)
+        # ── 4. Lista botões disponíveis ───────────────────────────────────
+        btns = [el.inner_text().strip() for el in page.locator("a:visible, button:visible").all() if el.inner_text().strip()]
+        log.info(f"  📋 Botões/links na página ({len(btns)}): {btns}")
         page.wait_for_timeout(1500)
 
-        # ── 6. Clicar em "Enviar relatório" / "Export" ───────────────────
-        _screenshot_debug(page, f"07_pre_enviar_{nome_cliente}")
+        # Filtra botões visíveis relevantes
+        btns_visiveis = [b for b in btns if b and "new chat" not in b.lower()
+                         and "versão" not in b.lower() and "sair" not in b.lower()]
+        log.info(f"  📋 Botões visíveis na página: {btns_visiveis}")
+        _screenshot(page, "07_pre_enviar", nome_cliente)
 
-        # Diagnóstico: lista todos os botões visíveis para encontrar o nome certo
+        # ── 5. Clicar em "Enviar relatório" ───────────────────────────────
+        btn_enviar = page.locator("a:visible, button:visible").filter(
+            has_text=re.compile(r"enviar.?relat|send.?report|export", re.I)
+        ).first
+        btn_enviar.click(timeout=8000)
+        log.info("  ✔ Clicado: 'ENVIAR RELATÓRIO' (botão exportar)")
+        page.wait_for_timeout(2000)
+        _screenshot(page, "10_modal_email", nome_cliente)
+
+        # ── 6. Inserir e-mail manualmente ─────────────────────────────────
         try:
-            btns = page.locator("button:visible, [role='button']:visible, a:visible").all_text_contents()
-            btns_limpos = list(dict.fromkeys([b.strip() for b in btns if b.strip() and len(b.strip()) < 80]))
-            log.info(f"  📋 Botões visíveis na página: {btns_limpos[:25]}")
+            page.locator("button:visible, a:visible").filter(
+                has_text=re.compile(r"inserir.?email|manual|add.?email", re.I)
+            ).first.click(timeout=5000)
+            log.info("  ✔ Clicado: 'Inserir email manualmente'")
+            page.wait_for_timeout(800)
         except Exception:
             pass
 
-        enviar_clicado = _clicar_texto(page, [
-            "ENVIAR RELATÓRIO",    # confirmado no DevTools (all-caps)
-            "ENVIAR RELATORIO",
-            "Enviar relatório",
-            "Enviar Relatório",
-            "Enviar por e-mail",
-            "Enviar por email",
-            "Exportar relatório",
-            "Exportar",
-            "Export",
-            "Enviar",
-            "Send",
-            "Download",
-            "Relatório",
-        ], timeout_ms=5000, descricao="botão exportar")
+        # Preenche campo de e-mail
+        preencheu = False
+        try:
+            campo = page.locator("input[type='email']:visible, input[placeholder*='mail']:visible").first
+            campo.fill(RELATORIO_EMAIL)
+            preencheu = True
+        except Exception:
+            pass
 
-        if not enviar_clicado:
-            # Tenta por data-for, aria-label / SVG icon buttons
-            for sel_export in [
-                "button[data-for='sendReport']",   # confirmado no DevTools
-                "[data-for='sendReport']",
-                "button[aria-label*='envi']",
-                "button[aria-label*='ENVI']",
-                "button[aria-label*='export']",
-                "button[aria-label*='relat']",
-                "button[title*='envi']",
-                "button[title*='export']",
-                "[data-testid*='export']",
-                "[data-testid*='send']",
-                "[data-testid*='relat']",
-            ]:
-                try:
-                    el = page.locator(sel_export).first
-                    if el.is_visible(timeout=2000):
-                        el.click()
-                        log.info(f"  ✔ Botão export clicado via {sel_export}")
-                        enviar_clicado = True
-                        break
-                except Exception:
-                    continue
-
-        if not enviar_clicado:
-            _screenshot_debug(page, f"08_sem_botao_enviar_{nome_cliente}")
-            log.error("  ❌ Botão de enviar relatório não encontrado — veja screenshot e log de botões acima")
-            return False
-
-        page.wait_for_timeout(2000)
-        _screenshot_debug(page, f"10_modal_email_{nome_cliente}")
-
-        # ── 7. Clicar em "Inserir email manualmente" ──────────────────────
-        _clicar_texto(page, [
-            "Inserir email manualmente",
-            "Inserir e-mail manualmente",
-            "email manualmente",
-            "Outro email",
-            "Inserir email",
-            "Manual",
-        ], timeout_ms=5000, descricao="inserir email")
-        page.wait_for_timeout(800)
-
-        # ── 8. Preencher o campo de e-mail ────────────────────────────────
-        email_preenchido = False
-        for sel_email in [
-            "input[type='email']",
-            "input[placeholder*='email']",
-            "input[placeholder*='Email']",
-            "input[placeholder*='e-mail']",
-            "input[placeholder*='Digite']",
-        ]:
-            try:
-                inp = page.locator(sel_email).first
-                if inp.is_visible(timeout=3000):
-                    inp.click()
-                    inp.fill(RELATORIO_EMAIL)
-                    email_preenchido = True
-                    log.info(f"  ✔ E-mail preenchido: {RELATORIO_EMAIL}")
-                    break
-            except Exception:
-                continue
-
-        if not email_preenchido:
-            # Fallback: preenche qualquer input visível que pareça ser e-mail
+        if not preencheu:
             inputs = page.locator("input:visible").all()
-            for inp in inputs:
-                ph = (inp.get_attribute("placeholder") or "").lower()
-                tp = (inp.get_attribute("type") or "").lower()
-                if "email" in ph or "e-mail" in ph or tp == "email":
-                    inp.fill(RELATORIO_EMAIL)
-                    email_preenchido = True
-                    break
-            if not email_preenchido and inputs:
+            if inputs:
                 inputs[-1].fill(RELATORIO_EMAIL)
-                email_preenchido = True
                 log.warning("  Preencheu último input disponível como e-mail (fallback)")
 
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(800)
+        _screenshot(page, "11_pre_confirmar", nome_cliente)
 
-        # ── 9. Confirmar envio ────────────────────────────────────────────
-        _screenshot_debug(page, f"11_pre_confirmar_{nome_cliente}")
-        confirmado = False
-        for nome_btn in [
-            re.compile(r"^enviar$", re.I),
-            re.compile(r"enviar relatório|enviar relatorio", re.I),
-            re.compile(r"send|confirmar|ok|salvar", re.I),
-        ]:
-            try:
-                btn = page.get_by_role("button", name=nome_btn).first
-                if btn.is_visible(timeout=3000):
-                    btn.click()
-                    confirmado = True
-                    log.info(f"  ✔ Confirmação clicada")
-                    break
-            except Exception:
-                continue
-
-        if not confirmado:
+        # ── 7. Confirmar envio ────────────────────────────────────────────
+        try:
+            page.locator("button:visible").filter(
+                has_text=re.compile(r"enviar|send|confirmar|ok|submit", re.I)
+            ).last.click(timeout=5000)
+            log.info("  ✔ Confirmação clicada")
+        except Exception:
             page.keyboard.press("Enter")
-            log.info("  Enter pressionado para confirmar")
+            log.info("  ✔ Enter pressionado como confirmação")
 
         page.wait_for_timeout(3000)
-        _screenshot_debug(page, f"12_pos_envio_{nome_cliente}")
+        _screenshot(page, "12_pos_envio", nome_cliente)
         log.info(f"  ✅ Relatório enviado para {RELATORIO_EMAIL}")
 
-        # ── 10. Voltar à lista de plataformas ─────────────────────────────
+        # ── 8. Volta à lista de plataformas ──────────────────────────────
         try:
-            page.goto("https://id.displayforce.ai/#/platforms")
-            page.wait_for_timeout(3000)
-            try:
-                page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                pass
+            page.goto(DISPLAYFORCE_URL)
+            page.wait_for_load_state("networkidle", timeout=15000)
+            page.wait_for_timeout(2000)
         except Exception:
             pass
 
@@ -712,265 +727,11 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
 
     except Exception as e:
         log.error(f"  Erro ao exportar '{nome_cliente}': {e}")
-        _screenshot_debug(page, f"erro_{nome_cliente}")
         try:
-            page.goto("https://id.displayforce.ai/#/platforms")
-            page.wait_for_timeout(3000)
+            page.goto(DISPLAYFORCE_URL)
+            page.wait_for_load_state("networkidle", timeout=15000)
         except Exception:
             pass
-        return False
-
-
-def _selecionar_periodo(page, data_inicio: str, data_fim: str):
-    """Seleciona o período nos filtros de data da DisplayForce."""
-    try:
-        # Tenta clicar no filtro de data / date picker
-        date_picker = page.locator(
-            "[data-testid*='date'], [aria-label*='data'], [aria-label*='date'], "
-            ".date-picker, .filter-date, button:has-text('Período'), "
-            "button:has-text('Data'), button:has-text('Filtro')"
-        ).first
-
-        if date_picker.is_visible(timeout=3000):
-            date_picker.click()
-            page.wait_for_timeout(800)
-
-            # Preenche data início
-            inputs = page.locator("input[type='date'], input[placeholder*='DD'], input[placeholder*='início']").all()
-            if len(inputs) >= 2:
-                inputs[0].fill(data_inicio)
-                inputs[1].fill(data_fim)
-            elif len(inputs) == 1:
-                inputs[0].fill(data_inicio)
-
-            # Confirma seleção
-            try:
-                page.get_by_role("button", name=re.compile(r"aplicar|apply|ok|confirmar", re.I)).click(timeout=3000)
-            except Exception:
-                pass
-    except Exception:
-        pass  # Continua mesmo sem selecionar o filtro
-
-
-def _screenshot_debug(page, nome: str):
-    """Salva screenshot para debug quando algo falha."""
-    try:
-        DOWNLOAD_DIR.mkdir(exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        caminho = str(DOWNLOAD_DIR / f"debug_{nome}_{ts}.png")
-        page.screenshot(path=caminho)
-        log.info(f"  📸 Screenshot salvo: {caminho}")
-    except Exception:
-        pass
-
-
-def fazer_login_displayforce(page) -> bool:
-    """Realiza login na DisplayForce. Retorna True se bem-sucedido."""
-    log.info("Acessando DisplayForce...")
-
-    # SPAs com hash-routing precisam do URL base sem o hash
-    url_base = "https://id.displayforce.ai/"
-    page.goto(url_base)
-
-    # Aguarda o JavaScript carregar (SPA demora para renderizar)
-    page.wait_for_timeout(5000)
-
-    # Se a página redirecionar para alguma rota, aguarda estabilizar
-    try:
-        page.wait_for_load_state("networkidle", timeout=20000)
-    except Exception:
-        pass
-    page.wait_for_timeout(3000)
-
-    log.info(f"  URL atual: {page.url}")
-
-    try:
-        # ── Estratégia 1: aguarda qualquer input aparecer (SPA pode demorar) ──
-        try:
-            page.wait_for_selector("input", timeout=20000)
-        except Exception:
-            log.warning("  Nenhum input encontrado ainda, aguardando mais 5s...")
-            page.wait_for_timeout(5000)
-
-        # ── Encontra campo de e-mail com múltiplos seletores ──────────────────
-        SELETORES_EMAIL = [
-            "input[type='email']",
-            "input[name='email']",
-            "input[name='username']",
-            "input[placeholder*='e-mail']",
-            "input[placeholder*='email']",
-            "input[placeholder*='Email']",
-            "input[placeholder*='usuário']",
-            "input[placeholder*='login']",
-        ]
-        campo_email = None
-        for sel in SELETORES_EMAIL:
-            try:
-                el = page.locator(sel).first
-                if el.is_visible(timeout=2000):
-                    campo_email = el
-                    log.info(f"  Campo email encontrado: {sel}")
-                    break
-            except Exception:
-                continue
-
-        # Fallback: pega o primeiro input visível
-        if not campo_email:
-            inputs_visiveis = page.locator("input:visible").all()
-            if inputs_visiveis:
-                campo_email = inputs_visiveis[0]
-                log.info("  Usando primeiro input visível como campo de e-mail")
-
-        if not campo_email:
-            _screenshot_debug(page, "sem_input")
-            log.error("  ❌ Não foi possível encontrar o campo de e-mail")
-            return False
-
-        campo_email.click()
-        campo_email.fill(DISPLAYFORCE_EMAIL)
-        page.wait_for_timeout(800)
-
-        # ── Verifica se senha já está visível (login 1 etapa) ─────────────────
-        senha_visivel = False
-        try:
-            campo_senha_teste = page.locator("input[type='password']").first
-            senha_visivel = campo_senha_teste.is_visible(timeout=2000)
-        except Exception:
-            senha_visivel = False
-
-        # ── Se senha NÃO visível: login em 2 etapas — clica em Próximo/Enter ──
-        if not senha_visivel:
-            log.info("  Login em 2 etapas: procurando botão Próximo/Continuar...")
-            btn_proximo_clicado = False
-            for nome_btn in [
-                re.compile(r"próximo|proximo|next|continuar|continue|avançar", re.I),
-                re.compile(r"entrar|login|sign.?in|acessar", re.I),
-            ]:
-                try:
-                    btn = page.get_by_role("button", name=nome_btn).first
-                    if btn.is_visible(timeout=3000):
-                        btn.click()
-                        btn_proximo_clicado = True
-                        log.info(f"  Botão '{nome_btn.pattern}' clicado")
-                        break
-                except Exception:
-                    continue
-
-            if not btn_proximo_clicado:
-                # Tenta submit ou Enter como fallback
-                try:
-                    page.locator("button[type='submit']").first.click(timeout=3000)
-                    btn_proximo_clicado = True
-                except Exception:
-                    page.keyboard.press("Enter")
-                    btn_proximo_clicado = True
-                    log.info("  Enter pressionado (step 1)")
-
-            # Aguarda a tela de senha aparecer
-            page.wait_for_timeout(2000)
-            try:
-                page.wait_for_selector("input[type='password']", timeout=15000)
-                log.info("  Campo de senha apareceu (step 2)")
-            except Exception:
-                log.warning("  Campo de senha não apareceu após step 1")
-                _screenshot_debug(page, "aguardando_senha")
-
-        # ── Preenche senha ─────────────────────────────────────────────────────
-        campo_senha = None
-        try:
-            campo_senha = page.locator("input[type='password']").first
-            campo_senha.wait_for(state="visible", timeout=10000)
-            log.info("  Campo de senha encontrado")
-        except Exception:
-            # Fallback: tenta qualquer input que não seja e-mail
-            inputs = page.locator("input:visible").all()
-            for inp in inputs:
-                tipo = inp.get_attribute("type") or ""
-                if tipo not in ("email", "text", "search"):
-                    campo_senha = inp
-                    break
-            if not campo_senha and inputs:
-                campo_senha = inputs[-1]  # último input visível
-                log.warning("  Usando último input como campo de senha (fallback)")
-
-        if not campo_senha:
-            _screenshot_debug(page, "sem_campo_senha")
-            log.error("  ❌ Campo de senha não encontrado")
-            return False
-
-        campo_senha.click()
-        campo_senha.fill(DISPLAYFORCE_PASS)
-        page.wait_for_timeout(500)
-
-        # ── Botão de login (step final) ────────────────────────────────────────
-        botao_clicado = False
-        for nome_btn in [
-            re.compile(r"entrar|login|sign.?in|acessar|confirmar", re.I),
-            re.compile(r"continuar|continue|próximo|proximo|next", re.I),
-        ]:
-            try:
-                btn = page.get_by_role("button", name=nome_btn).first
-                if btn.is_visible(timeout=3000):
-                    btn.click()
-                    botao_clicado = True
-                    log.info(f"  Botão de login clicado: '{nome_btn.pattern}'")
-                    break
-            except Exception:
-                continue
-
-        if not botao_clicado:
-            try:
-                page.locator("button[type='submit']").first.click(timeout=3000)
-                botao_clicado = True
-                log.info("  Botão submit clicado")
-            except Exception:
-                page.keyboard.press("Enter")
-                botao_clicado = True
-                log.info("  Enter pressionado (login final)")
-
-        # ── Aguarda o redirecionamento pós-login ───────────────────────────────
-        page.wait_for_timeout(3000)
-        try:
-            page.wait_for_load_state("networkidle", timeout=25000)
-        except Exception:
-            pass
-        page.wait_for_timeout(3000)
-
-        url_atual = page.url
-        log.info(f"  URL após login: {url_atual}")
-
-        # Verifica se saiu da tela de login
-        indicadores_sucesso = ["platform", "dashboard", "home", "cliente", "client", "insight"]
-        indicadores_falha   = ["login", "signin", "auth", "error"]
-
-        url_lower = url_atual.lower()
-        if any(s in url_lower for s in indicadores_sucesso):
-            log.info("  ✅ Login realizado com sucesso")
-            return True
-
-        # Se a URL ainda contém indicadores de login, verifica o conteúdo da página
-        if any(s in url_lower for s in indicadores_falha):
-            _screenshot_debug(page, "login_falhou")
-            log.error("  ❌ Login falhou — verifique as credenciais")
-            return False
-
-        # URL ambígua (SPA com hash) — verifica se há conteúdo pós-login
-        try:
-            # Se aparecer qualquer menu/nav ou lista de clientes, login OK
-            page.wait_for_selector(
-                "nav, [class*='sidebar'], [class*='menu'], [class*='platform'], [class*='client']",
-                timeout=8000
-            )
-            log.info("  ✅ Login realizado com sucesso (conteúdo detectado)")
-            return True
-        except Exception:
-            _screenshot_debug(page, "pos_login")
-            log.warning("  ⚠️  Login pode ter funcionado — continuando (verifique screenshot)")
-            return True  # Tenta continuar mesmo assim
-
-    except Exception as e:
-        _screenshot_debug(page, "erro_login")
-        log.error(f"  ❌ Erro no login: {e}")
         return False
 
 
@@ -979,14 +740,9 @@ def fazer_login_displayforce(page) -> bool:
 # ──────────────────────────────────────────────────────────────
 
 def obter_periodo_atual() -> tuple[str, str]:
-    """
-    Retorna o período do dia atual (início do dia → fim do dia) no fuso de Brasília.
-    Compatível com o filtro padrão do dashboard.
-    """
-    agora = datetime.now(timezone(timedelta(hours=-3)))  # UTC-3 (Brasília)
-    inicio = agora.replace(hour=0, minute=0, second=0, microsecond=0)
+    agora  = datetime.now(timezone(timedelta(hours=-3)))
+    inicio = agora.replace(hour=0,  minute=0,  second=0,  microsecond=0)
     fim    = agora.replace(hour=23, minute=59, second=59, microsecond=0)
-    # Formato aceito por inputs HTML date: YYYY-MM-DD
     return inicio.strftime("%Y-%m-%d"), fim.strftime("%Y-%m-%d")
 
 
@@ -994,7 +750,6 @@ _bot_lock = threading.Lock()
 
 
 def executar_bot():
-    """Execução principal do bot. Chamada pelo scheduler."""
     if not _bot_lock.acquire(blocking=False):
         log.info("⏭️  Bot já em execução, aguardando próxima rodada...")
         return
@@ -1004,21 +759,18 @@ def executar_bot():
         log.info(f"🤖 Iniciando bot — {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
         log.info("=" * 60)
 
-        # 1. Busca clientes no Supabase
         clientes = buscar_clientes()
         if not clientes:
             log.warning("Nenhum cliente ativo encontrado no Supabase.")
             return
 
-        # 2. Período atual (hoje)
         data_inicio, data_fim = obter_periodo_atual()
         log.info(f"Período: {data_inicio} → {data_fim}")
 
-        # 3. Abre o browser e exporta relatório para cada cliente
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=HEADLESS)
-            ctx = browser.new_context(accept_downloads=True)
-            page = ctx.new_page()
+            ctx     = browser.new_context(accept_downloads=True)
+            page    = ctx.new_page()
 
             if not fazer_login_displayforce(page):
                 log.error("Falha no login — abortando rodada")
@@ -1026,29 +778,25 @@ def executar_bot():
                 return
 
             for cliente in clientes:
-                nome_cliente  = cliente["name"]
-                client_id     = cliente["id"]
+                nome_cliente = cliente["name"]
+                client_id    = cliente["id"]
 
                 exportou = exportar_relatorio_cliente(page, nome_cliente, data_inicio, data_fim)
                 if not exportou:
                     continue
 
-                # 4. Aguarda e-mail e baixa o arquivo
                 caminho_arquivo = baixar_relatorio_email()
                 if not caminho_arquivo:
                     log.error(f"  Relatório não recebido para '{nome_cliente}'")
                     continue
 
-                # 5. Processa o Excel
                 registros = processar_excel(caminho_arquivo, client_id)
                 if not registros:
                     log.warning(f"  Nenhum dado extraído do Excel de '{nome_cliente}'")
                     continue
 
-                # 6. Salva no Supabase
                 upsert_campanhas(registros)
 
-                # Remove arquivo temporário
                 try:
                     os.remove(caminho_arquivo)
                 except Exception:
@@ -1076,10 +824,8 @@ def main():
 
     DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-    # Executa imediatamente ao iniciar
     executar_bot()
 
-    # Agenda para repetir a cada X minutos
     schedule.every(INTERVALO_MINUTOS).minutes.do(executar_bot)
 
     log.info(f"⏰ Agendamento ativo — rodando a cada {INTERVALO_MINUTOS} min (Ctrl+C para parar)")

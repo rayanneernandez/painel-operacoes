@@ -668,26 +668,15 @@ export const WidgetCampaigns = ({ view, clientId }: { view: string; clientId?: s
           <Activity size={14} className="text-emerald-500" />
           Engajamento em Campanhas {view === 'network' ? '(Rede)' : ''}
         </h3>
-        {clientId && (
-          <a
-            href={`/clientes/${clientId}/campanhas`}
-            className="text-[10px] text-emerald-400 hover:text-emerald-300 border border-emerald-800 hover:border-emerald-600 px-2 py-1 rounded-md transition-colors"
-          >
-            + Importar CSV
-          </a>
-        )}
+        <span className="text-[10px] text-gray-400 border border-gray-800 px-2 py-1 rounded-md">Automático</span>
       </div>
 
       {loading ? (
         <div className="flex items-center justify-center py-10 text-gray-500 text-sm">Carregando...</div>
       ) : rows.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-10 gap-2 text-gray-500 text-sm">
-          <p>Nenhuma campanha importada.</p>
-          {clientId && (
-            <a href={`/clientes/${clientId}/campanhas`} className="text-emerald-400 hover:underline text-xs">
-              Clique aqui para importar o relatório da Displayforce
-            </a>
-          )}
+          <p>Nenhuma campanha disponível.</p>
+          <p className="text-xs text-gray-600">Aguardando sincronização automática.</p>
         </div>
       ) : (
         <div className="overflow-x-auto">

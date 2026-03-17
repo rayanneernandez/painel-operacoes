@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { FileText, Building2, Globe, ArrowRight, Table, Smartphone, LayoutGrid } from 'lucide-react';
 import { exportToExcel, exportToPDF } from '../services/exportService';
+import supabase from '../lib/supabase';
 
 export function Reports() {
   const [scope, setScope] = useState<'global' | 'network' | 'store'>('global');
@@ -8,14 +9,16 @@ export function Reports() {
   const [selectedStore, setSelectedStore] = useState('');
   const [reportType, setReportType] = useState<'general' | 'clients' | 'stores' | 'devices'>('general');
 
-  // Dados simulados
-  const clients: { id: string; name: string }[] = [];
-  const stores: { id: string; name: string }[] = [];
-  
-  // Dados para exportação (vazios inicialmente conforme solicitação de limpeza)
-  const clientsData: any[] = [];
-  const storesData: any[] = [];
-  const devicesData: any[] = [];
+  const [clients, setClients] = useState<{ id: string; name: string; plan?: string | null; status?: string | null }[]>([]);
+  const [stores, setStores] = useState<{ id: string; name: string; address?: string | null; city?: string | null; status?: string | null; client_id?: string | null }[]>([]);
+
+  const [clientsData, setClientsData] = useState<any[]>([]);
+  const [storesData, setStoresData] = useState<any[]>([]);
+  const [devicesData, setDevicesData] = useState<any[]>([]);
+
+  const [stats, setStats] = useState<StatItem[]>([]);
+  const [isLoading, setIsLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   interface StatItem {
     label: string;
@@ -25,8 +28,190 @@ export function Reports() {
     color: string;
   }
 
-  // Simulação de dados: Se for REDE pega dados globais, se for LOJA pega dados específicos
-  const stats: StatItem[] = scope === 'global' ? [] : [];
+  const storeById = useMemo(() => {
+    const m = new Map<string, { id: string; name: string; city?: string | null; client_id?: string | null }>();
+    stores.forEach((s) => m.set(s.id, s));
+    return m;
+  }, [stores]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadClients = async () => {
+      try {
+        const { data, error } = await supabase.from('clients').select('id, name, plan, status').order('name');
+        if (error) throw error;
+        if (!cancelled) setClients(data || []);
+      } catch (e: any) {
+        if (!cancelled) setErrorMsg(e?.message || 'Erro ao carregar clientes');
+      }
+    };
+
+    void loadClients();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (scope !== 'network') setSelectedClient('');
+    if (scope !== 'store') setSelectedStore('');
+    setErrorMsg(null);
+  }, [scope]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadStoresForSelectors = async () => {
+      try {
+        if (scope === 'store' || (scope === 'network' && selectedClient)) {
+          let q = supabase.from('stores').select('id, name, address, city, status, client_id').order('name').range(0, 9999);
+          if (scope === 'network' && selectedClient) q = q.eq('client_id', selectedClient);
+          const { data, error } = await q;
+          if (error) throw error;
+          if (!cancelled) setStores(data || []);
+        } else {
+          if (!cancelled) setStores([]);
+        }
+      } catch (e: any) {
+        if (!cancelled) setErrorMsg(e?.message || 'Erro ao carregar lojas');
+      }
+    };
+
+    void loadStoresForSelectors();
+    return () => { cancelled = true; };
+  }, [scope, selectedClient]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadReportData = async () => {
+      setIsLoading(true);
+      setErrorMsg(null);
+
+      try {
+        const now = new Date();
+        const from30d = new Date(now.getTime() - 30 * 86400000).toISOString();
+        const toIso = now.toISOString();
+
+        const selectedStoreObj = selectedStore ? storeById.get(selectedStore) : undefined;
+        const clientIdFromStore = selectedStoreObj?.client_id || null;
+
+        const clientId = scope === 'network' ? (selectedClient || null) : scope === 'store' ? clientIdFromStore : null;
+        const storeId = scope === 'store' ? (selectedStore || null) : null;
+
+        const countExact = async (q: any) => {
+          const { count, error } = await q;
+          if (error) throw error;
+          return Number(count) || 0;
+        };
+
+        const [clientsCount, storesCount] = await Promise.all([
+          (async () => {
+            let q: any = supabase.from('clients').select('*', { count: 'exact', head: true });
+            if (clientId) q = q.eq('id', clientId);
+            return await countExact(q);
+          })(),
+          (async () => {
+            let q: any = supabase.from('stores').select('*', { count: 'exact', head: true });
+            if (storeId) q = q.eq('id', storeId);
+            else if (clientId) q = q.eq('client_id', clientId);
+            return await countExact(q);
+          })(),
+        ]);
+
+        let devicesCount = 0;
+        if (storeId) {
+          devicesCount = await countExact(supabase.from('devices').select('*', { count: 'exact', head: true }).eq('store_id', storeId));
+        } else if (clientId) {
+          const { data: storeIds, error: storeErr } = await supabase.from('stores').select('id').eq('client_id', clientId).range(0, 9999);
+          if (storeErr) throw storeErr;
+          const ids = (storeIds || []).map((s: any) => s.id);
+          devicesCount = ids.length
+            ? await countExact(supabase.from('devices').select('*', { count: 'exact', head: true }).in('store_id', ids))
+            : 0;
+        } else {
+          devicesCount = await countExact(supabase.from('devices').select('*', { count: 'exact', head: true }));
+        }
+
+        let visitorsCount30d: number | null = null;
+        try {
+          let q: any = supabase.from('visitor_analytics').select('*', { count: 'exact', head: true });
+          if (storeId) q = q.eq('store_id', storeId);
+          else if (clientId) q = q.eq('client_id', clientId);
+          q = q.gte('timestamp', from30d).lte('timestamp', toIso);
+          visitorsCount30d = await countExact(q);
+        } catch {
+          visitorsCount30d = null;
+        }
+
+        if (!cancelled) {
+          setStats([
+            { label: 'Clientes', value: String(clientsCount), change: '-', bg: 'bg-indigo-500/10', color: 'text-indigo-400' },
+            { label: 'Lojas', value: String(storesCount), change: '-', bg: 'bg-emerald-500/10', color: 'text-emerald-400' },
+            { label: 'Dispositivos', value: String(devicesCount), change: '-', bg: 'bg-blue-500/10', color: 'text-blue-400' },
+          ].concat(visitorsCount30d == null ? [] : [{ label: 'Visitantes (30d)', value: String(visitorsCount30d), change: '-', bg: 'bg-amber-500/10', color: 'text-amber-400' }]));
+        }
+
+        if (reportType === 'clients') {
+          let q = supabase.from('clients').select('id, name, plan, status').order('name');
+          if (clientId) q = q.eq('id', clientId);
+          const { data, error } = await q;
+          if (error) throw error;
+          if (!cancelled) {
+            setClientsData((data || []).map((c: any) => ({ ID: c.id, Nome: c.name, Plano: c.plan || '', Status: c.status || '' })));
+          }
+        }
+
+        if (reportType === 'stores') {
+          let q = supabase.from('stores').select('id, name, address, city, status, client_id').order('name').range(0, 9999);
+          if (storeId) q = q.eq('id', storeId);
+          else if (clientId) q = q.eq('client_id', clientId);
+          const { data, error } = await q;
+          if (error) throw error;
+          if (!cancelled) {
+            setStoresData((data || []).map((s: any) => ({ ID: s.id, Nome: s.name, Endereço: s.address || '', Cidade: s.city || '', Status: s.status || '' })));
+          }
+        }
+
+        if (reportType === 'devices') {
+          let devices: any[] = [];
+          if (storeId) {
+            const { data, error } = await supabase.from('devices').select('id, name, type, status, store_id').eq('store_id', storeId).range(0, 9999);
+            if (error) throw error;
+            devices = data || [];
+          } else if (clientId) {
+            const { data: storeIds, error: storeErr } = await supabase.from('stores').select('id').eq('client_id', clientId).range(0, 9999);
+            if (storeErr) throw storeErr;
+            const ids = (storeIds || []).map((s: any) => s.id);
+            if (ids.length) {
+              const { data, error } = await supabase.from('devices').select('id, name, type, status, store_id').in('store_id', ids).range(0, 9999);
+              if (error) throw error;
+              devices = data || [];
+            }
+          } else {
+            const { data, error } = await supabase.from('devices').select('id, name, type, status, store_id').range(0, 9999);
+            if (error) throw error;
+            devices = data || [];
+          }
+
+          if (!cancelled) {
+            setDevicesData(devices.map((d: any) => ({ ID: d.id, Nome: d.name, Tipo: d.type || '', Status: d.status || '', Loja: storeById.get(d.store_id)?.name || d.store_id || '' })));
+          }
+        }
+
+        if (reportType !== 'clients') setClientsData([]);
+        if (reportType !== 'stores') setStoresData([]);
+        if (reportType !== 'devices') setDevicesData([]);
+
+      } catch (e: any) {
+        if (!cancelled) setErrorMsg(e?.message || 'Erro ao carregar relatório');
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+
+    void loadReportData();
+    return () => { cancelled = true; };
+  }, [scope, selectedClient, selectedStore, reportType, storeById]);
 
   const handleExport = (format: 'excel' | 'pdf') => {
     let data: any[] = [];
@@ -55,6 +240,11 @@ export function Reports() {
         title = 'Lista de Dispositivos';
         columns = ['ID', 'Nome', 'Tipo', 'Status', 'Loja'];
         break;
+    }
+
+    if (!data || data.length === 0) {
+      window.alert('Nenhum dado disponível para exportação com os filtros atuais.');
+      return;
     }
 
     if (format === 'excel') {
@@ -127,9 +317,9 @@ export function Reports() {
                 onChange={(e) => setSelectedClient(e.target.value)}
                 className="bg-gray-950 border border-gray-800 text-white rounded-lg px-4 py-2 outline-none focus:border-indigo-500 min-w-[200px]"
               >
-                <option value="" disabled className="bg-white text-gray-900">Selecione uma rede...</option>
+                <option value="" disabled style={{ backgroundColor: '#111827', color: '#9CA3AF' }}>Selecione uma rede...</option>
                 {clients.map(client => (
-                  <option key={client.id} value={client.name} className="bg-white text-gray-900">{client.name}</option>
+                  <option key={client.id} value={client.id} style={{ backgroundColor: '#111827', color: 'white' }}>{client.name}</option>
                 ))}
               </select>
             </div>
@@ -146,7 +336,7 @@ export function Reports() {
               >
                 <option value="" disabled style={{ backgroundColor: '#111827', color: '#9CA3AF' }}>Selecione uma loja...</option>
                 {stores.map(store => (
-                  <option key={store.id} value={store.name} style={{ backgroundColor: '#111827', color: 'white' }}>{store.name}</option>
+                  <option key={store.id} value={store.id} style={{ backgroundColor: '#111827', color: 'white' }}>{store.name}{store.city ? ` - ${store.city}` : ''}</option>
                 ))}
               </select>
             </div>
@@ -200,7 +390,15 @@ export function Reports() {
 
       {/* Data Preview / Stats */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {stats.length === 0 ? (
+        {isLoading ? (
+          <div className="col-span-3 flex justify-center py-20">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
+          </div>
+        ) : errorMsg ? (
+          <div className="col-span-3 text-center p-8 text-red-400 border border-red-900/40 rounded-xl bg-red-900/10">
+            {errorMsg}
+          </div>
+        ) : stats.length === 0 ? (
           <div className="col-span-3 text-center p-8 text-gray-500 border border-gray-800 rounded-xl border-dashed">
             Nenhum dado estatístico disponível.
           </div>

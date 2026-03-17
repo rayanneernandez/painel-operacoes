@@ -90,6 +90,10 @@ export function ClientDashboard() {
   const [ageStats, setAgeStats] = useState<{ age: string; m: number; f: number }[]>([]);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
 
+  const SPANS = [3, 4, 6, 8, 12] as const;
+  type Span = typeof SPANS[number];
+  const [widgetLayout, setWidgetLayout] = useState<Record<string, { colSpanLg?: Span; heightPx?: number }>>({});
+
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
   const [isLoadingConfig, setIsLoadingConfig] = useState(true);
   const [isLoadingData, setIsLoadingData] = useState(false);
@@ -153,7 +157,7 @@ export function ClientDashboard() {
       const p = Number(pct); if (!Number.isFinite(p) || p <= 0) return;
       wSum += mp * p; pSum += p;
     });
-    setAvgAge(pSum > 0 ? Number((wSum / pSum).toFixed(1)) : null);
+    setAvgAge(pSum > 0 ? Math.round(wSum / pSum) : null);
 
     const vpd: Record<string, number> = rollup.visitors_per_day ?? {};
     setVisitorsPerDayMap(vpd);
@@ -771,11 +775,41 @@ export function ClientDashboard() {
 
   useEffect(() => {
     let cancelled = false;
-    const resolveIds = (widgetsConfig: any): string[] | null => {
-      if (Array.isArray(widgetsConfig)) return widgetsConfig.filter((x) => typeof x === 'string');
-      if (widgetsConfig && Array.isArray(widgetsConfig.widget_ids)) return widgetsConfig.widget_ids.filter((x: any) => typeof x === 'string');
-      return null;
+
+    const clampNum = (v: any, min: number, max: number, fallback: number) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return fallback;
+      return Math.min(max, Math.max(min, n));
     };
+
+    const normalizeSpan = (v: any) => {
+      const n = Number(v);
+      return (SPANS as readonly number[]).includes(n) ? (n as (typeof SPANS)[number]) : null;
+    };
+
+    const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> } => {
+      const ids = Array.isArray(widgetsConfig)
+        ? widgetsConfig.filter((x) => typeof x === 'string')
+        : widgetsConfig && Array.isArray(widgetsConfig.widget_ids)
+          ? widgetsConfig.widget_ids.filter((x: any) => typeof x === 'string')
+          : null;
+
+      const rawLayout = widgetsConfig && typeof widgetsConfig === 'object' ? (widgetsConfig.widget_layout ?? widgetsConfig.widgetLayout) : null;
+      const wl: Record<string, { colSpanLg?: Span; heightPx?: number }> = {};
+      if (rawLayout && typeof rawLayout === 'object') {
+        for (const [wid, cfg] of Object.entries(rawLayout)) {
+          const id = String(wid);
+          const span = normalizeSpan((cfg as any)?.colSpanLg ?? cfg);
+          const heightPx = clampNum((cfg as any)?.heightPx, 180, 1200, NaN);
+
+          if (span) wl[id] = { ...(wl[id] || {}), colSpanLg: span };
+          if (Number.isFinite(heightPx)) wl[id] = { ...(wl[id] || {}), heightPx: Math.round(heightPx) };
+        }
+      }
+
+      return { ids, widgetLayout: wl };
+    };
+
     (async () => {
       if (!id) return;
       const fetchConfig = async (scope: 'global' | 'client') => {
@@ -783,18 +817,27 @@ export function ClientDashboard() {
         const { data } = scope === 'global' ? await q.is('client_id', null) : await q.eq('client_id', id);
         return data?.[0]?.widgets_config ?? null;
       };
+
       let widgetsConfig = await fetchConfig('client');
       if (!widgetsConfig) widgetsConfig = await fetchConfig('global');
-      let ids = resolveIds(widgetsConfig);
-      if (!ids) {
+
+      let resolved = resolveDashboardConfig(widgetsConfig);
+      if (!resolved.ids) {
         const cc = localStorage.getItem(`dashboard-config-${id}`);
         const gc = localStorage.getItem('dashboard-config-global');
-        ids = resolveIds(cc ? JSON.parse(cc) : null) || resolveIds(gc ? JSON.parse(gc) : null);
+        resolved = resolveDashboardConfig(cc ? JSON.parse(cc) : null);
+        if (!resolved.ids) resolved = resolveDashboardConfig(gc ? JSON.parse(gc) : null);
       }
-      const finalIds = ids && ids.length ? ids : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+
+      const finalIds = resolved.ids && resolved.ids.length ? resolved.ids : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
       const active = finalIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
-      if (!cancelled) { setActiveWidgets(active); setIsLoadingConfig(false); }
+      if (!cancelled) {
+        setActiveWidgets(active);
+        setWidgetLayout(resolved.widgetLayout);
+        setIsLoadingConfig(false);
+      }
     })();
+
     return () => { cancelled = true; };
   }, [id]);
 
@@ -848,7 +891,7 @@ export function ClientDashboard() {
     { label: 'Total Visitantes',    value: totalVisitors.toLocaleString(),    icon: Users },
     { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(), icon: BarChart2 },
     { label: 'Tempo Médio Visita',  value: formatDuration(avgVisitSeconds),   icon: Clock },
-    { label: 'Idade Média', value: avgAge == null ? '-' : `${avgAge.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} anos`, icon: Users },
+    { label: 'Idade Média', value: avgAge == null ? '-' : `${avgAge.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} anos`, icon: Users },
   ];
 
   const clientName = clientData?.name || 'Carregando...';
@@ -957,7 +1000,7 @@ export function ClientDashboard() {
       {/* Widgets */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden min-h-[400px]">
         {view === 'network' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6 p-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12">
             {isLoadingConfig ? (
               <div className="col-span-full flex justify-center py-20">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
@@ -967,11 +1010,24 @@ export function ClientDashboard() {
                 const Component = WIDGET_MAP[widget.id];
                 if (!Component) return null;
 
-                let colSpan = 'lg:col-span-6';
-                if (widget.size === 'full')    colSpan = 'lg:col-span-12';
-                if (widget.size === 'third')   colSpan = 'lg:col-span-4';
-                if (widget.size === 'quarter') colSpan = 'lg:col-span-3';
-                if (widget.size === '2/3')     colSpan = 'lg:col-span-8';
+                const defaultSpanForSize = (size: WidgetType['size']) => {
+                  if (size === 'full') return 12;
+                  if (size === 'third') return 4;
+                  if (size === 'quarter') return 3;
+                  if (size === '2/3') return 8;
+                  return 6;
+                };
+
+                let spanLg = Number(widgetLayout[widget.id]?.colSpanLg) || defaultSpanForSize(widget.size);
+                if (![3, 4, 6, 8, 12].includes(spanLg)) spanLg = defaultSpanForSize(widget.size);
+
+                let lgSpan = 'lg:col-span-6';
+                if (spanLg === 12) lgSpan = 'lg:col-span-12';
+                if (spanLg === 8) lgSpan = 'lg:col-span-8';
+                if (spanLg === 4) lgSpan = 'lg:col-span-4';
+                if (spanLg === 3) lgSpan = 'lg:col-span-3';
+
+                const mdSpan = spanLg >= 8 ? 'md:col-span-2' : 'md:col-span-1';
 
                 const widgetProps: any = { view: 'network' };
                 if (widget.id === 'flow_trend')             widgetProps.dailyData = dailyStats;
@@ -992,9 +1048,14 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
 
+                const heightPx = Number(widgetLayout[widget.id]?.heightPx);
+                const widgetStyle = Number.isFinite(heightPx) ? { height: Math.round(heightPx) } : undefined;
+
                 return (
-                  <div key={widget.id} className={`col-span-1 ${colSpan} animate-in fade-in zoom-in-95 duration-500`}>
-                    <Component {...widgetProps} />
+                  <div key={widget.id} style={widgetStyle} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>
+                    <div className="h-full">
+                      <Component {...widgetProps} />
+                    </div>
                   </div>
                 );
               })
