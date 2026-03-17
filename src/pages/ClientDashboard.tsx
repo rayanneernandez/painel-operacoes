@@ -375,7 +375,7 @@ export function ClientDashboard() {
         if (deviceIds.length > 0) payload.devices = deviceIds;
 
         const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        if (!resp.ok) { const txt = await resp.text(); setSyncMessage(`Erro ao sincronizar (${resp.status})`); console.error('[Sync] erro:', resp.status, txt); return; }
+        if (!resp.ok) { const txt = await resp.text(); console.error('[Sync] erro:', resp.status, txt); setSyncMessage(''); return; }
 
         const json = await resp.json();
         totalFetched += Number(json?.externalFetched || 0);
@@ -422,7 +422,7 @@ export function ClientDashboard() {
       }
     } catch (err) {
       console.error('[Sync] erro inesperado:', err);
-      setSyncMessage('Erro inesperado na sincronização');
+      setSyncMessage('');
     } finally {
       syncingRef.current = false;
       setIsSyncing(false);
@@ -744,14 +744,12 @@ export function ClientDashboard() {
   const syncStoresFromServer = useCallback(async () => {
     if (!id) return;
     setIsSyncingStores(true);
-    setSyncMessage('Atualizando lojas...');
     try {
       const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, sync_stores: true }) });
-      if (!resp.ok) { const txt = await resp.text(); console.warn('[Stores Sync] Erro API:', txt); setSyncMessage(`Erro ao atualizar lojas (${resp.status})`); return; }
+      if (!resp.ok) { const txt = await resp.text(); console.warn('[Stores Sync] Erro API:', txt); setSyncMessage(''); return; }
       const json = await resp.json();
       await refreshClientAndStores();
-      setSyncMessage(`✅ Lojas atualizadas: ${Number(json?.stores_upserted) || 0}`);
-    } catch (e) { console.warn('[Stores Sync] Erro:', e); setSyncMessage('Erro ao atualizar lojas'); }
+    } catch (e) { console.warn('[Stores Sync] Erro:', e); setSyncMessage(''); }
     finally { setIsSyncingStores(false); }
   }, [id, refreshClientAndStores]);
 
