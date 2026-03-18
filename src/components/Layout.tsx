@@ -41,9 +41,8 @@ export function Layout() {
     { 
       icon: LayoutDashboard, 
       label: 'Visão Geral', 
-      // Se for cliente, manda pro dashboard dele. Se for admin, manda pro geral.
-      path: user?.role === 'client' && user?.clientId 
-        ? `/clientes/${user.clientId}/dashboard` 
+      path: user?.role === 'client'
+        ? (user?.clientId ? `/clientes/${user.clientId}/dashboard` : '/')
         : '/dashboard',
       show: user?.role === 'admin' || (user?.permissions?.view_dashboard ?? true)
     },
@@ -75,8 +74,10 @@ export function Layout() {
     { 
       icon: Settings, 
       label: 'Configurações', 
-      path: '/configuracoes',
-      show: user?.role === 'admin' || (user?.permissions?.manage_settings ?? false)
+      path: user?.role === 'client' && user?.clientId
+        ? `/clientes/${user.clientId}/dashboard-config`
+        : '/configuracoes',
+      show: user?.role === 'admin' || (user?.role === 'client' && !!user?.clientId) || (user?.permissions?.manage_settings ?? false)
     },
   ];
 

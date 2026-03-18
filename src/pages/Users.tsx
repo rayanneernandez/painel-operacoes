@@ -70,21 +70,33 @@ export function Users() {
   const [availableClients, setAvailableClients] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
-    fetchUsers();
-    fetchClients();
+    let cancelled = false;
+
+    const run = async () => {
+      const clients = await fetchClients();
+      if (cancelled) return;
+      await fetchUsers(clients);
+    };
+
+    void run();
+    return () => { cancelled = true; };
   }, []);
 
   const fetchClients = async () => {
     try {
       const { data, error } = await supabase.from('clients').select('id, name');
       if (error) throw error;
-      setAvailableClients(data || []);
+      const list = data || [];
+      setAvailableClients(list);
+      return list;
     } catch (error) {
       console.error('Erro ao buscar clientes:', error);
+      setAvailableClients([]);
+      return [] as { id: string; name: string }[];
     }
   };
 
-  const fetchUsers = async () => {
+  const fetchUsers = async (clients?: { id: string; name: string }[]) => {
     try {
       setLoading(true);
       const { data, error } = await supabase
@@ -92,10 +104,11 @@ export function Users() {
         .select('*');
       
       if (error) throw error;
-      
+
+      const clientList = clients ?? availableClients;
       const formattedUsers: UserType[] = (data || []).map((user: any) => {
         const linkedClient = user.client_id
-          ? availableClients.find(c => c.id === user.client_id)
+          ? clientList.find(c => c.id === user.client_id)
           : undefined;
         return {
           ...user,
@@ -126,7 +139,7 @@ export function Users() {
         role: user.role,
         password: ''
       });
-      setSelectedClientIds(user.clients.map(c => c.id));
+      setSelectedClientIds(user.client_id ? [user.client_id] : user.clients.map(c => c.id));
       // Carregar permissões do usuário
       if (user.permissions) {
         setPerms(user.permissions);
@@ -391,7 +404,7 @@ export function Users() {
       {/* Modal Placeholder (Visual apenas) */}
       {isModalOpen && (
         <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
-          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl shadow-2xl">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-2xl shadow-2xl max-h-[90vh] flex flex-col overflow-hidden">
             <div className="p-6 border-b border-gray-800 bg-gray-900/50 rounded-t-2xl">
               <div className="flex justify-between items-center mb-6">
                 <h2 className="text-xl font-bold text-white flex items-center gap-2">
@@ -441,7 +454,7 @@ export function Users() {
               </div>
             </div>
             
-            <div className="p-8">
+            <div className="p-8 overflow-y-auto flex-1 min-h-0">
               {editingUser && (
                 <div className="mb-6 p-4 bg-gray-950/50 rounded-lg border border-gray-800 flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-gray-800 flex items-center justify-center text-indigo-400 font-bold">
@@ -675,7 +688,7 @@ export function Users() {
                 </div>
               )}
 
-              <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-800">
+              <div className="mt-6 pt-4 border-t border-gray-800 flex items-center justify-end gap-3">
                 <button 
                   onClick={() => setIsModalOpen(false)}
                   className="px-6 py-2.5 rounded-xl text-gray-400 hover:text-white hover:bg-gray-800 transition-colors font-medium"

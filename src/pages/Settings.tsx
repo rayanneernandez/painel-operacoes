@@ -1,10 +1,22 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2 } from 'lucide-react';
+import { useAuth } from '@/contexts/AuthContext';
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 import supabase from '../lib/supabase';
 
 export function Settings() {
+  const navigate = useNavigate();
+  const { user } = useAuth();
+
+  useEffect(() => {
+    if (!user) return;
+    if (user.role !== 'admin') {
+      if (user.role === 'client' && user.clientId) navigate(`/clientes/${user.clientId}/dashboard-config`, { replace: true });
+      else navigate('/', { replace: true });
+    }
+  }, [navigate, user]);
   // Dashboard Config State
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
   const [availableWidgets, setAvailableWidgets] = useState<WidgetType[]>([]);
@@ -21,6 +33,7 @@ export function Settings() {
   const [selectedScope, setSelectedScope] = useState<string>('global'); // 'global' or client ID
   const [dashboardView, setDashboardView] = useState<'edit' | 'preview'>('edit');
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [isResizing, setIsResizing] = useState(false);
 
   useEffect(() => {
     // Fetch Clients for Dropdown
@@ -213,6 +226,7 @@ export function Settings() {
 
   const stopResize = useCallback(() => {
     resizingRef.current = null;
+    setIsResizing(false);
     window.removeEventListener('mousemove', onResizeMove);
     window.removeEventListener('mouseup', stopResize);
   }, [onResizeMove]);
@@ -222,6 +236,8 @@ export function Settings() {
     e.stopPropagation();
 
     if (window.innerWidth < 1024) return;
+
+    setIsResizing(true);
 
     const current = Number(widgetLayout[widget.id]?.colSpanLg) || defaultSpanForSize(widget.size);
     const def = defaultSpanForSize(widget.size);
@@ -238,7 +254,9 @@ export function Settings() {
 
     if (window.innerWidth < 1024) return;
 
-    const card = (e.currentTarget as HTMLElement).parentElement as HTMLElement | null;
+    setIsResizing(true);
+
+    const card = (e.currentTarget as HTMLElement).closest('[data-widget-card]') as HTMLElement | null;
     const rect = card?.getBoundingClientRect();
     const startHeight = rect?.height || 320;
 
@@ -487,7 +505,7 @@ export function Settings() {
                   </div>
                 </div>
                 
-                <div ref={previewGridRef} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-6 p-6">
+                <div ref={previewGridRef} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-3 p-4 items-start">
                   {activeWidgets.map((widget, index) => {
                     const Component = WIDGET_MAP[widget.id];
                     if (!Component) return null;
@@ -509,13 +527,14 @@ export function Settings() {
 
                     return (
                       <div 
-                        key={widget.id} 
-                        draggable
+                        key={widget.id}
+                        data-widget-card
+                        draggable={!isResizing}
                         onDragStart={(e) => handleDragStart(e, index)}
                         onDragOver={(e) => handleDragOver(e, index)}
                         onDragEnd={handleDragEnd}
                         style={widgetStyle}
-                        className={`col-span-1 ${mdSpan} ${lgSpan} relative group transition-all duration-300 flex flex-col ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-indigo-500 rounded-xl' : ''}`}
+                        className={`col-span-1 ${mdSpan} ${lgSpan} self-start relative group transition-all duration-300 flex flex-col ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-indigo-500 rounded-xl' : ''}`}
                       >
                         <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-gray-900/90 p-1.5 rounded-lg backdrop-blur-sm border border-gray-700 shadow-xl cursor-move">
                           <div className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Arrastar para mover">
@@ -538,7 +557,7 @@ export function Settings() {
                           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
                         />
                         <div
-                          className="absolute bottom-0 left-0 z-20 w-full h-2 cursor-ns-resize opacity-0 group-hover:opacity-100 transition-opacity"
+                          className="absolute bottom-0 left-0 z-20 w-full h-4 cursor-ns-resize opacity-60 hover:opacity-100 transition-opacity"
                           title={window.innerWidth >= 1024 ? 'Puxe para redimensionar altura' : 'Redimensionamento disponível no desktop'}
                           onMouseDown={(e) => startResizeY(e, widget)}
                           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}

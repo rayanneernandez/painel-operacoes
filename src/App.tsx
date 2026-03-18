@@ -11,6 +11,7 @@ import { Reports } from './pages/Reports';
 import { Logs } from './pages/Logs';
 import { Login } from './pages/Login';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import CampaignUpload from './pages/CampaignUpload';
 
 const PrivateRoute = () => {
   const { isAuthenticated, isLoading } = useAuth();
@@ -22,6 +23,69 @@ const PrivateRoute = () => {
   return isAuthenticated ? <Outlet /> : <Navigate to="/login" replace />;
 };
 
+const MissingClientLink = () => (
+  <div className="flex items-center justify-center min-h-[60vh]">
+    <div className="w-full max-w-md bg-gray-900 border border-gray-800 rounded-2xl p-6 shadow-2xl">
+      <h2 className="text-lg font-bold text-white">Acesso sem rede vinculada</h2>
+      <p className="text-sm text-gray-400 mt-2">
+        Este usuário está com perfil de cliente, mas não está vinculado a nenhuma rede (client_id).
+        Peça para o admin vincular este usuário a um cliente.
+      </p>
+    </div>
+  </div>
+);
+
+const HomeRedirect = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">Carregando...</div>;
+  }
+
+  if (user?.role === 'client') {
+    if (!user.clientId) return <MissingClientLink />;
+    return <Navigate to={`/clientes/${user.clientId}/dashboard`} replace />;
+  }
+
+  return <Navigate to="/clientes" replace />;
+};
+
+const AdminOnlyRoute = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">Carregando...</div>;
+  }
+
+  if (user?.role === 'admin') return <Outlet />;
+
+  if (user?.role === 'client') {
+    if (!user.clientId) return <MissingClientLink />;
+    return <Navigate to={`/clientes/${user.clientId}/dashboard`} replace />;
+  }
+
+  return <Navigate to="/" replace />;
+};
+
+const ReportsRoute = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">Carregando...</div>;
+  }
+
+  if (user?.role === 'admin' || (user?.permissions?.view_reports ?? false)) {
+    return <Reports />;
+  }
+
+  if (user?.role === 'client') {
+    if (!user.clientId) return <MissingClientLink />;
+    return <Navigate to={`/clientes/${user.clientId}/dashboard`} replace />;
+  }
+
+  return <Navigate to="/" replace />;
+};
+
 function App() {
   return (
     <AuthProvider>
@@ -31,16 +95,25 @@ function App() {
           
           <Route element={<PrivateRoute />}>
             <Route path="/" element={<Layout />}>
-              <Route index element={<Navigate to="/clientes" replace />} />
-              <Route path="clientes" element={<Clients />} />
+              <Route index element={<HomeRedirect />} />
+
+              {/* Rotas do cliente */}
               <Route path="clientes/:id/dashboard" element={<ClientDashboard />} />
               <Route path="clientes/:id/dashboard-config" element={<ClientDashboardConfig />} />
-              <Route path="usuarios" element={<Users />} />
-              <Route path="logs" element={<Logs />} />
-              <Route path="permissoes" element={<Permissions />} />
-              <Route path="relatorios" element={<Reports />} />
-              <Route path="configuracoes" element={<Settings />} />
-              <Route path="dashboard" element={<Dashboard />} />
+
+              {/* Rotas liberadas por permissão (admin ou view_reports=true) */}
+              <Route path="relatorios" element={<ReportsRoute />} />
+
+              {/* Rotas administrativas */}
+              <Route element={<AdminOnlyRoute />}>
+                <Route path="clientes" element={<Clients />} />
+                <Route path="clientes/:id/campanhas" element={<CampaignUpload />} />
+                <Route path="usuarios" element={<Users />} />
+                <Route path="logs" element={<Logs />} />
+                <Route path="permissoes" element={<Permissions />} />
+                <Route path="configuracoes" element={<Settings />} />
+                <Route path="dashboard" element={<Dashboard />} />
+              </Route>
             </Route>
           </Route>
         </Routes>

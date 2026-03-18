@@ -18,22 +18,87 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const savedUser = localStorage.getItem('auth_user');
-    if (savedUser) {
-      const parsed = JSON.parse(savedUser);
-      // Ensure permissions exist for clients if missing in cache
-      if (parsed.role === 'client' && !parsed.permissions) {
-        parsed.permissions = {
-          view_dashboard: true,
-          view_reports: false,
-          view_analytics: false,
-          export_data: false,
-          manage_settings: false
-        };
+    let cancelled = false;
+
+    const defaultPermissions = {
+      view_dashboard: true,
+      view_reports: false,
+      view_analytics: false,
+      export_data: false,
+      manage_settings: false
+    };
+
+    const run = async () => {
+      const savedUser = localStorage.getItem('auth_user');
+      if (!savedUser) {
+        if (!cancelled) setIsLoading(false);
+        return;
       }
-      setUser(parsed);
-    }
-    setIsLoading(false);
+
+      let parsed: any = null;
+      try {
+        parsed = JSON.parse(savedUser);
+      } catch {
+        localStorage.removeItem('auth_user');
+        if (!cancelled) {
+          setUser(null);
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      if (!parsed?.id) {
+        localStorage.removeItem('auth_user');
+        if (!cancelled) {
+          setUser(null);
+          setIsLoading(false);
+        }
+        return;
+      }
+
+      if (!cancelled) {
+        if (parsed.role === 'client' && !parsed.permissions) parsed.permissions = { ...defaultPermissions };
+        setUser(parsed);
+      }
+
+      try {
+        const { data, error } = await supabase
+          .from('users')
+          .select('*')
+          .eq('id', parsed.id)
+          .single();
+
+        if (!error && data) {
+          const userPermissions = data.role === 'admin'
+            ? {
+                view_dashboard: true,
+                view_reports: true,
+                view_analytics: true,
+                export_data: true,
+                manage_settings: true
+              }
+            : { ...defaultPermissions, ...(data.permissions || {}) };
+
+          const refreshed: AuthUser = {
+            id: data.id,
+            name: data.name,
+            email: data.email,
+            role: data.role as UserRole,
+            clientId: data.client_id || undefined,
+            permissions: userPermissions
+          };
+
+          if (!cancelled) setUser(refreshed);
+          localStorage.setItem('auth_user', JSON.stringify(refreshed));
+        }
+      } catch {
+      } finally {
+        if (!cancelled) setIsLoading(false);
+      }
+    };
+
+    void run();
+    return () => { cancelled = true; };
   }, []);
 
   const login = async (email: string, password: string) => {

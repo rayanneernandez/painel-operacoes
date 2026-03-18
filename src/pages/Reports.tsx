@@ -9,7 +9,7 @@ export function Reports() {
   const [selectedStore, setSelectedStore] = useState('');
   const [reportType, setReportType] = useState<'general' | 'clients' | 'stores' | 'devices'>('general');
 
-  const [clients, setClients] = useState<{ id: string; name: string; plan?: string | null; status?: string | null }[]>([]);
+  const [clients, setClients] = useState<{ id: string; name: string; status?: string | null }[]>([]);
   const [stores, setStores] = useState<{ id: string; name: string; address?: string | null; city?: string | null; status?: string | null; client_id?: string | null }[]>([]);
 
   const [clientsData, setClientsData] = useState<any[]>([]);
@@ -39,7 +39,7 @@ export function Reports() {
 
     const loadClients = async () => {
       try {
-        const { data, error } = await supabase.from('clients').select('id, name, plan, status').order('name');
+        const { data, error } = await supabase.from('clients').select('id, name, status').order('name');
         if (error) throw error;
         if (!cancelled) setClients(data || []);
       } catch (e: any) {
@@ -152,12 +152,12 @@ export function Reports() {
         }
 
         if (reportType === 'clients') {
-          let q = supabase.from('clients').select('id, name, plan, status').order('name');
+          let q = supabase.from('clients').select('id, name, status').order('name');
           if (clientId) q = q.eq('id', clientId);
           const { data, error } = await q;
           if (error) throw error;
           if (!cancelled) {
-            setClientsData((data || []).map((c: any) => ({ ID: c.id, Nome: c.name, Plano: c.plan || '', Status: c.status || '' })));
+            setClientsData((data || []).map((c: any) => ({ ID: c.id, Nome: c.name, Status: c.status || '' })));
           }
         }
 

@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useAuth } from '@/contexts/AuthContext';
 import {
   Globe, Clock, Building2, ChevronRight, ChevronDown,
-  LayoutGrid, Users, BarChart2, Image, Upload, Calendar
+  LayoutGrid, Users, BarChart2, Image, Upload, Calendar,
+  Maximize2, Minimize2
 } from 'lucide-react';
 
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
@@ -36,6 +38,14 @@ export function ClientDashboard() {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const { user } = useAuth();
+
+  useEffect(() => {
+    if (!user || !id) return;
+    if (user.role === 'client' && user.clientId && user.clientId !== id) {
+      navigate(`/clientes/${user.clientId}/dashboard`, { replace: true });
+    }
+  }, [id, navigate, user]);
 
   const [view, setView] = useState<'network' | 'store' | 'camera'>('network');
   const [selectedStore, setSelectedStore] = useState<StoreType | null>(null);
@@ -58,6 +68,24 @@ export function ClientDashboard() {
   const [syncMessage, setSyncMessage] = useState('');
   const syncingRef = useRef(false);
   const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
+
+  // ── Fullscreen — apenas o container do dashboard, sem menu ───────────────
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const dashboardRef = useRef<HTMLDivElement>(null);
+
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      dashboardRef.current?.requestFullscreen().catch(() => {});
+    } else {
+      document.exitFullscreen().catch(() => {});
+    }
+  };
+
+  useEffect(() => {
+    const onFsChange = () => setIsFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', onFsChange);
+    return () => document.removeEventListener('fullscreenchange', onFsChange);
+  }, []);
 
   useEffect(() => {
     if (!syncMessage || !syncMessage.startsWith('✅')) return;
@@ -84,7 +112,7 @@ export function ClientDashboard() {
   const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
   const [avgVisitorsPerDay, setAvgVisitorsPerDay] = useState(0);
   const [avgVisitSeconds, setAvgVisitSeconds] = useState(0);
-  const [avgAge, setAvgAge] = useState<number | null>(null);
+  const [avgAttentionSeconds, setAvgAttentionSeconds] = useState(0);
   const [genderStats, setGenderStats] = useState<{ label: string; value: number }[]>([]);
   const [attributeStats, setAttributeStats] = useState<{ label: string; value: number }[]>([]);
   const [ageStats, setAgeStats] = useState<{ age: string; m: number; f: number }[]>([]);
@@ -146,18 +174,10 @@ export function ClientDashboard() {
     setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
     setAvgVisitSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
 
-    const agePctForAvg: Record<string, number> = rollup.age_pyramid_percent ?? {};
-    const midpoints: Record<string, number> = {
-      '0-9': 4.5, '10-17': 13.5, '18-24': 21, '25-34': 29.5,
-      '35-44': 39.5, '45-54': 49.5, '55-64': 59.5, '65-74': 69.5, '75+': 80,
-    };
-    let wSum = 0, pSum = 0;
-    Object.entries(agePctForAvg).forEach(([bucket, pct]) => {
-      const mp = midpoints[bucket]; if (mp === undefined) return;
-      const p = Number(pct); if (!Number.isFinite(p) || p <= 0) return;
-      wSum += mp * p; pSum += p;
-    });
-    setAvgAge(pSum > 0 ? Math.round(wSum / pSum) : null);
+    // Tempo de Atenção — tenta avg_attention_seconds ou avg_attention_sec
+    setAvgAttentionSeconds(Math.round(
+      rollup.avg_attention_seconds ?? rollup.avg_attention_sec ?? 0
+    ));
 
     const vpd: Record<string, number> = rollup.visitors_per_day ?? {};
     setVisitorsPerDayMap(vpd);
@@ -172,15 +192,12 @@ export function ClientDashboard() {
 
     const ap: any = rollup.attributes_percent ?? {};
 
-    // ── Atributos simples para widget de barras ──────────────────────────────
     const glassesRaw   = ap.glasses      ?? {};
     const facialRaw    = ap.facial_hair  ?? {};
 
-    // Detecta se o backend salvou categorias reais ou apenas true/false
     const glassesHasCats = Object.keys(glassesRaw).some(k => ['usual','dark','none'].includes(k));
     const facialHasCats  = Object.keys(facialRaw).some(k  => ['shaved','beard','goatee','bristle','mustache'].includes(k));
 
-    // Valor resumido para o widget Atributos Gerais (barra horizontal)
     const glassesTotal = glassesHasCats
       ? Math.round((Number(glassesRaw.usual ?? 0) + Number(glassesRaw.dark ?? 0)))
       : Math.round(glassesRaw.true ?? 0);
@@ -188,51 +205,30 @@ export function ClientDashboard() {
       ? Math.round(Object.entries(facialRaw).filter(([k]) => k !== 'shaved').reduce((a, [, v]) => a + Number(v), 0))
       : Math.round(facialRaw.true ?? 0);
 
-    setAttributeStats([
-      { label: 'Óculos',      value: glassesTotal },
-      { label: 'Barba',       value: facialTotal },
-      { label: 'Máscara',     value: 0 },
-      { label: 'Chapéu/Boné', value: Math.round(ap.headwear?.true ?? 0) },
-    ]);
-
-    // ── Dados categóricos para widgets especializados ────────────────────────
-    // Glasses → passado via attrData para WidgetVision
-    // Facial hair → passado via attrData para WidgetFacialHair
-    // Usamos hairTypeData/hairColorData para os dados de cabelo normalmente
-    // e guardamos glasses/facial nos próprios estados de attr com prefixo especial
-
-    // Dados de óculos para WidgetVision
     const glassesData = glassesHasCats
       ? Object.entries(glassesRaw)
           .filter(([, v]) => Number(v) > 0)
           .map(([k, v]) => ({ label: k, value: Number(v) }))
       : [{ label: 'Óculos', value: glassesTotal }];
 
-    // Dados de pelos para WidgetFacialHair
     const facialData = facialHasCats
       ? Object.entries(facialRaw)
           .filter(([, v]) => Number(v) > 0)
           .map(([k, v]) => ({ label: k, value: Number(v) }))
       : [{ label: 'Barba', value: facialTotal }];
 
-    // Reutiliza hairTypeData para glasses e hairColorData para facial_hair
-    // Os widgets corretos recebem os dados certos via widgetProps abaixo
     setHairTypeData(pctMapToTopData(ap.hair_type));
     setHairColorData(pctMapToTopData(ap.hair_color));
 
-    // Guarda dados categóricos de visão e pelos nos attrStats com labels especiais
-    // WidgetVision e WidgetFacialHair detectam pelo label
     setAttributeStats([
       { label: 'Óculos',      value: glassesTotal },
       { label: 'Barba',       value: facialTotal },
       { label: 'Máscara',     value: 0 },
       { label: 'Chapéu/Boné', value: Math.round(ap.headwear?.true ?? 0) },
-      // Dados categóricos embutidos com prefixo _glasses_ e _facial_
       ...glassesData.map(d => ({ label: `_glasses_${d.label}`, value: d.value })),
       ...facialData.map(d  => ({ label: `_facial_${d.label}`,  value: d.value })),
     ]);
 
-    // Pirâmide etária: usa gender_percent para dividir corretamente M/F por faixa
     const agePct: Record<string, number> = rollup.age_pyramid_percent ?? {};
     const ageOrder = ['65+', '55-64', '45-54', '35-44', '25-34', '18-24', '18-'];
     const ageMap: Record<string, { m: number; f: number }> = {};
@@ -240,7 +236,6 @@ export function ClientDashboard() {
       '65-74': '65+', '75+': '65+', '55-64': '55-64', '45-54': '45-54',
       '35-44': '35-44', '25-34': '25-34', '18-24': '18-24', '0-9': '18-', '10-17': '18-',
     };
-    // Pega split M/F real do rollup
     const genderPct: Record<string, number> = rollup.gender_percent ?? {};
     const maleRatio   = (genderPct.male   ?? 50) / 100;
     const femaleRatio = (genderPct.female ?? 50) / 100;
@@ -278,6 +273,7 @@ export function ClientDashboard() {
             total_visitors:         json.dashboard.total_visitors,
             avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
             avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+            avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? json.dashboard.avg_attention_seconds ?? 0,
             visitors_per_day:       json.dashboard.visitors_per_day,
             visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
             gender_percent:         json.dashboard.gender_percent,
@@ -288,7 +284,7 @@ export function ClientDashboard() {
         } else {
           setSyncMessage('');
           setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-          setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAge(null);
+          setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
           setGenderStats([]); setAttributeStats([]); setAgeStats([]);
           setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
           setComparePrevVisitorsPerDay({});
@@ -312,7 +308,7 @@ export function ClientDashboard() {
 
       console.log('[Dashboard] Sem rollup — acionando rebuild em background...');
       setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-      setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAge(null);
+      setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
       setGenderStats([]); setAttributeStats([]); setAgeStats([]);
       setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
       setComparePrevVisitorsPerDay({});
@@ -334,6 +330,7 @@ export function ClientDashboard() {
             total_visitors:         json.dashboard.total_visitors,
             avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
             avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+            avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? json.dashboard.avg_attention_seconds ?? 0,
             visitors_per_day:       json.dashboard.visitors_per_day,
             visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
             gender_percent:         json.dashboard.gender_percent,
@@ -400,6 +397,7 @@ export function ClientDashboard() {
                   total_visitors:         rebuildJson.dashboard.total_visitors,
                   avg_visitors_per_day:   rebuildJson.dashboard.avg_visitors_per_day,
                   avg_visit_time_seconds: rebuildJson.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+                  avg_attention_seconds:  rebuildJson.dashboard.avg_times_seconds?.avg_attention_seconds ?? rebuildJson.dashboard.avg_attention_seconds ?? 0,
                   visitors_per_day:       rebuildJson.dashboard.visitors_per_day,
                   visitors_per_hour_avg:  rebuildJson.dashboard.visitors_per_hour_avg,
                   gender_percent:         rebuildJson.dashboard.gender_percent,
@@ -430,7 +428,6 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  // ── lastQuarterMonths: sempre usa TODAY como âncora ──────────────────────
   const lastQuarterMonths = useCallback((anchor: Date) => {
     const y = anchor.getUTCFullYear();
     const endMonth = anchor.getUTCMonth();
@@ -507,14 +504,10 @@ export function ClientDashboard() {
     return Number(count) || 0;
   }, [id, deviceIds]);
 
-  // ── loadQuarterData — CORRIGIDO ──────────────────────────────────────────
-  // Âncora em TODAY (não no date-picker). Mescla múltiplos rollup shards.
-  // Dispara rebuild automático se não há rollup coberto.
   const loadQuarterData = useCallback(async () => {
     if (!id) return;
     setIsLoadingQuarter(true);
     try {
-      // CORREÇÃO 1: sempre âncora em hoje
       const today = new Date();
       const months = lastQuarterMonths(today);
       const quarterStart = months[0].startIso;
@@ -522,7 +515,6 @@ export function ClientDashboard() {
       const qStartDay    = quarterStart.slice(0, 10);
       const qEndDay      = quarterEnd.slice(0, 10);
 
-      // CORREÇÃO 2: buscar rollups sobrepostos e mesclar visitors_per_day
       let rollupVisitorsPerDay: Record<string, number> | null = null;
 
       if (deviceIds.length === 0) {
@@ -549,15 +541,11 @@ export function ClientDashboard() {
           }
           if (Object.keys(merged).length > 0) {
             rollupVisitorsPerDay = merged;
-            console.log(`[Quarter] Rollup mesclado — ${Object.keys(merged).length} dias, total: ${Object.values(merged).reduce((a, b) => a + b, 0)}`);
           }
         }
       }
 
-      // CORREÇÃO 3: rebuild para o trimestre inteiro se não há rollup
-      // Faz uma única chamada cobrindo os 3 meses para ser mais eficiente
       if (!rollupVisitorsPerDay && deviceIds.length === 0) {
-        console.log('[Quarter] Nenhum rollup — disparando rebuild do trimestre inteiro...');
         try {
           const resp = await fetch('/api/sync-analytics', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -570,16 +558,13 @@ export function ClientDashboard() {
             for (const [d, v] of Object.entries(vpd)) {
               if (d >= qStartDay && d <= qEndDay) rollupVisitorsPerDay[d] = Number(v) || 0;
             }
-            console.log(`[Quarter] Rebuild trimestre — ${json.dashboard.total_visitors} visitantes em ${Object.keys(rollupVisitorsPerDay).length} dias`);
           }
         } catch (e) {
           console.warn('[Quarter] Rebuild falhou, usando contagem de linhas:', e);
         }
       }
 
-      // CORREÇÃO 4: se ainda sem rollup (rebuild retornou vazio), tenta mês a mês
       if (!rollupVisitorsPerDay && deviceIds.length === 0) {
-        console.log('[Quarter] Rebuild geral sem dados — tentando mês a mês...');
         const merged: Record<string, number> = {};
         for (const month of months) {
           try {
@@ -602,7 +587,6 @@ export function ClientDashboard() {
         if (Object.keys(merged).length > 0) rollupVisitorsPerDay = merged;
       }
 
-      // Agrupa por mês
       const rows: { label: string; visitors: number; sales: number }[] = [];
       for (const month of months) {
         let visitors = 0;
@@ -619,7 +603,6 @@ export function ClientDashboard() {
         rows.push({ label: month.label, visitors, sales });
       }
 
-      console.log('[Quarter] Resultado:', rows);
       setQuarterBars(rows);
       setQuarterVisitorsTotal(rows.reduce((acc, r) => acc + (Number(r.visitors) || 0), 0));
       setQuarterSalesTotal(rows.reduce((acc, r)    => acc + (Number(r.sales)    || 0), 0));
@@ -629,7 +612,6 @@ export function ClientDashboard() {
     } finally {
       setIsLoadingQuarter(false);
     }
-  // selectedEndDate removido dos deps — trimestre é sempre hoje
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, deviceIds, lastQuarterMonths, fetchSalesFromDb, fetchVisitorsFromDb]);
 
@@ -747,7 +729,7 @@ export function ClientDashboard() {
     try {
       const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, sync_stores: true }) });
       if (!resp.ok) { const txt = await resp.text(); console.warn('[Stores Sync] Erro API:', txt); setSyncMessage(''); return; }
-      const json = await resp.json();
+      await resp.json();
       await refreshClientAndStores();
     } catch (e) { console.warn('[Stores Sync] Erro:', e); setSyncMessage(''); }
     finally { setIsSyncingStores(false); }
@@ -796,12 +778,11 @@ export function ClientDashboard() {
       const wl: Record<string, { colSpanLg?: Span; heightPx?: number }> = {};
       if (rawLayout && typeof rawLayout === 'object') {
         for (const [wid, cfg] of Object.entries(rawLayout)) {
-          const id = String(wid);
+          const wId = String(wid);
           const span = normalizeSpan((cfg as any)?.colSpanLg ?? cfg);
           const heightPx = clampNum((cfg as any)?.heightPx, 180, 1200, NaN);
-
-          if (span) wl[id] = { ...(wl[id] || {}), colSpanLg: span };
-          if (Number.isFinite(heightPx)) wl[id] = { ...(wl[id] || {}), heightPx: Math.round(heightPx) };
+          if (span) wl[wId] = { ...(wl[wId] || {}), colSpanLg: span };
+          if (Number.isFinite(heightPx)) wl[wId] = { ...(wl[wId] || {}), heightPx: Math.round(heightPx) };
         }
       }
 
@@ -810,28 +791,63 @@ export function ClientDashboard() {
 
     (async () => {
       if (!id) return;
-      const fetchConfig = async (scope: 'global' | 'client') => {
-        const q = supabase.from('dashboard_configs').select('widgets_config, updated_at').eq('layout_name', scope).order('updated_at', { ascending: false }).limit(1);
-        const { data } = scope === 'global' ? await q.is('client_id', null) : await q.eq('client_id', id);
+
+      const fetchConfig = async (layoutName: string, clientId: string | null) => {
+        const q = supabase
+          .from('dashboard_configs')
+          .select('widgets_config, updated_at')
+          .eq('layout_name', layoutName)
+          .order('updated_at', { ascending: false })
+          .limit(1);
+        const { data } = clientId == null ? await q.is('client_id', null) : await q.eq('client_id', clientId);
         return data?.[0]?.widgets_config ?? null;
       };
 
-      let widgetsConfig = await fetchConfig('client');
-      if (!widgetsConfig) widgetsConfig = await fetchConfig('global');
+      const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
 
-      let resolved = resolveDashboardConfig(widgetsConfig);
-      if (!resolved.ids) {
+      let allowedRaw = await fetchConfig('client', id);
+      if (!allowedRaw) allowedRaw = await fetchConfig('global', null);
+
+      let allowed = resolveDashboardConfig(allowedRaw);
+      if (!allowed.ids) {
         const cc = localStorage.getItem(`dashboard-config-${id}`);
         const gc = localStorage.getItem('dashboard-config-global');
-        resolved = resolveDashboardConfig(cc ? JSON.parse(cc) : null);
-        if (!resolved.ids) resolved = resolveDashboardConfig(gc ? JSON.parse(gc) : null);
+        allowed = resolveDashboardConfig(cc ? JSON.parse(cc) : null);
+        if (!allowed.ids) allowed = resolveDashboardConfig(gc ? JSON.parse(gc) : null);
       }
 
-      const finalIds = resolved.ids && resolved.ids.length ? resolved.ids : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
-      const active = finalIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
+      const allowedIds = allowed.ids && allowed.ids.length ? allowed.ids : defaultIds;
+      const allowedSet = new Set(allowedIds);
+
+      let userRaw: any = null;
+      try {
+        userRaw = await fetchConfig('client_user', id);
+      } catch {
+        userRaw = null;
+      }
+
+      let userCfg = resolveDashboardConfig(userRaw);
+      if (!userCfg.ids) {
+        const uc = localStorage.getItem(`dashboard-config-user-${id}`);
+        userCfg = resolveDashboardConfig(uc ? JSON.parse(uc) : null);
+      }
+
+      const baseIds = userCfg.ids && userCfg.ids.length ? userCfg.ids : allowedIds;
+      let finalIds = baseIds.filter((wid) => allowedSet.has(wid));
+      if (!finalIds.length) finalIds = allowedIds;
+
+      const mergedLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> = { ...allowed.widgetLayout };
+      for (const [wid, cfg] of Object.entries(userCfg.widgetLayout)) {
+        if (allowedSet.has(wid)) mergedLayout[wid] = { ...(mergedLayout[wid] || {}), ...(cfg as any) };
+      }
+
+      const active = finalIds
+        .map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid))
+        .filter(Boolean) as WidgetType[];
+
       if (!cancelled) {
         setActiveWidgets(active);
-        setWidgetLayout(resolved.widgetLayout);
+        setWidgetLayout(mergedLayout);
         setIsLoadingConfig(false);
       }
     })();
@@ -886,18 +902,23 @@ export function ClientDashboard() {
   }, [periodSeries.labels, periodSeries.values, selectedStartDate, comparePrevVisitorsPerDay]);
 
   const getStats = () => [
-    { label: 'Total Visitantes',    value: totalVisitors.toLocaleString(),    icon: Users },
-    { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(), icon: BarChart2 },
-    { label: 'Tempo Médio Visita',  value: formatDuration(avgVisitSeconds),   icon: Clock },
-    { label: 'Idade Média', value: avgAge == null ? '-' : `${avgAge.toLocaleString('pt-BR', { maximumFractionDigits: 0 })} anos`, icon: Users },
+    { label: 'Total Visitantes',     value: totalVisitors.toLocaleString(),                                        icon: Users    },
+    { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(),                                    icon: BarChart2 },
+    { label: 'Tempo Médio Visita',   value: formatDuration(avgVisitSeconds),                                       icon: Clock    },
+    { label: 'Tempo de Atenção',     value: avgAttentionSeconds > 0 ? formatDuration(avgAttentionSeconds) : '—',  icon: Clock    },
   ];
 
   const clientName = clientData?.name || 'Carregando...';
   const clientLogo = clientData?.logo;
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500">
+    <div
+      ref={dashboardRef}
+      className="space-y-6 animate-in fade-in duration-500"
+      style={isFullscreen ? { background: '#030712', padding: '24px', overflowY: 'auto', height: '100%' } : undefined}
+    >
       <div className="flex flex-col gap-4">
+        {/* Breadcrumb */}
         <div className="flex items-center gap-2 text-sm text-gray-500">
           <button onClick={() => navigate('/clientes')} className="hover:text-emerald-400 transition-colors">Clientes</button>
           <ChevronRight size={14} />
@@ -906,6 +927,7 @@ export function ClientDashboard() {
         </div>
 
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+          {/* Logo + título */}
           <div className="flex items-center gap-4 sm:gap-6">
             <div className="h-16 w-16 sm:h-24 sm:min-w-[100px] flex items-center justify-center overflow-hidden group relative cursor-pointer">
               {clientLogo ? (
@@ -930,7 +952,9 @@ export function ClientDashboard() {
             </div>
           </div>
 
+          {/* Controles direita */}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 w-full lg:w-auto">
+            {/* Seletor de loja */}
             <div className="relative w-full sm:w-auto">
               <select
                 className="bg-gray-900 border border-gray-800 text-white pl-10 pr-8 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-sm w-full sm:min-w-[180px]"
@@ -944,36 +968,51 @@ export function ClientDashboard() {
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
             </div>
 
-            <div className="flex flex-col items-end w-full sm:w-auto">
-              <div className="relative w-full sm:w-auto">
-                <button onClick={() => setShowDatePicker(!showDatePicker)} className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors">
-                  <div className="flex items-center gap-2 flex-nowrap">
-                    <Calendar size={16} className="text-gray-500" />
-                    <span className="text-sm whitespace-nowrap">{selectedStartDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })} → {selectedEndDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</span>
-                  </div>
-                  <ChevronDown size={14} className="text-gray-500" />
-                </button>
-                {showDatePicker && (
-                  <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl right-0 w-full sm:w-auto">
-                    <div className="flex flex-col sm:flex-row items-end gap-3">
-                      <div className="w-full sm:w-auto">
-                        <label className="block text-xs text-gray-400">Início</label>
-                        <input type="date" value={selectedStartDate.toISOString().slice(0, 10)}
-                          onChange={(e) => { autoTodayRef.current = false; const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setSelectedStartDate(d); }}
-                          className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
-                      </div>
-                      <div className="w-full sm:w-auto">
-                        <label className="block text-xs text-gray-400">Fim</label>
-                        <input type="date" value={selectedEndDate.toISOString().slice(0, 10)}
-                          onChange={(e) => { autoTodayRef.current = false; const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setSelectedEndDate(d); }}
-                          className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
-                      </div>
-                      <button onClick={() => setShowDatePicker(false)} className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md">Aplicar</button>
+            {/* Botão Apresentação + Date Picker */}
+            <div className="flex flex-row items-start gap-3 w-full sm:w-auto">
+              {/* Botão Tela Cheia — só ícone */}
+              <button
+                onClick={toggleFullscreen}
+                title={isFullscreen ? 'Sair da tela cheia' : 'Modo apresentação'}
+                className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-gray-700 transition-colors flex-shrink-0 h-[38px] w-[38px]"
+              >
+                {isFullscreen
+                  ? <Minimize2 size={16} className="text-emerald-400" />
+                  : <Maximize2 size={16} className="text-gray-400" />}
+              </button>
+
+              {/* Date Picker */}
+              <div className="flex flex-col items-end flex-1 sm:flex-none">
+                <div className="relative w-full sm:w-auto">
+                  <button onClick={() => setShowDatePicker(!showDatePicker)} className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors">
+                    <div className="flex items-center gap-2 flex-nowrap">
+                      <Calendar size={16} className="text-gray-500" />
+                      <span className="text-sm whitespace-nowrap">{selectedStartDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })} → {selectedEndDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</span>
                     </div>
-                  </div>
-                )}
+                    <ChevronDown size={14} className="text-gray-500" />
+                  </button>
+                  {showDatePicker && (
+                    <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl right-0 w-full sm:w-auto">
+                      <div className="flex flex-col sm:flex-row items-end gap-3">
+                        <div className="w-full sm:w-auto">
+                          <label className="block text-xs text-gray-400">Início</label>
+                          <input type="date" value={selectedStartDate.toISOString().slice(0, 10)}
+                            onChange={(e) => { autoTodayRef.current = false; const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setSelectedStartDate(d); }}
+                            className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
+                        </div>
+                        <div className="w-full sm:w-auto">
+                          <label className="block text-xs text-gray-400">Fim</label>
+                          <input type="date" value={selectedEndDate.toISOString().slice(0, 10)}
+                            onChange={(e) => { autoTodayRef.current = false; const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setSelectedEndDate(d); }}
+                            className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
+                        </div>
+                        <button onClick={() => setShowDatePicker(false)} className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md">Aplicar</button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+                {lastUpdate && <div className="mt-1 text-[10px] text-gray-500 w-full sm:w-auto text-right">Atualizado: {lastUpdate.toLocaleString('pt-BR')}</div>}
               </div>
-              {lastUpdate && <div className="mt-1 text-[10px] text-gray-500 w-full sm:w-auto text-right">Atualizado: {lastUpdate.toLocaleString('pt-BR')}</div>}
             </div>
           </div>
         </div>
@@ -998,7 +1037,7 @@ export function ClientDashboard() {
       {/* Widgets */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden min-h-[400px]">
         {view === 'network' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-3 p-4 items-start">
             {isLoadingConfig ? (
               <div className="col-span-full flex justify-center py-20">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
@@ -1021,28 +1060,29 @@ export function ClientDashboard() {
 
                 let lgSpan = 'lg:col-span-6';
                 if (spanLg === 12) lgSpan = 'lg:col-span-12';
-                if (spanLg === 8) lgSpan = 'lg:col-span-8';
-                if (spanLg === 4) lgSpan = 'lg:col-span-4';
-                if (spanLg === 3) lgSpan = 'lg:col-span-3';
+                if (spanLg === 8)  lgSpan = 'lg:col-span-8';
+                if (spanLg === 4)  lgSpan = 'lg:col-span-4';
+                if (spanLg === 3)  lgSpan = 'lg:col-span-3';
 
                 const mdSpan = spanLg >= 8 ? 'md:col-span-2' : 'md:col-span-1';
 
                 const widgetProps: any = { view: 'network' };
-                if (widget.id === 'flow_trend')             widgetProps.dailyData = dailyStats;
-                if (widget.id === 'hourly_flow')          { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'age_pyramid')          { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'gender_dist')          { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'attributes')             widgetProps.attrData = attributeStats;
-                if (widget.id === 'kpi_flow_stats')       { widgetProps.totalVisitors = totalVisitors; widgetProps.avgVisitorsPerDay = avgVisitorsPerDay; widgetProps.avgVisitSeconds = avgVisitSeconds; }
-                if (widget.id === 'chart_age_ranges')       widgetProps.ageData = ageStats;
-                if (widget.id === 'chart_vision')           widgetProps.attrData = attributeStats;
-                if (widget.id === 'chart_facial_hair')      widgetProps.attrData = attributeStats;
-                if (widget.id === 'chart_hair_type')        widgetProps.hairTypeData = hairTypeData;
-                if (widget.id === 'chart_hair_color')       widgetProps.hairColorData = hairColorData;
-                if (widget.id === 'kpi_store_quarter')    { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
-                if (widget.id === 'kpi_store_period')     { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }
-                if (widget.id === 'campaigns') widgetProps.clientId = id;
-                if (widget.id === 'chart_sales_daily')    { widgetProps.labels = periodSeries.labels; widgetProps.visitors = periodSeries.values; widgetProps.loading = isLoadingData; }
+                if (widget.id === 'flow_trend')             { widgetProps.dailyData = dailyStats; widgetProps.genderData = genderStats; }
+                if (widget.id === 'hourly_flow')           { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'age_pyramid')           { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'gender_dist')           { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'attributes')              widgetProps.attrData = attributeStats;
+                if (widget.id === 'kpi_flow_stats')        { widgetProps.totalVisitors = totalVisitors; widgetProps.avgVisitorsPerDay = avgVisitorsPerDay; widgetProps.avgVisitSeconds = avgVisitSeconds; }
+                if (widget.id === 'chart_age_ranges')        widgetProps.ageData = ageStats;
+                if (widget.id === 'chart_vision')            widgetProps.attrData = attributeStats;
+                if (widget.id === 'chart_facial_hair')       widgetProps.attrData = attributeStats;
+                if (widget.id === 'chart_hair_type')         widgetProps.hairTypeData = hairTypeData;
+                if (widget.id === 'chart_hair_color')        widgetProps.hairColorData = hairColorData;
+                if (widget.id === 'chart_sales_quarter')     { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
+                if (widget.id === 'kpi_store_quarter')     { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
+                if (widget.id === 'kpi_store_period')      { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }
+                if (widget.id === 'campaigns')               widgetProps.clientId = id;
+                if (widget.id === 'chart_sales_daily')     { widgetProps.labels = periodSeries.labels; widgetProps.visitors = periodSeries.values; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
 
@@ -1050,7 +1090,7 @@ export function ClientDashboard() {
                 const widgetStyle = Number.isFinite(heightPx) ? { height: Math.round(heightPx) } : undefined;
 
                 return (
-                  <div key={widget.id} style={widgetStyle} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>
+                  <div key={widget.id} style={widgetStyle} className={`col-span-1 ${mdSpan} ${lgSpan} self-start animate-in fade-in zoom-in-95 duration-500`}>
                     <div className="h-full">
                       <Component {...widgetProps} />
                     </div>
