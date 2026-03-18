@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
-import { useAuth } from '@/contexts/AuthContext';
 import {
   Globe, Clock, Building2, ChevronRight, ChevronDown,
   LayoutGrid, Users, BarChart2, Image, Upload, Calendar,
-  Maximize2, Minimize2, Download
+  Maximize2, Minimize2
 } from 'lucide-react';
 
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
-import { exportAnalyticsToExcel } from '../services/exportService';
 import type { WidgetType } from '../components/DashboardWidgets';
 import supabase from '../lib/supabase';
 
@@ -39,14 +37,6 @@ export function ClientDashboard() {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { user } = useAuth();
-
-  useEffect(() => {
-    if (!user || !id) return;
-    if (user.role === 'client' && user.clientId && user.clientId !== id) {
-      navigate(`/clientes/${user.clientId}/dashboard`, { replace: true });
-    }
-  }, [id, navigate, user]);
 
   const [view, setView] = useState<'network' | 'store' | 'camera'>('network');
   const [selectedStore, setSelectedStore] = useState<StoreType | null>(null);
@@ -147,38 +137,6 @@ export function ClientDashboard() {
       : `${String(mm).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
   };
 
-  const canExportData = user?.role === 'admin' || (user?.permissions?.export_data ?? false);
-
-  const exportAnalyticsData = useCallback(() => {
-    const start = new Date(selectedStartDate); start.setUTCHours(0, 0, 0, 0);
-    const end = new Date(selectedEndDate); end.setUTCHours(0, 0, 0, 0);
-
-    const perDay: { Data: string; Visitantes: number }[] = [];
-    for (let d = new Date(start); d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
-      const key = d.toISOString().slice(0, 10);
-      perDay.push({ Data: key, Visitantes: Number(visitorsPerDayMap[key] || 0) });
-    }
-
-    const perHour = Array.from({ length: 24 }, (_, h) => ({
-      Hora: `${String(h).padStart(2, '0')}:00`,
-      Média: Number(hourlyStats[h] || 0),
-    }));
-
-    const summary = [
-      { Métrica: 'Total Visitantes', Valor: Number(totalVisitors || 0) },
-      { Métrica: 'Média Visitantes/Dia', Valor: Number(avgVisitorsPerDay || 0) },
-      { Métrica: 'Tempo Médio Visita', Valor: formatDuration(Number(avgVisitSeconds || 0)) },
-      { Métrica: 'Tempo de Atenção', Valor: Number(avgAttentionSeconds || 0) > 0 ? formatDuration(Number(avgAttentionSeconds || 0)) : '—' },
-      { Métrica: 'Período (Início)', Valor: selectedStartDate.toISOString().slice(0, 10) },
-      { Métrica: 'Período (Fim)', Valor: selectedEndDate.toISOString().slice(0, 10) },
-    ];
-
-    const safeClient = String(clientData?.name || 'cliente').replace(/[^a-zA-Z0-9-_]+/g, '_');
-    const fileName = `dados_${safeClient}_${selectedStartDate.toISOString().slice(0, 10)}_${selectedEndDate.toISOString().slice(0, 10)}`;
-
-    exportAnalyticsToExcel({ fileName, summary, perDay, perHour });
-  }, [avgAttentionSeconds, avgVisitSeconds, avgVisitorsPerDay, clientData?.name, hourlyStats, selectedEndDate, selectedStartDate, totalVisitors, visitorsPerDayMap]);
-
   const pctMapToTopData = (m: any, maxItems = 3) => {
     const entries = Object.entries(m || {})
       .map(([k, v]) => ({ label: String(k), value: Number(v) || 0 }))
@@ -228,37 +186,63 @@ export function ClientDashboard() {
     const glassesRaw   = ap.glasses      ?? {};
     const facialRaw    = ap.facial_hair  ?? {};
 
+    // ── Glasses ──────────────────────────────────────────────────────────────
     const glassesHasCats = Object.keys(glassesRaw).some(k => ['usual','dark','none'].includes(k));
-    const facialHasCats  = Object.keys(facialRaw).some(k  => ['shaved','beard','goatee','bristle','mustache'].includes(k));
+    const facialHasCats  = Object.keys(facialRaw).some(k  => ['shaved','beard','goatee','stubble','mustache'].includes(k));
 
-    const glassesTotal = glassesHasCats
-      ? Math.round((Number(glassesRaw.usual ?? 0) + Number(glassesRaw.dark ?? 0)))
-      : Math.round(glassesRaw.true ?? 0);
+    // % com óculos = usual + dark (quem usa óculos de qualquer tipo)
+    const glassesWithPct = glassesHasCats
+      ? Number(glassesRaw.usual ?? 0) + Number(glassesRaw.dark ?? 0)
+      : Number(glassesRaw.true ?? 0);
+    const glassesTotal = Math.round(glassesWithPct);
+
+    // % com barba = tudo exceto shaved
     const facialTotal = facialHasCats
-      ? Math.round(Object.entries(facialRaw).filter(([k]) => k !== 'shaved').reduce((a, [, v]) => a + Number(v), 0))
+      ? Math.round(Object.entries(facialRaw)
+          .filter(([k]) => k !== 'shaved')
+          .reduce((a, [, v]) => a + Number(v), 0))
       : Math.round(facialRaw.true ?? 0);
 
-    const glassesData = glassesHasCats
+    // Dados detalhados para WidgetVision — usa labels que o GLASSES_MAP entende
+    const glassesData: { label: string; value: number }[] = glassesHasCats
       ? Object.entries(glassesRaw)
           .filter(([, v]) => Number(v) > 0)
-          .map(([k, v]) => ({ label: k, value: Number(v) }))
-      : [{ label: 'Óculos', value: glassesTotal }];
+          .map(([k, v]) => ({ label: k, value: Number(v) }))  // usual, dark, none
+      : glassesTotal > 0
+        ? [
+            { label: 'true',  value: glassesTotal },
+            { label: 'false', value: Math.max(0, 100 - glassesTotal) },
+          ]
+        : [];
 
-    const facialData = facialHasCats
+    // Dados detalhados para WidgetFacialHair
+    const facialData: { label: string; value: number }[] = facialHasCats
       ? Object.entries(facialRaw)
           .filter(([, v]) => Number(v) > 0)
-          .map(([k, v]) => ({ label: k, value: Number(v) }))
-      : [{ label: 'Barba', value: facialTotal }];
+          .map(([k, v]) => ({ label: k, value: Number(v) }))  // shaved, beard, goatee…
+      : facialTotal > 0
+        ? [
+            { label: 'beard',  value: facialTotal },
+            { label: 'shaved', value: Math.max(0, 100 - facialTotal) },
+          ]
+        : [];
 
     setHairTypeData(pctMapToTopData(ap.hair_type));
     setHairColorData(pctMapToTopData(ap.hair_color));
+
+    // headwear: novo rollup salva 'true'/'false', rollup antigo salvava {true: X}
+    const headwearPct = Math.round(
+      Number(ap.headwear?.true ?? 0)
+    );
 
     setAttributeStats([
       { label: 'Óculos',      value: glassesTotal },
       { label: 'Barba',       value: facialTotal },
       { label: 'Máscara',     value: 0 },
-      { label: 'Chapéu/Boné', value: Math.round(ap.headwear?.true ?? 0) },
+      { label: 'Chapéu/Boné', value: headwearPct },
+      // Prefixo _glasses_ → lido por WidgetVision
       ...glassesData.map(d => ({ label: `_glasses_${d.label}`, value: d.value })),
+      // Prefixo _facial_ → lido por WidgetFacialHair
       ...facialData.map(d  => ({ label: `_facial_${d.label}`,  value: d.value })),
     ]);
 
@@ -824,63 +808,28 @@ export function ClientDashboard() {
 
     (async () => {
       if (!id) return;
-
-      const fetchConfig = async (layoutName: string, clientId: string | null) => {
-        const q = supabase
-          .from('dashboard_configs')
-          .select('widgets_config, updated_at')
-          .eq('layout_name', layoutName)
-          .order('updated_at', { ascending: false })
-          .limit(1);
-        const { data } = clientId == null ? await q.is('client_id', null) : await q.eq('client_id', clientId);
+      const fetchConfig = async (scope: 'global' | 'client') => {
+        const q = supabase.from('dashboard_configs').select('widgets_config, updated_at').eq('layout_name', scope).order('updated_at', { ascending: false }).limit(1);
+        const { data } = scope === 'global' ? await q.is('client_id', null) : await q.eq('client_id', id);
         return data?.[0]?.widgets_config ?? null;
       };
 
-      const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+      let widgetsConfig = await fetchConfig('client');
+      if (!widgetsConfig) widgetsConfig = await fetchConfig('global');
 
-      let allowedRaw = await fetchConfig('client', id);
-      if (!allowedRaw) allowedRaw = await fetchConfig('global', null);
-
-      let allowed = resolveDashboardConfig(allowedRaw);
-      if (!allowed.ids) {
+      let resolved = resolveDashboardConfig(widgetsConfig);
+      if (!resolved.ids) {
         const cc = localStorage.getItem(`dashboard-config-${id}`);
         const gc = localStorage.getItem('dashboard-config-global');
-        allowed = resolveDashboardConfig(cc ? JSON.parse(cc) : null);
-        if (!allowed.ids) allowed = resolveDashboardConfig(gc ? JSON.parse(gc) : null);
+        resolved = resolveDashboardConfig(cc ? JSON.parse(cc) : null);
+        if (!resolved.ids) resolved = resolveDashboardConfig(gc ? JSON.parse(gc) : null);
       }
 
-      const allowedIds = allowed.ids && allowed.ids.length ? allowed.ids : defaultIds;
-      const allowedSet = new Set(allowedIds);
-
-      let userRaw: any = null;
-      try {
-        userRaw = await fetchConfig('client_user', id);
-      } catch {
-        userRaw = null;
-      }
-
-      let userCfg = resolveDashboardConfig(userRaw);
-      if (!userCfg.ids) {
-        const uc = localStorage.getItem(`dashboard-config-user-${id}`);
-        userCfg = resolveDashboardConfig(uc ? JSON.parse(uc) : null);
-      }
-
-      const baseIds = userCfg.ids && userCfg.ids.length ? userCfg.ids : allowedIds;
-      let finalIds = baseIds.filter((wid) => allowedSet.has(wid));
-      if (!finalIds.length) finalIds = allowedIds;
-
-      const mergedLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> = { ...allowed.widgetLayout };
-      for (const [wid, cfg] of Object.entries(userCfg.widgetLayout)) {
-        if (allowedSet.has(wid)) mergedLayout[wid] = { ...(mergedLayout[wid] || {}), ...(cfg as any) };
-      }
-
-      const active = finalIds
-        .map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid))
-        .filter(Boolean) as WidgetType[];
-
+      const finalIds = resolved.ids && resolved.ids.length ? resolved.ids : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+      const active = finalIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
       if (!cancelled) {
         setActiveWidgets(active);
-        setWidgetLayout(mergedLayout);
+        setWidgetLayout(resolved.widgetLayout);
         setIsLoadingConfig(false);
       }
     })();
@@ -1014,17 +963,6 @@ export function ClientDashboard() {
                   : <Maximize2 size={16} className="text-gray-400" />}
               </button>
 
-              {canExportData && (
-                <button
-                  onClick={exportAnalyticsData}
-                  disabled={isLoadingData}
-                  title="Baixar dados (totais, médias, por dia e por hora)"
-                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-gray-700 transition-colors flex-shrink-0 h-[38px] w-[38px] disabled:opacity-60"
-                >
-                  <Download size={16} className="text-gray-400" />
-                </button>
-              )}
-
               {/* Date Picker */}
               <div className="flex flex-col items-end flex-1 sm:flex-none">
                 <div className="relative w-full sm:w-auto">
@@ -1081,7 +1019,7 @@ export function ClientDashboard() {
       {/* Widgets */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden min-h-[400px]">
         {view === 'network' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-3 p-4 items-start">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12">
             {isLoadingConfig ? (
               <div className="col-span-full flex justify-center py-20">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
@@ -1122,8 +1060,8 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_facial_hair')       widgetProps.attrData = attributeStats;
                 if (widget.id === 'chart_hair_type')         widgetProps.hairTypeData = hairTypeData;
                 if (widget.id === 'chart_hair_color')        widgetProps.hairColorData = hairColorData;
-                if (widget.id === 'chart_sales_quarter')     { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
                 if (widget.id === 'kpi_store_quarter')     { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
+                if (widget.id === 'chart_sales_quarter')    { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
                 if (widget.id === 'kpi_store_period')      { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'campaigns')               widgetProps.clientId = id;
                 if (widget.id === 'chart_sales_daily')     { widgetProps.labels = periodSeries.labels; widgetProps.visitors = periodSeries.values; widgetProps.loading = isLoadingData; }
@@ -1134,7 +1072,7 @@ export function ClientDashboard() {
                 const widgetStyle = Number.isFinite(heightPx) ? { height: Math.round(heightPx) } : undefined;
 
                 return (
-                  <div key={widget.id} style={widgetStyle} className={`col-span-1 ${mdSpan} ${lgSpan} self-start animate-in fade-in zoom-in-95 duration-500`}>
+                  <div key={widget.id} style={widgetStyle ?? { minHeight: 280 }} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>
                     <div className="h-full">
                       <Component {...widgetProps} />
                     </div>

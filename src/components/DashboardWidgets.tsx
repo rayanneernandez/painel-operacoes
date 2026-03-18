@@ -14,7 +14,8 @@ const CJ = {
   bodyFont:       { size: 13 },
 };
 
-const CANVAS_MIN_H = 120;
+// Altura padrão de todos os canvas Chart.js — NUNCA use flex-1 com Chart.js
+const CHART_H = 220;
 
 function useChartJs(
   canvasRef: React.RefObject<HTMLCanvasElement>,
@@ -24,79 +25,32 @@ function useChartJs(
   const chartRef = React.useRef<any>(null);
   React.useEffect(() => {
     let cancelled = false;
-    let ro: any = null;
-
-    const destroy = () => {
-      try { ro?.disconnect?.(); } catch {}
-      ro = null;
-      try { chartRef.current?.destroy?.(); } catch {}
-      chartRef.current = null;
-    };
-
     const init = () => {
       if (cancelled || !canvasRef.current) return;
       const ChartJs = (window as any).Chart;
       if (!ChartJs) return;
       const cfg = config();
       if (!cfg) return;
-
-      destroy();
-
-      try {
-        chartRef.current = new ChartJs(canvasRef.current, cfg);
-      } catch {
-        chartRef.current = null;
-        return;
-      }
-
-      const parent = canvasRef.current.parentElement;
-      if (parent && typeof (window as any).ResizeObserver !== 'undefined') {
-        ro = new (window as any).ResizeObserver(() => {
-          try { chartRef.current?.resize?.(); } catch {}
-        });
-        try { ro.observe(parent); } catch {}
-      }
-
-      requestAnimationFrame(() => {
-        if (cancelled) return;
-        try { chartRef.current?.resize?.(); } catch {}
-        try { chartRef.current?.update?.('none'); } catch {}
-      });
-
-      setTimeout(() => {
-        if (cancelled) return;
-        try { chartRef.current?.resize?.(); } catch {}
-        try { chartRef.current?.update?.('none'); } catch {}
-      }, 0);
+      if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
+      chartRef.current = new ChartJs(canvasRef.current, cfg);
     };
-
     if ((window as any).Chart) {
       init();
     } else {
       let tries = 0;
       const poll = setInterval(() => {
-        if ((window as any).Chart || tries++ > 60) { clearInterval(poll); init(); }
+        if ((window as any).Chart || tries++ > 30) { clearInterval(poll); init(); }
       }, 100);
-      return () => { cancelled = true; clearInterval(poll); destroy(); };
+      return () => { cancelled = true; clearInterval(poll); chartRef.current?.destroy(); chartRef.current = null; };
     }
-
-    return () => { cancelled = true; destroy(); };
+    return () => { cancelled = true; chartRef.current?.destroy(); chartRef.current = null; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, deps);
 }
 
-const CanvasBox = (
-  { minHeight = CANVAS_MIN_H, children, className = '' }: { minHeight?: number; children: React.ReactNode; className?: string }
-) => (
-  <div
-    style={{
-      position: 'relative',
-      width: '100%',
-      height: '100%',
-      minHeight,
-    }}
-    className={`min-w-0 flex-1 min-h-0 ${className}`}
-  >
+// ── Canvas wrapper — altura SEMPRE fixa via style ────────────────────────────
+const CanvasBox = ({ height = CHART_H, children }: { height?: number; children: React.ReactNode }) => (
+  <div style={{ position: 'relative', width: '100%', height }} className="min-w-0 flex-shrink-0">
     {children}
   </div>
 );
@@ -147,28 +101,26 @@ function AttrBarList({ items }: { items: { label: string; value: number; color: 
 }
 
 // ── ChartDonut (Chart.js) — usado por Vision/FacialHair/Hair ────────────────
-function ChartDonut({ labels, values, colors, donutClassName, sizePx }: { labels: string[]; values: number[]; colors: string[]; donutClassName?: string; sizePx?: number }) {
+function ChartDonut({ labels, values, colors }: { labels: string[]; values: number[]; colors: string[] }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const total = values.reduce((a, b) => a + b, 0);
   const safeColors = values.map((v, i) => v > 0 ? (colors[i] ?? '#6b7280') : 'transparent');
   const safeBorder = values.map((v) => v > 0 ? '#111827' : 'transparent');
-  const bestIdx = values.reduce((best, v, i) => (best < 0 || v > values[best] ? i : best), -1);
-  const bestPct = total > 0 && bestIdx >= 0 ? (values[bestIdx] / total) * 100 : 0;
 
   useChartJs(canvasRef, () => {
     if (total === 0) return null;
     return {
       type: 'doughnut',
-      data: { labels, datasets: [{ data: values, backgroundColor: safeColors, borderColor: safeBorder, borderWidth: 2, hoverOffset: 0 }] },
+      data: { labels, datasets: [{ data: values, backgroundColor: safeColors, borderColor: safeBorder, borderWidth: 2, hoverOffset: 8 }] },
       options: {
-        responsive: true, maintainAspectRatio: false, cutout: '65%', radius: '95%', layout: { padding: 0 },
+        responsive: true, maintainAspectRatio: false, cutout: '65%',
         plugins: {
           legend: { display: false },
           tooltip: {
             backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth: 1,
             padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont,
             filter: (item: any) => Number(item.raw) > 0,
-            callbacks: { label: (ctx: any) => `${ctx.label}: ${total > 0 ? ((Number(ctx.raw) / total) * 100).toFixed(1) : 0}%` },
+            callbacks: { label: (ctx: any) => `  ${ctx.label}: ${total > 0 ? ((Number(ctx.raw) / total) * 100).toFixed(1) : 0}%` },
           },
         },
       },
@@ -176,25 +128,12 @@ function ChartDonut({ labels, values, colors, donutClassName, sizePx }: { labels
   }, [JSON.stringify(values), JSON.stringify(safeColors)]);
 
   return (
-    <div className="flex flex-col items-center gap-3 flex-1 min-h-0 min-w-0">
-      <div className="flex-1 min-h-0 min-w-0 flex items-center justify-center w-full">
-        <div
-          style={typeof sizePx === 'number' && sizePx > 0 ? { width: sizePx, height: sizePx } : undefined}
-          className={`relative ${typeof sizePx === 'number' && sizePx > 0 ? '' : 'w-full h-full'} ${donutClassName ?? 'max-w-[150px] max-h-[150px] sm:max-w-[170px] sm:max-h-[170px] lg:max-w-[200px] lg:max-h-[200px]'} aspect-square`}
-        >
-          <CanvasBox minHeight={typeof sizePx === 'number' && sizePx > 0 ? sizePx : 0} className="w-full h-full flex-none">
-            {total === 0
-              ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-              : <canvas ref={canvasRef} />}
-          </CanvasBox>
-          {total > 0 && bestIdx >= 0 && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-              <span className="text-2xl font-bold text-white leading-none">{Math.round(bestPct)}%</span>
-              <span className="text-[11px] text-gray-400 mt-1">{labels[bestIdx] ?? ''}</span>
-            </div>
-          )}
-        </div>
-      </div>
+    <div className="flex flex-col items-center gap-3">
+      <CanvasBox height={160}>
+        {total === 0
+          ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+          : <canvas ref={canvasRef} />}
+      </CanvasBox>
       {total > 0 && (
         <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
           {labels.map((l, i) => values[i] > 0 && (
@@ -300,7 +239,7 @@ export const WidgetFlowTrend = ({ dailyData, genderData }: { view?: string; dail
   }), [JSON.stringify(maleData), JSON.stringify(femaleData)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Activity size={14} className="text-blue-500" />Média Visitantes por Dia</h3>
         <div className="flex gap-3 text-[10px] text-gray-400">
@@ -347,7 +286,7 @@ export const WidgetHourlyFlow = ({ hourlyData, genderData }: { view?: string; ho
   }), [JSON.stringify(maleData), JSON.stringify(femaleData)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Clock size={14} className="text-emerald-500" />Fluxo por Hora</h3>
         <div className="flex gap-3 text-[10px] text-gray-400">
@@ -394,7 +333,7 @@ export const WidgetAgePyramid = ({ ageData, totalVisitors }: { view?: string; ag
   }), [JSON.stringify(data)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div className="flex items-center justify-between mb-3">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Users size={14} className="text-purple-500" />Gênero &amp; Idade</h3>
         <div className="flex gap-3 text-[10px] text-gray-400">
@@ -429,7 +368,7 @@ export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: numbe
   }), [JSON.stringify(vals)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Distribuição por Faixa Etária</h3>
       <CanvasBox><canvas ref={canvasRef} /></CanvasBox>
     </div>
@@ -466,108 +405,44 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
     arcOffset += dash; return arc;
   });
 
-  const mainSeg = segments.reduce((best, s) => (best == null || s.pct > best.pct ? s : best), null as any);
-
-  const donutRef = React.useRef<HTMLDivElement>(null);
-  const [hoverSeg, setHoverSeg] = React.useState<(typeof segments)[number] | null>(null);
-  const [hoverPos, setHoverPos] = React.useState<{ x: number; y: number } | null>(null);
-  const rafRef = React.useRef<number | null>(null);
-
-  const onDonutMove = (e: React.MouseEvent) => {
-    const el = donutRef.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-    const clampX = Math.min(Math.max(0, x), rect.width);
-    const clampY = Math.min(Math.max(0, y), rect.height);
-
-    if (rafRef.current != null) cancelAnimationFrame(rafRef.current);
-    rafRef.current = requestAnimationFrame(() => {
-      setHoverPos({ x: clampX, y: clampY });
-      rafRef.current = null;
-    });
-  };
-
-  const onDonutLeave = () => {
-    setHoverSeg(null);
-    setHoverPos(null);
-  };
-
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 flex items-center gap-2 uppercase text-xs tracking-wider">
         <Users size={14} className="text-pink-500" />Gênero
       </h3>
-
-      {!hasData ? (
-        <div className="flex-1 min-h-0 min-w-0 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-      ) : (
-        <div className="flex-1 min-h-0 min-w-0 flex flex-col">
-          <div className="flex-1 min-h-0 min-w-0 flex items-center justify-center">
-            <div
-              ref={donutRef}
-              className="relative w-full h-full max-w-[180px] max-h-[180px] aspect-square"
-              onMouseMove={onDonutMove}
-              onMouseLeave={onDonutLeave}
-            >
-              <svg viewBox="0 0 100 100" className="w-full h-full" style={{ transform: 'rotate(-90deg)' }}>
+      {!hasData
+        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <div className="flex flex-col items-center gap-3">
+            {/* Donut maior — mesmo porte do AgePyramid */}
+            <div className="relative flex-shrink-0" style={{ width: 180, height: 180 }}>
+              <svg viewBox="0 0 100 100" width="180" height="180" style={{ transform: 'rotate(-90deg)' }}>
                 {arcs.map((arc, i) => (
-                  <circle
-                    key={i}
-                    cx="50"
-                    cy="50"
-                    r={radius}
-                    fill="none"
-                    stroke={arc.color}
-                    strokeWidth="15"
-                    strokeDasharray={`${arc.dash} ${circ}`}
-                    strokeDashoffset={-arc.offset}
-                    onMouseEnter={() => setHoverSeg(arc)}
-                    onMouseLeave={() => setHoverSeg(null)}
-                  />
+                  <circle key={i} cx="50" cy="50" r={radius} fill="none" stroke={arc.color}
+                    strokeWidth="15" strokeDasharray={`${arc.dash} ${circ}`} strokeDashoffset={-arc.offset} />
                 ))}
               </svg>
-
               <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-2xl font-bold text-white leading-none">{mainSeg?.pct ?? 0}%</span>
-                <span className="text-[11px] text-gray-400 mt-1">{mainSeg?.label ?? ''}</span>
+                <span className="text-2xl font-bold text-white leading-none">{segments[0]?.pct ?? 0}%</span>
+                <span className="text-[11px] text-gray-400 mt-1">{segments[0]?.label ?? ''}</span>
               </div>
-
-              {hoverSeg && hoverPos && (
-                <div
-                  className="absolute pointer-events-none z-10"
-                  style={{ left: Math.min(hoverPos.x + 12, 160), top: Math.min(hoverPos.y + 12, 160) }}
-                >
-                  <div
-                    className="border rounded-lg px-3 py-2 text-[13px] text-white whitespace-nowrap"
-                    style={{ background: CJ.bg, borderColor: 'rgba(255,255,255,0.12)' }}
-                  >
-                    <div className="font-bold leading-tight mb-1">{hoverSeg.label}</div>
-                    <div className="flex items-center gap-2 leading-tight">
-                      <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: hoverSeg.color }} />
-                      <span>{hoverSeg.label}: <span className="font-semibold">{hoverSeg.pct}%</span></span>
+            </div>
+            {/* Legenda sutil */}
+            <div className="flex justify-center gap-5">
+              {segments.map((s, i) => (
+                <div key={i} className="group relative flex items-center gap-1.5 cursor-default">
+                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.color }} />
+                  <span className="text-[11px] text-gray-400">{s.label}</span>
+                  <span className="text-[11px] font-semibold" style={{ color: s.color }}>{s.pct}%</span>
+                  {s.count != null && (
+                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-950 border border-gray-700 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                      {s.count.toLocaleString()} visitantes
                     </div>
-                    {hoverSeg.count != null && (
-                      <div className="mt-1 text-[12px] text-gray-200">Visitantes: {hoverSeg.count.toLocaleString('pt-BR')}</div>
-                    )}
-                  </div>
+                  )}
                 </div>
-              )}
+              ))}
             </div>
           </div>
-
-          <div className="flex justify-center gap-5 pt-2">
-            {segments.map((s, i) => (
-              <div key={i} className="flex items-center gap-1.5 cursor-default">
-                <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.color }} />
-                <span className="text-[11px] text-gray-400">{s.label}</span>
-                <span className="text-[11px] font-semibold" style={{ color: s.color }}>{s.pct}%</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      }
     </div>
   );
 };
@@ -577,7 +452,7 @@ export const WidgetAttributes = ({ attrData }: { view?: string; attrData?: { lab
   const data = (attrData || []).filter(a => !a.label.startsWith('_')).filter(a => ['Óculos','Barba','Máscara','Chapéu/Boné'].includes(a.label));
   const display = data.length > 0 ? data : [{ label:'Óculos', value:0 },{ label:'Barba', value:0 },{ label:'Máscara', value:0 },{ label:'Chapéu/Boné', value:0 }];
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider"><Users size={14} className="text-orange-500" />Atributos</h3>
       <HorizontalBarChart data={display} color="bg-orange-500" />
     </div>
@@ -599,11 +474,11 @@ export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: 
     if (wo > 0) items.push({ label: 'Sem Óculos', value: wo, color: '#4b5563' });
   }
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Visão</h3>
       {items.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
         : items.length === 1 ? <AttrBarList items={items} />
-        : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} donutClassName="max-w-[180px] max-h-[180px]" /> }
+        : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} />}
     </div>
   );
 };
@@ -621,11 +496,11 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
     if (wo > 0) items.push({ label: 'Sem Barba', value: wo, color: '#1d4ed8' });
   }
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Pelos Faciais</h3>
       {items.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
         : items.length === 1 ? <AttrBarList items={items} />
-        : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} sizePx={180} /> }
+        : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} />}
     </div>
   );
 };
@@ -634,7 +509,7 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
 export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: string; value: number }[] }) => {
   const { labels, values, colors } = mapHairData(hairTypeData, HAIR_TYPE_MAP);
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Tipo de Cabelo</h3>
       {labels.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
         : labels.length === 1 ? <AttrBarList items={labels.map((l,i)=>({ label:l, value:values[i], color:colors[i] }))} />
@@ -647,7 +522,7 @@ export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: strin
 export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: string; value: number }[] }) => {
   const { labels, values, colors } = mapHairData(hairColorData, HAIR_COLOR_MAP);
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Cor de Cabelo</h3>
       {labels.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
         : labels.length === 1 ? <AttrBarList items={labels.map((l,i)=>({ label:l, value:values[i], color:colors[i] }))} />
@@ -671,14 +546,14 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
   const fmtDate = (d: string | null) => d ? new Date(d).toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '—';
   const fmtSec = (s: number) => { const m = Math.floor(s / 60); const sec = s % 60; return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; };
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Activity size={14} className="text-emerald-500" />Engajamento em Campanhas</h3>
         <span className="text-[10px] text-gray-400 border border-gray-800 px-2 py-1 rounded-md">Automático</span>
       </div>
       {loading ? <div className="flex items-center justify-center py-10 text-gray-500 text-sm">Carregando...</div>
         : rows.length === 0 ? <div className="flex flex-col items-center justify-center py-10 gap-2 text-gray-500 text-sm"><p>Nenhuma campanha disponível.</p><p className="text-xs text-gray-600">Aguardando sincronização automática.</p></div>
-        : <div className="overflow-auto flex-1 min-h-0"><table className="w-full text-left text-xs">
+        : <div className="overflow-auto"><table className="w-full text-left text-xs">
             <thead className="text-gray-500 uppercase border-b border-gray-800"><tr><th className="pb-2 pr-4 font-medium">Campanha</th><th className="pb-2 pr-4 font-medium">Início</th><th className="pb-2 pr-4 font-medium">Fim</th><th className="pb-2 pr-4 font-medium text-right">Visitantes</th><th className="pb-2 font-medium text-right">Atenção</th></tr></thead>
             <tbody className="divide-y divide-gray-800">{rows.map((r, i) => (<tr key={i} className="hover:bg-gray-800/50 transition-colors"><td className="py-2 pr-4 text-white font-medium max-w-[180px] truncate">{r.name || '—'}</td><td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td><td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td><td className="py-2 pr-4 text-emerald-400 text-right font-medium">{Number(r.visitors||0).toLocaleString('pt-BR')}</td><td className="py-2 text-blue-400 text-right font-medium">{r.avg_attention_sec > 0 ? fmtSec(r.avg_attention_sec) : '—'}</td></tr>))}</tbody>
           </table></div>}
@@ -699,48 +574,45 @@ export const WidgetKPIFlowStats = ({ totalVisitors, avgVisitorsPerDay, avgVisitS
 };
 
 // ── WidgetSalesQuarter ───────────────────────────────────────────────────────
-export const WidgetSalesQuarter = ({ quarterData, loading }: { quarterData?: { label: string; visitors: number; sales: number }[]; loading?: boolean }) => {
+export const WidgetSalesQuarter = ({
+  quarterData, visitors, sales, loading,
+}: {
+  quarterData?: { label: string; visitors: number; sales: number }[];
+  visitors?: number; sales?: number; loading?: boolean;
+}) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
+
+  // Aceita tanto quarterData (array de meses) quanto quarterBars via props diretas
   const data = Array.isArray(quarterData) && quarterData.length ? quarterData : [];
-  const visitors = data.map((d) => Number(d.visitors)||0);
-  const totalV   = visitors.reduce((a,b)=>a+b,0);
+  const visitorArr = data.map((d) => Number(d.visitors) || 0);
+  const totalV = visitorArr.reduce((a, b) => a + b, 0);
 
   useChartJs(canvasRef, () => {
     if (data.length === 0) return null;
     return {
       type: 'bar',
-      data: { labels: data.map(d=>d.label), datasets: [{ label:'Visitantes', data: visitors, backgroundColor: CJ.neutral, borderRadius:4, borderSkipped:false, hoverBackgroundColor:'#34d399' }] },
+      data: { labels: data.map(d=>d.label), datasets: [{ label:'Visitantes', data: visitorArr, backgroundColor: CJ.neutral, borderRadius:4, borderSkipped:false, hoverBackgroundColor:'#34d399' }] },
       options: {
         responsive: true, maintainAspectRatio: false,
-        layout: { padding: { left: 8, right: 8, bottom: 18, top: 4 } },
         plugins: { legend: { display: false }, tooltip: { backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth:1, padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont, callbacks: { title:(i:any[])=>i[0]?.label??'', label:(ctx:any)=>{ const v=Number(ctx.raw); return `  Visitantes: ${v>=1000?`${(v/1000).toFixed(1)}k`:v.toLocaleString('pt-BR')}`; } } } },
         scales: {
-          x: {
-            offset: true,
-            border: { display: false },
-            grid: { color: CJ.grid, drawOnChartArea: false, drawTicks: false },
-            ticks: { color: CJ.label, font: { size: 11 }, autoSkip: false, maxRotation: 0, padding: 14, mirror: false },
-          },
+          x: { grid:{ color:CJ.grid }, ticks:{ color:CJ.label, font:{ size:12 }, autoSkip:false, maxRotation:0 } },
           y: { beginAtZero:true, grid:{ color:CJ.grid }, ticks:{ color:CJ.neutral, font:{ size:11 }, callback:(v:number)=>v>=1000?`${(v/1000).toFixed(0)}k`:String(v) } },
         },
       },
     };
-  }, [JSON.stringify(data)]);
+  }, [JSON.stringify(visitorArr)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-2 uppercase text-xs tracking-wider">Total Visitantes — Último Trimestre</h3>
       <div className="flex gap-4 text-[10px] text-gray-500 mb-3">
         <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: CJ.neutral }} />Visitantes <strong className="text-white ml-1">{loading ? '…' : totalV.toLocaleString('pt-BR')}</strong></span>
       </div>
-      <CanvasBox minHeight={data.length > 0 ? 200 : 120} className="w-full overflow-hidden">
-        <canvas ref={canvasRef} className="w-full h-full" style={{ opacity: data.length > 0 ? 1 : 0 }} />
-        {loading && (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
-        )}
-        {!loading && data.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados no trimestre</div>
-        )}
+      <CanvasBox>
+        {loading ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
+          : data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados no trimestre</div>
+          : <canvas ref={canvasRef} />}
       </CanvasBox>
     </div>
   );
