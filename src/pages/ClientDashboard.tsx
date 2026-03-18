@@ -4,10 +4,11 @@ import { useAuth } from '@/contexts/AuthContext';
 import {
   Globe, Clock, Building2, ChevronRight, ChevronDown,
   LayoutGrid, Users, BarChart2, Image, Upload, Calendar,
-  Maximize2, Minimize2
+  Maximize2, Minimize2, Download
 } from 'lucide-react';
 
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
+import { exportAnalyticsToExcel } from '../services/exportService';
 import type { WidgetType } from '../components/DashboardWidgets';
 import supabase from '../lib/supabase';
 
@@ -145,6 +146,38 @@ export function ClientDashboard() {
       ? `${String(h).padStart(2,'0')}:${String(mm).padStart(2,'0')}:${String(sec).padStart(2,'0')}`
       : `${String(mm).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
   };
+
+  const canExportData = user?.role === 'admin' || (user?.permissions?.export_data ?? false);
+
+  const exportAnalyticsData = useCallback(() => {
+    const start = new Date(selectedStartDate); start.setUTCHours(0, 0, 0, 0);
+    const end = new Date(selectedEndDate); end.setUTCHours(0, 0, 0, 0);
+
+    const perDay: { Data: string; Visitantes: number }[] = [];
+    for (let d = new Date(start); d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
+      const key = d.toISOString().slice(0, 10);
+      perDay.push({ Data: key, Visitantes: Number(visitorsPerDayMap[key] || 0) });
+    }
+
+    const perHour = Array.from({ length: 24 }, (_, h) => ({
+      Hora: `${String(h).padStart(2, '0')}:00`,
+      Média: Number(hourlyStats[h] || 0),
+    }));
+
+    const summary = [
+      { Métrica: 'Total Visitantes', Valor: Number(totalVisitors || 0) },
+      { Métrica: 'Média Visitantes/Dia', Valor: Number(avgVisitorsPerDay || 0) },
+      { Métrica: 'Tempo Médio Visita', Valor: formatDuration(Number(avgVisitSeconds || 0)) },
+      { Métrica: 'Tempo de Atenção', Valor: Number(avgAttentionSeconds || 0) > 0 ? formatDuration(Number(avgAttentionSeconds || 0)) : '—' },
+      { Métrica: 'Período (Início)', Valor: selectedStartDate.toISOString().slice(0, 10) },
+      { Métrica: 'Período (Fim)', Valor: selectedEndDate.toISOString().slice(0, 10) },
+    ];
+
+    const safeClient = String(clientData?.name || 'cliente').replace(/[^a-zA-Z0-9-_]+/g, '_');
+    const fileName = `dados_${safeClient}_${selectedStartDate.toISOString().slice(0, 10)}_${selectedEndDate.toISOString().slice(0, 10)}`;
+
+    exportAnalyticsToExcel({ fileName, summary, perDay, perHour });
+  }, [avgAttentionSeconds, avgVisitSeconds, avgVisitorsPerDay, clientData?.name, hourlyStats, selectedEndDate, selectedStartDate, totalVisitors, visitorsPerDayMap]);
 
   const pctMapToTopData = (m: any, maxItems = 3) => {
     const entries = Object.entries(m || {})
@@ -980,6 +1013,17 @@ export function ClientDashboard() {
                   ? <Minimize2 size={16} className="text-emerald-400" />
                   : <Maximize2 size={16} className="text-gray-400" />}
               </button>
+
+              {canExportData && (
+                <button
+                  onClick={exportAnalyticsData}
+                  disabled={isLoadingData}
+                  title="Baixar dados (totais, médias, por dia e por hora)"
+                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-gray-700 transition-colors flex-shrink-0 h-[38px] w-[38px] disabled:opacity-60"
+                >
+                  <Download size={16} className="text-gray-400" />
+                </button>
+              )}
 
               {/* Date Picker */}
               <div className="flex flex-col items-end flex-1 sm:flex-none">
