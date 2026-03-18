@@ -165,9 +165,12 @@ export function ClientDashboard() {
     setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
     setAvgVisitSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
 
-    // Tempo de Atenção — tenta avg_attention_seconds ou avg_attention_sec
+    // Tempo de Atenção — lê de todas as fontes possíveis
     setAvgAttentionSeconds(Math.round(
-      rollup.avg_attention_seconds ?? rollup.avg_attention_sec ?? 0
+      rollup.avg_attention_seconds        // quando vem do applyRollup com dados da API
+      ?? rollup.avg_contact_time_seconds  // quando vem direto do rollup salvo no Supabase
+      ?? rollup.avg_attention_sec         // fallback legado
+      ?? 0
     ));
 
     const vpd: Record<string, number> = rollup.visitors_per_day ?? {};
