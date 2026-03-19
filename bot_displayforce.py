@@ -249,6 +249,92 @@ def _to_float(val) -> float | None:
         return None
 
 
+def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
+    """
+    Lê o arquivo 'Views of visitors' CSV do DisplayForce e agrega por campanha.
+    Retorna lista de registros prontos para upsert na tabela campaigns.
+    """
+    log.info(f"  Processando Views CSV: {caminho_arquivo}")
+    try:
+        try:
+            df = pd.read_csv(caminho_arquivo, encoding="utf-8")
+        except Exception:
+            df = pd.read_csv(caminho_arquivo, encoding="latin-1")
+    except Exception as e:
+        log.error(f"  Erro ao ler CSV: {e}")
+        return []
+
+    df.columns = [str(c).strip() for c in df.columns]
+    log.info(f"  Colunas Views CSV: {list(df.columns)}")
+
+    # Detecta colunas de campanha
+    col_campaign_id   = next((c for c in df.columns if "campaign" in c.lower() and "id" in c.lower()), None)
+    col_campaign_name = next((c for c in df.columns if "campaign" in c.lower() and ("name" in c.lower() or "nome" in c.lower())), None)
+    col_visitor_id    = next((c for c in df.columns if "visitor" in c.lower() and "id" in c.lower()), None)
+    col_view_start    = next((c for c in df.columns if "view start" in c.lower() or "content view start" in c.lower() or "contact start" in c.lower()), None)
+    col_view_end      = next((c for c in df.columns if "view end" in c.lower() or "content view end" in c.lower() or "contact end" in c.lower()), None)
+    col_duration      = next((c for c in df.columns if "duration" in c.lower() or "contact d" in c.lower()), None)
+
+    log.info(f"  Mapeamento Views: campaign_id={col_campaign_id}, campaign_name={col_campaign_name}, visitor_id={col_visitor_id}")
+
+    if not col_campaign_name:
+        log.warning("  Nenhuma coluna 'Campaign Name' encontrada no Views CSV")
+        return []
+
+    # Filtra apenas linhas com campanha
+    df_camp = df[df[col_campaign_name].notna() & (df[col_campaign_name].astype(str).str.strip() != "")].copy()
+    if df_camp.empty:
+        log.warning("  Nenhuma linha com dados de campanha no Views CSV")
+        return []
+
+    agora   = datetime.now(timezone.utc).isoformat()
+    registros = []
+
+    for camp_name, grupo in df_camp.groupby(col_campaign_name):
+        nome = str(camp_name).strip()
+        if not nome or nome.lower() == "nan":
+            continue
+
+        # Contagem de visitantes únicos
+        visitantes = grupo[col_visitor_id].nunique() if col_visitor_id else len(grupo)
+
+        # Datas de início e fim
+        start_date = None
+        end_date   = None
+        if col_view_start:
+            try:
+                datas = pd.to_datetime(grupo[col_view_start], errors="coerce").dropna()
+                if not datas.empty:
+                    start_date = datas.min().isoformat()
+                    end_date   = datas.max().isoformat()
+            except Exception:
+                pass
+
+        # Duração média de atenção em segundos
+        avg_attention = 0
+        if col_duration:
+            try:
+                avg_attention = int(pd.to_numeric(grupo[col_duration], errors="coerce").mean() or 0)
+            except Exception:
+                pass
+
+        reg = {
+            "client_id":         client_id,
+            "name":              nome,
+            "start_date":        start_date,
+            "end_date":          end_date,
+            "duration_days":     None,
+            "duration_hms":      None,
+            "visitors":          int(visitantes),
+            "avg_attention_sec": avg_attention,
+            "synced_at":         agora,
+        }
+        registros.append(reg)
+
+    log.info(f"  {len(registros)} campanhas extraídas do Views CSV")
+    return registros
+
+
 # ──────────────────────────────────────────────────────────────
 # IMAP + DOWNLOAD — aguardar e-mail e baixar o arquivo
 # ──────────────────────────────────────────────────────────────
@@ -326,29 +412,33 @@ def _extrair_link_download(msg) -> str | None:
     return None
 
 
-def _extrair_zip(conteudo_bytes: bytes, ts: str) -> str | None:
-    """Extrai o primeiro Excel/CSV de um ZIP em memória. Retorna caminho ou None."""
+def _extrair_zip(conteudo_bytes: bytes, ts: str) -> list[str]:
+    """Extrai todos os Excel/CSV de um ZIP em memória. Retorna lista de caminhos."""
     try:
+        caminhos = []
         with zipfile.ZipFile(io.BytesIO(conteudo_bytes)) as z:
             membros = [m for m in z.namelist() if Path(m).suffix.lower() in (".xlsx", ".xls", ".csv")]
             if not membros:
                 log.warning(f"  ZIP não contém Excel/CSV. Arquivos dentro: {z.namelist()}")
-                return None
-            membro  = membros[0]
-            ext     = Path(membro).suffix.lower()
-            destino = DOWNLOAD_DIR / f"relatorio_{ts}{ext}"
-            destino.write_bytes(z.read(membro))
-            log.info(f"  📂 Extraído do ZIP: {membro} → {destino}")
-            return str(destino)
+                return []
+            for membro in membros:
+                ext     = Path(membro).suffix.lower()
+                nome_base = Path(membro).stem[:40].replace(" ", "_")
+                destino = DOWNLOAD_DIR / f"{nome_base}_{ts}{ext}"
+                destino.write_bytes(z.read(membro))
+                log.info(f"  📂 Extraído do ZIP: {membro} → {destino}")
+                caminhos.append(str(destino))
+        return caminhos
     except zipfile.BadZipFile as e:
         log.error(f"  ZIP inválido: {e}")
-        return None
+        return []
 
 
-def _baixar_arquivo_url(url: str) -> str | None:
+def _baixar_arquivo_url(url: str) -> list[str]:
     """
-    Faz GET na URL e salva o arquivo em DOWNLOAD_DIR.
-    Se for ZIP, extrai o primeiro Excel/CSV encontrado.
+    Faz GET na URL e salva o(s) arquivo(s) em DOWNLOAD_DIR.
+    Se for ZIP, extrai todos os Excel/CSV encontrados.
+    Retorna lista de caminhos.
     """
     DOWNLOAD_DIR.mkdir(exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -375,28 +465,27 @@ def _baixar_arquivo_url(url: str) -> str | None:
         log.info(f"  📦 {len(conteudo):,} bytes baixados (ext detectada: {ext})")
 
         if ext == ".zip":
-            resultado = _extrair_zip(conteudo, ts)
-            if resultado:
-                return resultado
+            resultados = _extrair_zip(conteudo, ts)
+            if resultados:
+                return resultados
             # Fallback: salva o ZIP mesmo assim
             destino = DOWNLOAD_DIR / f"relatorio_{ts}.zip"
             destino.write_bytes(conteudo)
             log.warning(f"  ⚠️  ZIP sem Excel/CSV — salvo como: {destino}")
-            return str(destino)
+            return [str(destino)]
 
         destino = DOWNLOAD_DIR / f"relatorio_{ts}{ext}"
         destino.write_bytes(conteudo)
         log.info(f"  ✅ Arquivo salvo: {destino}")
-        return str(destino)
+        return [str(destino)]
 
     except requests.RequestException as e:
         log.error(f"  ❌ Erro ao baixar arquivo: {e}")
-        return None
+        return []
 
 
-def _processar_msg_displayforce(imap, uid, use_uid: bool = False) -> str | None:
-    """Tenta extrair o arquivo de um e-mail e retorna o caminho ou None.
-    use_uid=True para busca via uid('fetch'), False para seq number fetch."""
+def _processar_msg_displayforce(imap, uid, use_uid: bool = False) -> list[str]:
+    """Tenta extrair arquivo(s) de um e-mail e retorna lista de caminhos."""
     try:
         if use_uid:
             _, msg_data = imap.uid('fetch', uid, '(RFC822)')
@@ -404,15 +493,15 @@ def _processar_msg_displayforce(imap, uid, use_uid: bool = False) -> str | None:
             _, msg_data = imap.fetch(uid, "(RFC822)")
     except Exception as e:
         log.warning(f"  Erro ao buscar e-mail UID {uid}: {e}")
-        return None
+        return []
 
     if not msg_data or not msg_data[0]:
         log.warning(f"  UID {uid}: fetch retornou vazio")
-        return None
+        return []
     raw = msg_data[0][1]
     if not isinstance(raw, bytes):
         log.warning(f"  UID {uid}: dados não são bytes — tipo={type(raw)}")
-        return None
+        return []
     msg = email.message_from_bytes(raw)
 
     assunto   = str(msg.get("Subject", "")).lower()
@@ -447,37 +536,37 @@ def _processar_msg_displayforce(imap, uid, use_uid: bool = False) -> str | None:
             # Detecta se é ZIP pelo conteúdo (magic bytes PK)
             is_zip = ext == ".zip" or ct in ("application/zip", "application/x-zip-compressed") or payload[:2] == b"PK"
             if is_zip:
-                resultado = _extrair_zip(payload, ts)
-                if resultado:
-                    return resultado
+                resultados = _extrair_zip(payload, ts)
+                if resultados:
+                    return resultados
             # Fallback: salva como excel ou csv
             safe_ext = ext if ext in (".xlsx", ".xls", ".csv") else ".xlsx"
             destino = DOWNLOAD_DIR / f"relatorio_{ts}{safe_ext}"
             destino.write_bytes(payload)
             log.info(f"  📁 Anexo salvo: {destino}")
-            return str(destino)
+            return [str(destino)]
 
     # ── Sem anexo → extrai link do corpo HTML e baixa ─────────────
     log.info("  📧 Sem anexo — buscando link de download no corpo do e-mail...")
     link = _extrair_link_download(msg)
     if link:
-        caminho = _baixar_arquivo_url(link)
-        if caminho:
-            return caminho
+        caminhos = _baixar_arquivo_url(link)
+        if caminhos:
+            return caminhos
     else:
         log.warning("  ⚠️  E-mail sem link/anexo reconhecível")
-    return None
+    return []
 
 
-def _buscar_em_pasta(imap, pasta: str, apos_uid: int) -> str | None:
+def _buscar_em_pasta(imap, pasta: str, apos_uid: int) -> list[str]:
     """Tenta encontrar e processar e-mail DisplayForce numa pasta específica.
     CORRIGIDO: usa uid('search') e uid('fetch') para UIDs reais."""
     try:
         status, _ = imap.select(pasta)
         if status != "OK":
-            return None
+            return []
     except Exception:
-        return None
+        return []
 
     hoje = datetime.now().strftime("%d-%b-%Y")
 
@@ -543,10 +632,10 @@ def _buscar_em_pasta(imap, pasta: str, apos_uid: int) -> str | None:
         except Exception as e:
             log.warning(f"    Erro ao processar UID {uid} em '{pasta}': {e}")
 
-    return None
+    return []
 
 
-def _verificar_email_displayforce(apos_uid: int) -> str | None:
+def _verificar_email_displayforce(apos_uid: int) -> list[str]:
     """
     Verifica e-mails novos da DisplayForce em INBOX e Spam.
     CORRIGIDO: usa uid('search') e uid('fetch') para UIDs reais do Gmail.
@@ -673,12 +762,12 @@ def _verificar_email_displayforce(apos_uid: int) -> str | None:
                 log.warning(f"  ⚠️  E-mail encontrado na pasta SPAM! Mova para INBOX para evitar isso.")
                 return resultado
 
-    return None
+    return []
 
 
-def baixar_relatorio_email(timeout_seg: int = TIMEOUT_EMAIL_SEG) -> str | None:
+def baixar_relatorio_email(timeout_seg: int = TIMEOUT_EMAIL_SEG) -> list[str]:
     """
-    Aguarda o e-mail da DisplayForce e retorna o caminho do arquivo baixado.
+    Aguarda o e-mail da DisplayForce e retorna lista de caminhos de arquivos baixados.
     Verifica a caixa IMAP a cada 15 segundos até timeout_seg.
     """
     log.info(f"  Aguardando e-mail com relatório em {IMAP_EMAIL}...")
@@ -688,16 +777,16 @@ def baixar_relatorio_email(timeout_seg: int = TIMEOUT_EMAIL_SEG) -> str | None:
 
     while time.time() - inicio < timeout_seg:
         try:
-            caminho = _verificar_email_displayforce(ultimo_uid)
-            if caminho:
-                log.info(f"  ✅ Relatório baixado: {caminho}")
-                return caminho
+            caminhos = _verificar_email_displayforce(ultimo_uid)
+            if caminhos:
+                log.info(f"  ✅ {len(caminhos)} arquivo(s) baixado(s): {caminhos}")
+                return caminhos
         except Exception as e:
             log.warning(f"  Erro ao verificar e-mail: {e}")
         time.sleep(15)
 
     log.error(f"  ⏱️  Timeout: nenhum e-mail da DisplayForce recebido em {timeout_seg}s")
-    return None
+    return []
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1137,22 +1226,36 @@ def executar_bot():
                 if not exportou:
                     continue
 
-                caminho_arquivo = baixar_relatorio_email()
-                if not caminho_arquivo:
+                caminhos = baixar_relatorio_email()
+                if not caminhos:
                     log.error(f"  Relatório não recebido para '{nome_cliente}'")
                     continue
 
-                registros = processar_excel(caminho_arquivo, client_id)
-                if not registros:
-                    log.warning(f"  Nenhum dado extraído do Excel de '{nome_cliente}'")
-                    continue
+                total_registros = 0
+                for caminho_arquivo in caminhos:
+                    nome_arq = Path(caminho_arquivo).name.lower()
+                    # Prioriza o CSV de Views (engagement por campanha)
+                    if "views" in nome_arq:
+                        registros = processar_views_csv(caminho_arquivo, client_id)
+                    elif nome_arq.endswith(".xlsx") or nome_arq.endswith(".xls"):
+                        registros = processar_excel(caminho_arquivo, client_id)
+                    else:
+                        log.info(f"  Arquivo ignorado na extração: {nome_arq}")
+                        registros = []
 
-                upsert_campanhas(registros)
+                    if registros:
+                        upsert_campanhas(registros)
+                        total_registros += len(registros)
+                    else:
+                        log.info(f"  Sem dados extraídos de: {nome_arq}")
 
-                try:
-                    os.remove(caminho_arquivo)
-                except Exception:
-                    pass
+                    try:
+                        os.remove(caminho_arquivo)
+                    except Exception:
+                        pass
+
+                if total_registros == 0:
+                    log.warning(f"  Nenhuma campanha salva para '{nome_cliente}'")
 
             browser.close()
 
