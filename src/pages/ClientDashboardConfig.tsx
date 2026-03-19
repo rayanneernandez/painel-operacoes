@@ -216,12 +216,6 @@ export function ClientDashboardConfig() {
     ));
   };
 
-  const setHeight = (widgetId: string, heightPx: number | null) => {
-    const next = heightPx == null ? undefined : Math.min(1200, Math.max(180, Math.round(heightPx)));
-    setActiveWidgets(activeWidgets.map((c) =>
-      c.widget.id === widgetId ? { ...c, heightPx: next } : c
-    ));
-  };
 
   const closestSpan = useCallback((n: number): Span => {
     let best: Span = SPANS[0];

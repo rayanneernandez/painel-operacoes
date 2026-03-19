@@ -113,7 +113,7 @@ export function CampaignUpload() {
   const [status,   setStatus]     = useState<'idle' | 'parsing' | 'uploading' | 'done' | 'error'>('idle');
   const [preview,  setPreview]    = useState<any[]>([]);
   const [message,  setMessage]    = useState('');
-  const [upserted, setUpserted]   = useState(0);
+  const [_upserted, setUpserted]   = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (file: File) => {

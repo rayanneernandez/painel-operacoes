@@ -56,7 +56,7 @@ export function Clients() {
   const [expandedClient, setExpandedClient] = useState<string | null>(null);
   const [expandedStore, setExpandedStore] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'details' | 'permissions' | 'api' | 'stores'>('details');
-  const [loading, setLoading] = useState(false);
+  const [_loading, setLoading] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
 
   const [formData, setFormData] = useState({

@@ -55,7 +55,7 @@ export function ClientDashboard() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const autoTodayRef = useRef(true);
 
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [_isSyncing, setIsSyncing] = useState(false);
   const [isSyncingStores, setIsSyncingStores] = useState(false);
   const [syncMessage, setSyncMessage] = useState('');
   const syncingRef = useRef(false);
