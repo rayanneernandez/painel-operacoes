@@ -227,7 +227,7 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
             "duration_hms":      str(row.get(mapa["duration_hms"], "")).strip() if mapa["duration_hms"] else None,
             "visitors":          _to_int(row.get(mapa["visitors"])) if mapa["visitors"] else 0,
             "avg_attention_sec": parse_tempo_atencao(row.get(mapa["avg_attention"], "")) if mapa["avg_attention"] else 0,
-            "synced_at":         agora,
+            "uploaded_at":       agora,
         }
         registros.append(reg)
 
@@ -327,7 +327,7 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
             "duration_hms":      None,
             "visitors":          int(visitantes),
             "avg_attention_sec": avg_attention,
-            "synced_at":         agora,
+            "uploaded_at":       agora,
         }
         registros.append(reg)
 
