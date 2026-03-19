@@ -1,0 +1,10 @@
+bot_displayforce.py
+requirements.txt
+Dockerfile
+downloads_displayforce/
+*.log
+iniciar_bot.bat
+INSTRUCOES_BOT.md
+railway.json
+*.sql
+banco do painel de operações.txt
