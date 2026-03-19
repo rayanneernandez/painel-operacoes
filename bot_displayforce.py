@@ -36,24 +36,30 @@ from supabase import create_client, Client
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ──────────────────────────────────────────────────────────────
-# CONFIGURAÇÕES — edite apenas esta seção
+# CONFIGURAÇÕES — lê de variáveis de ambiente ou usa defaults
+# Para rodar localmente: edite os valores abaixo
+# Para Railway/Render: configure as env vars no painel deles
 # ──────────────────────────────────────────────────────────────
+
+def _env(key: str, default: str) -> str:
+    """Lê variável de ambiente; usa default se não existir."""
+    return os.environ.get(key, default)
 
 # DisplayForce
 DISPLAYFORCE_URL   = "https://id.displayforce.ai/#/platforms"
-DISPLAYFORCE_EMAIL = "bruno.lyra@globaltera.com.br"
-DISPLAYFORCE_PASS  = "Tony@2023"
-RELATORIO_EMAIL    = "rayanne.ernandez@globaltera.com.br"  # e-mail que recebe o relatório
+DISPLAYFORCE_EMAIL = _env("DISPLAYFORCE_EMAIL", "bruno.lyra@globaltera.com.br")
+DISPLAYFORCE_PASS  = _env("DISPLAYFORCE_PASS",  "Tony@2023")
+RELATORIO_EMAIL    = _env("RELATORIO_EMAIL",    "rayanne.ernandez@globaltera.com.br")
 
 # E-mail IMAP para receber o relatório da DisplayForce
-IMAP_SERVER   = "outlook.office365.com"
+IMAP_SERVER   = "imap.gmail.com"
 IMAP_PORT     = 993
-IMAP_EMAIL    = "rayanne.ernandez@globaltera.com.br"
-IMAP_PASSWORD = "nfav lshi hfax jhvu"
+IMAP_EMAIL    = _env("IMAP_EMAIL",    "rayanne.ernandez@globaltera.com.br")
+IMAP_PASSWORD = _env("IMAP_PASSWORD", "nfav lshi hfax jhvu")
 
 # Supabase
-SUPABASE_URL = "https://zkzpvaabjchwnnvuwuls.supabase.co"
-SUPABASE_KEY = (
+SUPABASE_URL = _env("SUPABASE_URL", "https://zkzpvaabjchwnnvuwuls.supabase.co")
+SUPABASE_KEY = _env("SUPABASE_KEY",
     "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
     ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprenB2YWFiamNod25udnV3dWxzIiwicm9sZSI6"
     "InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTU3OTYyOSwiZXhwIjoyMDg3MTU1NjI5fQ"
@@ -61,11 +67,12 @@ SUPABASE_KEY = (
 )
 
 # Configurações gerais
-INTERVALO_MINUTOS = 10
+# Horário diário de execução (formato HH:MM, horário de Brasília)
+HORARIO_EXECUCAO  = _env("HORARIO_EXECUCAO", "07:00")
 DOWNLOAD_DIR      = Path("./downloads_displayforce")
 LOG_FILE          = "bot_displayforce.log"
-TIMEOUT_EMAIL_SEG = 300   # aguarda até 5 min pelo e-mail da DisplayForce
-HEADLESS          = True  # False para ver o browser (debug)
+TIMEOUT_EMAIL_SEG = 600   # aguarda até 10 min pelo e-mail da DisplayForce
+HEADLESS          = _env("HEADLESS", "true").lower() == "true"  # False para ver o browser (debug)
 
 # ──────────────────────────────────────────────────────────────
 # LOGGING
@@ -161,14 +168,19 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
     log.info(f"  Colunas encontradas: {list(df.columns)}")
 
     COL_MAP = {
-        "name":          ["MIDIA_VALIDADA", "MÍDIA_VALIDADA", "MIDIA VALIDADA", "Campanha", "Campaign"],
-        "start_date":    ["INICIO_EXIBIÇÃO", "INÍCIO_EXIBIÇÃO", "INICIO EXIBIÇÃO", "Início", "Start"],
-        "end_date":      ["FIM_EXIBIÇÃO", "FIM EXIBIÇÃO", "Fim", "End"],
+        # Coluna principal do nome da campanha — tenta MIDIA_VALIDADA e TIPO_MIDIA
+        "name":          ["MIDIA_VALIDADA", "MÍDIA_VALIDADA", "MIDIA VALIDADA",
+                          "TIPO_MIDIA", "TIPO MIDIA", "Campanha", "Campaign", "Mídia"],
+        # LOJA é coluna complementar (usada para compor o nome quando TIPO_MIDIA existe)
+        "loja":          ["LOJA", "Loja", "Store", "Unidade", "Filial"],
+        "start_date":    ["INICIO_EXIBIÇÃO", "INÍCIO_EXIBIÇÃO", "INICIO EXIBIÇÃO",
+                          "INICIO_EXIBICAO", "Início", "Start", "Data Início"],
+        "end_date":      ["FIM_EXIBIÇÃO", "FIM EXIBIÇÃO", "FIM_EXIBICAO", "Fim", "End", "Data Fim"],
         "duration_days": ["Tempo (Dias)", "TEMPO (DIAS)", "Dias", "Duration Days"],
         "duration_hms":  ["Tempo (hh:mm:ss)", "TEMPO (HH:MM:SS)", "Tempo Total", "Duration"],
         "visitors":      ["VISITANTES", "Visitantes", "Visitors"],
         "avg_attention": ["TEMPO_MED ATENÇÃO (mm:ss)", "TEMPO_MED_ATENÇÃO", "TEMPO MED ATENÇÃO",
-                          "Atenção (mm:ss)", "Avg Attention"],
+                          "TEMPO_MED ATENCAO", "Atenção (mm:ss)", "Avg Attention"],
     }
 
     def encontrar_coluna(df: pd.DataFrame, opcoes: list[str]) -> str | None:
@@ -187,9 +199,24 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
     agora     = datetime.now(timezone.utc).isoformat()
 
     for _, row in df.iterrows():
-        nome = str(row.get(mapa["name"], "")).strip() if mapa["name"] else ""
-        if not nome or nome.lower() == "nan":
+        # Monta o nome da campanha
+        # Se tiver TIPO_MIDIA e LOJA → "TIPO_MIDIA | LOJA"  (ex: "Calhau | 309 - Dom Joaquim Posto")
+        # Se tiver apenas TIPO_MIDIA → usa o valor direto
+        # Se tiver MIDIA_VALIDADA → usa esse
+        tipo_midia_col = mapa.get("name")
+        loja_col       = mapa.get("loja")
+
+        nome_base = str(row.get(tipo_midia_col, "")).strip() if tipo_midia_col else ""
+        loja_val  = str(row.get(loja_col, "")).strip()       if loja_col       else ""
+
+        if nome_base.lower() in ("", "nan"):
             continue
+
+        # Combina TIPO_MIDIA + LOJA se ambos existirem e não forem iguais
+        if loja_val and loja_val.lower() not in ("", "nan") and loja_val != nome_base:
+            nome = f"{nome_base} | {loja_val}"
+        else:
+            nome = nome_base
 
         reg = {
             "client_id":         client_id,
@@ -227,15 +254,17 @@ def _to_float(val) -> float | None:
 # ──────────────────────────────────────────────────────────────
 
 def _obter_ultimo_uid() -> int:
-    """Retorna UID da mensagem mais recente para ignorar e-mails antigos."""
+    """Retorna UID real da mensagem mais recente para ignorar e-mails antigos."""
     try:
         with imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT) as imap:
             imap.login(IMAP_EMAIL, IMAP_PASSWORD)
             imap.select("INBOX")
-            _, data = imap.search(None, "ALL")
+            # CRÍTICO: usa uid('search') para obter UIDs reais (não seq numbers)
+            # No Gmail, UIDs são números grandes diferentes dos seq numbers
+            _, data = imap.uid('search', None, 'ALL')
             uids   = data[0].split()
             ultimo = int(uids[-1]) if uids else 0
-            log.info(f"  📬 IMAP conectado — {len(uids)} e-mails na caixa, último UID: {ultimo}")
+            log.info(f"  📬 IMAP conectado — {len(uids)} e-mails na caixa, último UID real: {ultimo}")
             return ultimo
     except Exception as e:
         log.warning(f"  Erro ao obter último UID: {e}")
@@ -365,83 +394,284 @@ def _baixar_arquivo_url(url: str) -> str | None:
         return None
 
 
-def _verificar_email_displayforce(apos_uid: int) -> str | None:
-    """
-    Verifica e-mails novos da DisplayForce.
-    Tenta primeiro anexo (compatibilidade futura), depois extrai link do corpo HTML.
-    """
-    with imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT) as imap:
-        imap.login(IMAP_EMAIL, IMAP_PASSWORD)
-        imap.select("INBOX")
-
-        _, data = imap.search(None, f"UID {apos_uid + 1}:*")
-        uids    = [u for u in data[0].split() if int(u) > apos_uid]
-
-        if uids:
-            log.info(f"  📨 {len(uids)} e-mail(s) novo(s) encontrado(s)")
-
-        for uid in reversed(uids):  # mais recentes primeiro
+def _processar_msg_displayforce(imap, uid, use_uid: bool = False) -> str | None:
+    """Tenta extrair o arquivo de um e-mail e retorna o caminho ou None.
+    use_uid=True para busca via uid('fetch'), False para seq number fetch."""
+    try:
+        if use_uid:
+            _, msg_data = imap.uid('fetch', uid, '(RFC822)')
+        else:
             _, msg_data = imap.fetch(uid, "(RFC822)")
-            msg = email.message_from_bytes(msg_data[0][1])
+    except Exception as e:
+        log.warning(f"  Erro ao buscar e-mail UID {uid}: {e}")
+        return None
 
+    if not msg_data or not msg_data[0]:
+        log.warning(f"  UID {uid}: fetch retornou vazio")
+        return None
+    raw = msg_data[0][1]
+    if not isinstance(raw, bytes):
+        log.warning(f"  UID {uid}: dados não são bytes — tipo={type(raw)}")
+        return None
+    msg = email.message_from_bytes(raw)
+
+    assunto   = str(msg.get("Subject", "")).lower()
+    remetente = str(msg.get("From",    "")).lower()
+    log.info(f"  ✉️  E-mail UID {uid} | de: {remetente} | assunto: '{assunto}'")
+
+    # ── Tenta encontrar anexo direto ──────────────────────────────
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    DOWNLOAD_DIR.mkdir(exist_ok=True)
+
+    for part in msg.walk():
+        ct   = part.get_content_type()
+        nome = part.get_filename() or ""
+        ext  = Path(nome).suffix.lower()
+
+        is_attachment = (
+            ext in (".xlsx", ".xls", ".csv", ".zip")
+            or ct in (
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                "application/vnd.ms-excel",
+                "application/zip",
+                "application/x-zip-compressed",
+                "application/octet-stream",
+                "text/csv",
+            )
+        )
+
+        if is_attachment and part.get_payload(decode=True):
+            payload = part.get_payload(decode=True)
+            log.info(f"  📎 Anexo encontrado: '{nome}' ({ct}) — {len(payload):,} bytes")
+
+            # Detecta se é ZIP pelo conteúdo (magic bytes PK)
+            is_zip = ext == ".zip" or ct in ("application/zip", "application/x-zip-compressed") or payload[:2] == b"PK"
+            if is_zip:
+                resultado = _extrair_zip(payload, ts)
+                if resultado:
+                    return resultado
+            # Fallback: salva como excel ou csv
+            safe_ext = ext if ext in (".xlsx", ".xls", ".csv") else ".xlsx"
+            destino = DOWNLOAD_DIR / f"relatorio_{ts}{safe_ext}"
+            destino.write_bytes(payload)
+            log.info(f"  📁 Anexo salvo: {destino}")
+            return str(destino)
+
+    # ── Sem anexo → extrai link do corpo HTML e baixa ─────────────
+    log.info("  📧 Sem anexo — buscando link de download no corpo do e-mail...")
+    link = _extrair_link_download(msg)
+    if link:
+        caminho = _baixar_arquivo_url(link)
+        if caminho:
+            return caminho
+    else:
+        log.warning("  ⚠️  E-mail sem link/anexo reconhecível")
+    return None
+
+
+def _buscar_em_pasta(imap, pasta: str, apos_uid: int) -> str | None:
+    """Tenta encontrar e processar e-mail DisplayForce numa pasta específica.
+    CORRIGIDO: usa uid('search') e uid('fetch') para UIDs reais."""
+    try:
+        status, _ = imap.select(pasta)
+        if status != "OK":
+            return None
+    except Exception:
+        return None
+
+    hoje = datetime.now().strftime("%d-%b-%Y")
+
+    # Tenta por UID novo (usando uid search)
+    try:
+        _, data = imap.uid('search', None, f'{apos_uid + 1}:*')
+        uids = [u for u in data[0].split() if int(u) > apos_uid]
+    except Exception:
+        uids = []
+
+    if not uids:
+        # Fallback por data de hoje
+        try:
+            _, data2 = imap.uid('search', None, f'SINCE "{hoje}"')
+            uids = data2[0].split()[-20:]  # só os 20 mais recentes
+        except Exception:
+            uids = []
+
+    if uids:
+        log.info(f"  📂 Verificando {len(uids)} e-mail(s) na pasta '{pasta}'")
+
+    for uid in reversed(uids):
+        try:
+            _, msg_data = imap.uid('fetch', uid, '(RFC822)')
+            if not msg_data or not msg_data[0]:
+                continue
+            raw = msg_data[0][1]
+            if not isinstance(raw, bytes):
+                continue
+            msg       = email.message_from_bytes(raw)
             assunto   = str(msg.get("Subject", "")).lower()
             remetente = str(msg.get("From",    "")).lower()
 
             eh_displayforce = (
                 "displayforce" in remetente
-                or "displ"       in remetente
-                or "noreply"     in remetente   # noreply@displ.com
-                or "displ"       in assunto
+                or "displ"        in remetente
+                or "noreply"      in remetente
+                or "no-reply"     in remetente
+                or "displ"        in assunto
                 or "displayforce" in assunto
-                or "relatório"   in assunto
-                or "relatorio"   in assunto
-                or "report"      in assunto
-                or "visitors"    in assunto
-                or "visitor"     in assunto
+                or "relatório"    in assunto
+                or "relatorio"    in assunto
+                or "report"       in assunto
+                or "visitors"     in assunto
+                or "visitor"      in assunto
+                or "visitantes"   in assunto
+                or "insights"     in assunto
             )
 
-            if not eh_displayforce:
-                log.debug(f"  E-mail UID {uid} ignorado — de: {remetente} | assunto: {assunto}")
+            tem_anexo = any(
+                (part.get_filename() or "").lower().endswith((".xlsx", ".xls", ".csv", ".zip"))
+                for part in msg.walk()
+            )
+
+            if not eh_displayforce and not tem_anexo:
+                log.info(f"    ⏭️  UID {uid} ignorado — de: '{remetente}' | assunto: '{assunto}'")
                 continue
 
-            log.info(f"  ✉️  E-mail DisplayForce detectado (UID {uid}) | assunto: '{assunto}'")
+            log.info(f"  ✉️  DisplayForce detectado em '{pasta}' (UID {uid}) | assunto: '{assunto}'")
+            resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
+            if resultado:
+                return resultado
+        except Exception as e:
+            log.warning(f"    Erro ao processar UID {uid} em '{pasta}': {e}")
 
-            # ── Tenta encontrar anexo direto ──────────────────────────────
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            for part in msg.walk():
-                ct   = part.get_content_type()
-                nome = part.get_filename() or ""
-                ext  = Path(nome).suffix.lower()
+    return None
 
-                if ext in (".xlsx", ".xls", ".csv", ".zip") or ct in (
-                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    "application/vnd.ms-excel",
-                    "application/zip",
-                    "text/csv",
-                ):
-                    payload = part.get_payload(decode=True)
-                    if not payload:
+
+def _verificar_email_displayforce(apos_uid: int) -> str | None:
+    """
+    Verifica e-mails novos da DisplayForce em INBOX e Spam.
+    CORRIGIDO: usa uid('search') e uid('fetch') para UIDs reais do Gmail.
+    Estratégia 1: UIDs novos (> apos_uid) na INBOX.
+    Estratégia 2: busca por remetente displ na INBOX de hoje.
+    Estratégia 3: busca ampla por qualquer remetente hoje na INBOX.
+    Estratégia 4: verifica pasta Spam/Junk.
+    """
+    with imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT) as imap:
+        imap.login(IMAP_EMAIL, IMAP_PASSWORD)
+        imap.select("INBOX")
+
+        # ── Estratégia 1: UIDs reais novos via uid('search') ─────────────
+        # CORREÇÃO: usa imap.uid() para trabalhar com UIDs reais (não seq numbers)
+        _, data = imap.uid('search', None, f'{apos_uid + 1}:*')
+        uids    = [u for u in data[0].split() if int(u) > apos_uid]
+
+        if uids:
+            log.info(f"  📨 {len(uids)} e-mail(s) novo(s) encontrado(s) (UID > {apos_uid})")
+            for uid in reversed(uids):
+                try:
+                    # CORREÇÃO: usa uid('fetch') para buscar pelo UID real
+                    _, msg_data = imap.uid('fetch', uid, '(RFC822)')
+                    if not msg_data or not msg_data[0]:
+                        log.info(f"  ⚠️  UID {uid}: fetch retornou vazio")
                         continue
-                    log.info(f"  📎 Anexo encontrado: {nome}")
-                    if ext == ".zip" or ct == "application/zip":
-                        resultado = _extrair_zip(payload, ts)
-                        if resultado:
-                            return resultado
-                    else:
-                        destino = DOWNLOAD_DIR / f"relatorio_{ts}{ext or '.xlsx'}"
-                        destino.write_bytes(payload)
-                        log.info(f"  📁 Anexo salvo: {destino}")
-                        return str(destino)
+                    raw = msg_data[0][1]
+                    if not isinstance(raw, bytes):
+                        log.info(f"  ⚠️  UID {uid}: dados não são bytes (tipo={type(raw)})")
+                        continue
+                    msg       = email.message_from_bytes(raw)
+                    assunto   = str(msg.get("Subject", "")).lower()
+                    remetente = str(msg.get("From",    "")).lower()
+                    log.info(f"  📧 UID {uid} | de: '{remetente}' | assunto: '{assunto}'")
 
-            # ── Sem anexo → extrai link do corpo HTML e baixa ─────────────
-            log.info("  📧 Sem anexo — buscando link de download no corpo do e-mail...")
-            link = _extrair_link_download(msg)
-            if link:
-                caminho = _baixar_arquivo_url(link)
-                if caminho:
-                    return caminho
-            else:
-                log.warning("  ⚠️  E-mail DisplayForce sem link/anexo reconhecível")
+                    eh_displayforce = (
+                        "displayforce" in remetente
+                        or "displ"        in remetente
+                        or "noreply"      in remetente
+                        or "no-reply"     in remetente
+                        or "displ"        in assunto
+                        or "displayforce" in assunto
+                        or "relatório"    in assunto
+                        or "relatorio"    in assunto
+                        or "report"       in assunto
+                        or "visitors"     in assunto
+                        or "visitor"      in assunto
+                        or "visitantes"   in assunto
+                        or "insights"     in assunto
+                    )
+
+                    # Também tenta se tiver anexo relevante independente do remetente
+                    tem_anexo = any(
+                        (part.get_filename() or "").lower().endswith((".xlsx", ".xls", ".csv", ".zip"))
+                        for part in msg.walk()
+                    )
+
+                    if not eh_displayforce and not tem_anexo:
+                        log.info(f"  ⏭️  UID {uid} ignorado (não é DisplayForce, sem anexo relevante)")
+                        continue
+
+                    if tem_anexo and not eh_displayforce:
+                        log.info(f"  🔎 UID {uid}: tem anexo Excel/ZIP — tentando processar")
+
+                    log.info(f"  ✉️  E-mail DisplayForce processando (UID {uid})")
+                    resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
+                    if resultado:
+                        return resultado
+                except Exception as e:
+                    log.warning(f"  Erro ao processar UID {uid}: {e}")
+        else:
+            hoje = datetime.now().strftime("%d-%b-%Y")
+            # ── Estratégia 2: busca por remetente 'displ' de hoje ────────
+            log.info(f"  🔍 Sem UIDs novos — buscando por remetente 'displ' desde {hoje}...")
+            _, data2 = imap.uid('search', None, f'FROM "displ" SINCE "{hoje}"')
+            uids2 = data2[0].split()
+            if uids2:
+                log.info(f"  📨 {len(uids2)} e-mail(s) displ.com encontrado(s) hoje na INBOX")
+                for uid in reversed(uids2):
+                    resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
+                    if resultado:
+                        return resultado
+
+            # ── Estratégia 3: busca ampla por qualquer e-mail de hoje ────
+            log.info(f"  🔍 Busca ampla — qualquer e-mail de hoje com possível relatório...")
+            _, data3 = imap.uid('search', None, f'SINCE "{hoje}"')
+            uids3 = [u for u in data3[0].split() if int(u) > apos_uid]
+            if uids3:
+                log.info(f"  📨 {len(uids3)} e-mail(s) de hoje não processados — verificando...")
+                for uid in reversed(uids3[-10:]):  # verifica só os 10 mais recentes
+                    try:
+                        _, msg_data = imap.uid('fetch', uid, '(RFC822)')
+                        if not msg_data or not msg_data[0]:
+                            continue
+                        raw = msg_data[0][1]
+                        if not isinstance(raw, bytes):
+                            continue
+                        msg       = email.message_from_bytes(raw)
+                        assunto   = str(msg.get("Subject", "")).lower()
+                        remetente = str(msg.get("From", "")).lower()
+
+                        tem_anexo = any(
+                            (part.get_filename() or "").lower().endswith((".xlsx", ".xls", ".csv", ".zip"))
+                            for part in msg.walk()
+                        )
+                        tem_link_relatorio = any(
+                            kw in assunto for kw in
+                            ("report", "relat", "visitor", "insight", "displ", "export")
+                        )
+
+                        if tem_anexo or tem_link_relatorio:
+                            log.info(f"  🔎 Estratégia 3: UID {uid} | de: '{remetente}' | assunto: '{assunto}'")
+                            resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
+                            if resultado:
+                                return resultado
+                    except Exception as e:
+                        log.warning(f"  Erro na estratégia 3 UID {uid}: {e}")
+
+        # ── Estratégia 4: verifica pasta Spam ────────────────────────────
+        for pasta_spam in ["[Gmail]/Spam", "[Gmail]/Lixo eletrônico", "Spam", "Junk", "SPAM",
+                           "[Gmail]/Lixo Eletr\u00f4nico"]:
+            resultado = _buscar_em_pasta(imap, pasta_spam, apos_uid)
+            if resultado:
+                log.warning(f"  ⚠️  E-mail encontrado na pasta SPAM! Mova para INBOX para evitar isso.")
+                return resultado
 
     return None
 
@@ -674,40 +904,162 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
         _screenshot(page, "10_modal_email", nome_cliente)
 
         # ── 6. Inserir e-mail manualmente ─────────────────────────────────
-        try:
-            page.locator("button:visible, a:visible").filter(
-                has_text=re.compile(r"inserir.?email|manual|add.?email", re.I)
-            ).first.click(timeout=5000)
-            log.info("  ✔ Clicado: 'Inserir email manualmente'")
-            page.wait_for_timeout(800)
-        except Exception:
-            pass
+        # O modal do DisplayForce tem uma lista de e-mails pré-configurados
+        # e uma opção para inserir manualmente. Tentamos múltiplas variações de texto.
+        _screenshot(page, "10_modal_aberto", nome_cliente)
 
-        # Preenche campo de e-mail
+        # Loga tudo que está visível no modal para diagnóstico
+        btns_modal_antes = [el.inner_text().strip() for el in page.locator("button:visible, a:visible").all() if el.inner_text().strip()]
+        inputs_antes = [(el.get_attribute("type") or "text", el.get_attribute("placeholder") or "") for el in page.locator("input:visible").all()]
+        log.info(f"  📋 Modal aberto — botões: {btns_modal_antes}")
+        log.info(f"  📋 Modal aberto — inputs visíveis: {inputs_antes}")
+
+        clicou_manual = False
+        textos_manual = [
+            r"inserir.?e?-?mail.?manualmente",
+            r"inserir.?manualmente",
+            r"manual",
+            r"add.?e?-?mail",
+            r"adicionar.?e?-?mail",
+            r"novo.?e?-?mail",
+            r"digitar.?e?-?mail",
+            r"outro.?e?-?mail",
+        ]
+        for texto in textos_manual:
+            try:
+                btn = page.locator("button:visible, a:visible, span:visible, div:visible").filter(
+                    has_text=re.compile(texto, re.I)
+                ).first
+                if btn.is_visible(timeout=2000):
+                    btn.click()
+                    clicou_manual = True
+                    log.info(f"  ✔ Clicado botão manual com padrão: '{texto}'")
+                    page.wait_for_timeout(1000)
+                    break
+            except Exception:
+                continue
+
+        if not clicou_manual:
+            log.info("  ℹ️  Botão 'Inserir email manualmente' não encontrado — tentando encontrar input direto")
+
+        _screenshot(page, "10b_apos_inserir_manual", nome_cliente)
+
+        # Loga estado do modal após tentar clicar em manual
+        btns_apos = [el.inner_text().strip() for el in page.locator("button:visible, a:visible").all() if el.inner_text().strip()]
+        inputs_apos = [(el.get_attribute("type") or "text", el.get_attribute("placeholder") or "", el.get_attribute("value") or "") for el in page.locator("input:visible").all()]
+        log.info(f"  📋 Após manual — botões: {btns_apos}")
+        log.info(f"  📋 Após manual — inputs: {inputs_apos}")
+
+        # Preenche campo de e-mail — tenta seletores específicos antes do fallback
+        def _preencher_input_react(locator, valor: str) -> bool:
+            """
+            Preenche um input em React garantindo que o onChange seja disparado.
+            Usa fill() + dispatchEvent para compatibilidade máxima.
+            """
+            try:
+                locator.click(timeout=2000)
+                locator.fill(valor, timeout=2000)
+                # Dispara eventos React para garantir que o estado atualize
+                page.evaluate("""(el, val) => {
+                    const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+                        window.HTMLInputElement.prototype, 'value').set;
+                    nativeInputValueSetter.call(el, val);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }""", [locator.element_handle(), valor])
+                return True
+            except Exception:
+                return False
+
         preencheu = False
-        try:
-            campo = page.locator("input[type='email']:visible, input[placeholder*='mail']:visible").first
-            campo.fill(RELATORIO_EMAIL)
-            preencheu = True
-        except Exception:
-            pass
+        for sel_email in [
+            "input[type='email']:visible",
+            "input[placeholder*='mail']:visible",
+            "input[placeholder*='Mail']:visible",
+            "input[placeholder*='e-mail']:visible",
+            "input[placeholder*='E-mail']:visible",
+            "input[placeholder*='Email']:visible",
+            "input[placeholder*='Digite']:visible",
+            "input[placeholder*='Insira']:visible",
+            "input[placeholder*='Adicionar']:visible",
+            "input[type='text']:visible",
+        ]:
+            try:
+                campos = page.locator(sel_email).all()
+                for campo in campos:
+                    if campo.is_visible(timeout=500):
+                        # Verifica se o campo parece ser para email (não filtro/busca)
+                        placeholder = (campo.get_attribute("placeholder") or "").lower()
+                        val_atual   = (campo.get_attribute("value") or "").lower()
+                        # Pula campos de busca/filtro genéricos da página principal
+                        if any(x in placeholder for x in ("buscar", "search", "filter", "filtrar")):
+                            continue
+                        if _preencher_input_react(campo, RELATORIO_EMAIL):
+                            val_verificado = campo.input_value() or ""
+                            if RELATORIO_EMAIL.lower() in val_verificado.lower():
+                                preencheu = True
+                                log.info(f"  ✔ E-mail preenchido e verificado via '{sel_email}' — valor: '{val_verificado}'")
+                                break
+                            else:
+                                log.info(f"  ⚠️  Preencheu '{sel_email}' mas valor não confirmou: '{val_verificado}'")
+                if preencheu:
+                    break
+            except Exception:
+                continue
 
         if not preencheu:
-            inputs = page.locator("input:visible").all()
-            if inputs:
-                inputs[-1].fill(RELATORIO_EMAIL)
-                log.warning("  Preencheu último input disponível como e-mail (fallback)")
+            log.warning("  ⚠️  Não conseguiu preencher campo de email — tentando fallback geral")
+            inputs = page.locator(
+                "input:visible:not([type='checkbox']):not([type='radio'])"
+                ":not([type='hidden']):not([type='file']):not([type='submit'])"
+                ":not([type='button'])"
+            ).all()
+            for inp in inputs:
+                try:
+                    placeholder = (inp.get_attribute("placeholder") or "").lower()
+                    if any(x in placeholder for x in ("buscar", "search", "filter", "filtrar")):
+                        continue
+                    if _preencher_input_react(inp, RELATORIO_EMAIL):
+                        preencheu = True
+                        log.warning("  Preencheu input disponível como e-mail (fallback)")
+                        break
+                except Exception:
+                    continue
+
+        if not preencheu:
+            log.error("  ❌ CRÍTICO: Não foi possível preencher o e-mail no modal!")
 
         page.wait_for_timeout(800)
+
+        # Log dos botões visíveis no modal antes de confirmar
+        btns_modal = [el.inner_text().strip() for el in page.locator("button:visible").all() if el.inner_text().strip()]
+        log.info(f"  📋 Botões visíveis antes de confirmar: {btns_modal}")
         _screenshot(page, "11_pre_confirmar", nome_cliente)
 
         # ── 7. Confirmar envio ────────────────────────────────────────────
+        # Importante: excluir "RELATÓRIO" para não re-clicar o botão de fundo
+        confirmou = False
         try:
-            page.locator("button:visible").filter(
-                has_text=re.compile(r"enviar|send|confirmar|ok|submit", re.I)
-            ).last.click(timeout=5000)
-            log.info("  ✔ Confirmação clicada")
+            # Tenta primeiro o botão com texto exato de confirmação (sem "relatório")
+            btn_confirm = page.locator("button:visible").filter(
+                has_text=re.compile(r"\benviar\b|\bsend\b|\bconfirmar\b|\bconfirm\b|\bok\b", re.I)
+            ).filter(has_not_text=re.compile(r"relat", re.I)).last
+            btn_confirm.click(timeout=5000)
+            confirmou = True
+            log.info("  ✔ Botão de confirmação clicado")
         except Exception:
+            pass
+
+        if not confirmou:
+            # Fallback: tenta botão type=submit dentro do modal
+            try:
+                page.locator("button[type='submit']:visible, input[type='submit']:visible").first.click(timeout=3000)
+                confirmou = True
+                log.info("  ✔ Botão submit clicado (fallback)")
+            except Exception:
+                pass
+
+        if not confirmou:
             page.keyboard.press("Enter")
             log.info("  ✔ Enter pressionado como confirmação")
 
@@ -804,7 +1156,8 @@ def executar_bot():
 
             browser.close()
 
-        log.info(f"✅ Rodada concluída — próxima em {INTERVALO_MINUTOS} minutos")
+        proxima = datetime.now(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y")
+        log.info(f"✅ Rodada concluída — próxima execução amanhã às {HORARIO_EXECUCAO}")
 
     except Exception as e:
         log.exception(f"❌ Erro inesperado na rodada: {e}")
@@ -818,20 +1171,23 @@ def executar_bot():
 
 def main():
     log.info("🚀 Bot DisplayForce iniciado")
-    log.info(f"   Intervalo: a cada {INTERVALO_MINUTOS} minutos")
+    log.info(f"   Horário de execução: todo dia às {HORARIO_EXECUCAO} (horário de Brasília)")
     log.info(f"   Clientes: buscados dinamicamente do Supabase")
     log.info(f"   Relatório enviado para: {RELATORIO_EMAIL}")
 
     DOWNLOAD_DIR.mkdir(exist_ok=True)
 
+    # Executa uma vez imediatamente ao iniciar
+    log.info("▶️  Execução inicial ao ligar o bot...")
     executar_bot()
 
-    schedule.every(INTERVALO_MINUTOS).minutes.do(executar_bot)
+    # Agenda para rodar uma vez por dia no horário configurado
+    schedule.every().day.at(HORARIO_EXECUCAO).do(executar_bot)
 
-    log.info(f"⏰ Agendamento ativo — rodando a cada {INTERVALO_MINUTOS} min (Ctrl+C para parar)")
+    log.info(f"⏰ Agendamento ativo — próxima execução hoje/amanhã às {HORARIO_EXECUCAO} (Ctrl+C para parar)")
     while True:
         schedule.run_pending()
-        time.sleep(30)
+        time.sleep(60)  # verifica a cada 1 min (muito mais leve que 30s)
 
 
 if __name__ == "__main__":

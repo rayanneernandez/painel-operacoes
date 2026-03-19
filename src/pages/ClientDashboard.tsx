@@ -8,6 +8,7 @@ import {
 
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
+import { ExportButton } from '../components/ExportButton';
 import supabase from '../lib/supabase';
 
 const _rebuilding = new Set<string>();
@@ -60,7 +61,7 @@ export function ClientDashboard() {
   const syncingRef = useRef(false);
   const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
 
-  // ── Fullscreen — apenas o container do dashboard, sem menu ───────────────
+  // ── Fullscreen ───────────────────────────────────────────────────────────
   const [isFullscreen, setIsFullscreen] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
 
@@ -165,11 +166,10 @@ export function ClientDashboard() {
     setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
     setAvgVisitSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
 
-    // Tempo de Atenção — lê de todas as fontes possíveis
     setAvgAttentionSeconds(Math.round(
-      rollup.avg_attention_seconds        // quando vem do applyRollup com dados da API
-      ?? rollup.avg_contact_time_seconds  // quando vem direto do rollup salvo no Supabase
-      ?? rollup.avg_attention_sec         // fallback legado
+      rollup.avg_attention_seconds
+      ?? rollup.avg_contact_time_seconds
+      ?? rollup.avg_attention_sec
       ?? 0
     ));
 
@@ -185,32 +185,27 @@ export function ClientDashboard() {
     setGenderStats([{ label: 'Masculino', value: Math.round(gp.male ?? 0) }, { label: 'Feminino', value: Math.round(gp.female ?? 0) }]);
 
     const ap: any = rollup.attributes_percent ?? {};
-
     const glassesRaw   = ap.glasses      ?? {};
     const facialRaw    = ap.facial_hair  ?? {};
 
-    // ── Glasses ──────────────────────────────────────────────────────────────
     const glassesHasCats = Object.keys(glassesRaw).some(k => ['usual','dark','none'].includes(k));
     const facialHasCats  = Object.keys(facialRaw).some(k  => ['shaved','beard','goatee','stubble','mustache'].includes(k));
 
-    // % com óculos = usual + dark (quem usa óculos de qualquer tipo)
     const glassesWithPct = glassesHasCats
       ? Number(glassesRaw.usual ?? 0) + Number(glassesRaw.dark ?? 0)
       : Number(glassesRaw.true ?? 0);
     const glassesTotal = Math.round(glassesWithPct);
 
-    // % com barba = tudo exceto shaved
     const facialTotal = facialHasCats
       ? Math.round(Object.entries(facialRaw)
           .filter(([k]) => k !== 'shaved')
           .reduce((a, [, v]) => a + Number(v), 0))
       : Math.round(facialRaw.true ?? 0);
 
-    // Dados detalhados para WidgetVision — usa labels que o GLASSES_MAP entende
     const glassesData: { label: string; value: number }[] = glassesHasCats
       ? Object.entries(glassesRaw)
           .filter(([, v]) => Number(v) > 0)
-          .map(([k, v]) => ({ label: k, value: Number(v) }))  // usual, dark, none
+          .map(([k, v]) => ({ label: k, value: Number(v) }))
       : glassesTotal > 0
         ? [
             { label: 'true',  value: glassesTotal },
@@ -218,11 +213,10 @@ export function ClientDashboard() {
           ]
         : [];
 
-    // Dados detalhados para WidgetFacialHair
     const facialData: { label: string; value: number }[] = facialHasCats
       ? Object.entries(facialRaw)
           .filter(([, v]) => Number(v) > 0)
-          .map(([k, v]) => ({ label: k, value: Number(v) }))  // shaved, beard, goatee…
+          .map(([k, v]) => ({ label: k, value: Number(v) }))
       : facialTotal > 0
         ? [
             { label: 'beard',  value: facialTotal },
@@ -233,19 +227,14 @@ export function ClientDashboard() {
     setHairTypeData(pctMapToTopData(ap.hair_type));
     setHairColorData(pctMapToTopData(ap.hair_color));
 
-    // headwear: novo rollup salva 'true'/'false', rollup antigo salvava {true: X}
-    const headwearPct = Math.round(
-      Number(ap.headwear?.true ?? 0)
-    );
+    const headwearPct = Math.round(Number(ap.headwear?.true ?? 0));
 
     setAttributeStats([
       { label: 'Óculos',      value: glassesTotal },
       { label: 'Barba',       value: facialTotal },
       { label: 'Máscara',     value: 0 },
       { label: 'Chapéu/Boné', value: headwearPct },
-      // Prefixo _glasses_ → lido por WidgetVision
       ...glassesData.map(d => ({ label: `_glasses_${d.label}`, value: d.value })),
-      // Prefixo _facial_ → lido por WidgetFacialHair
       ...facialData.map(d  => ({ label: `_facial_${d.label}`,  value: d.value })),
     ]);
 
@@ -559,9 +548,7 @@ export function ClientDashboard() {
               }
             }
           }
-          if (Object.keys(merged).length > 0) {
-            rollupVisitorsPerDay = merged;
-          }
+          if (Object.keys(merged).length > 0) rollupVisitorsPerDay = merged;
         }
       }
 
@@ -953,9 +940,10 @@ export function ClientDashboard() {
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
             </div>
 
-            {/* Botão Apresentação + Date Picker */}
-            <div className="flex flex-row items-start gap-3 w-full sm:w-auto">
-              {/* Botão Tela Cheia — só ícone */}
+            {/* Botões de ação + Date Picker */}
+            <div className="flex flex-row items-start gap-2 w-full sm:w-auto">
+
+              {/* ── Botão Fullscreen ──────────────────────────────────────── */}
               <button
                 onClick={toggleFullscreen}
                 title={isFullscreen ? 'Sair da tela cheia' : 'Modo apresentação'}
@@ -966,7 +954,31 @@ export function ClientDashboard() {
                   : <Maximize2 size={16} className="text-gray-400" />}
               </button>
 
-              {/* Date Picker */}
+              {/* ── Botão Exportar ────────────────────────────────────────── */}
+              <ExportButton
+                data={{
+                  clientName,
+                  period: { start: selectedStartDate, end: selectedEndDate },
+                  kpis: {
+                    totalVisitors,
+                    avgVisitorsPerDay,
+                    avgVisitSeconds,
+                    avgAttentionSeconds,
+                  },
+                  dailyStats,
+                  hourlyStats,
+                  genderStats,
+                  ageStats,
+                  attributeStats,
+                  hairTypeData,
+                  hairColorData,
+                  visitorsPerDayMap,
+                  quarterBars,
+                  dashboardRef,
+                }}
+              />
+
+              {/* ── Date Picker ───────────────────────────────────────────── */}
               <div className="flex flex-col items-end flex-1 sm:flex-none">
                 <div className="relative w-full sm:w-auto">
                   <button onClick={() => setShowDatePicker(!showDatePicker)} className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors">
@@ -1052,22 +1064,22 @@ export function ClientDashboard() {
                 const mdSpan = spanLg >= 8 ? 'md:col-span-2' : 'md:col-span-1';
 
                 const widgetProps: any = { view: 'network' };
-                if (widget.id === 'flow_trend')             { widgetProps.dailyData = dailyStats; widgetProps.genderData = genderStats; }
-                if (widget.id === 'hourly_flow')           { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'age_pyramid')           { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'gender_dist')           { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'attributes')              widgetProps.attrData = attributeStats;
-                if (widget.id === 'kpi_flow_stats')        { widgetProps.totalVisitors = totalVisitors; widgetProps.avgVisitorsPerDay = avgVisitorsPerDay; widgetProps.avgVisitSeconds = avgVisitSeconds; }
-                if (widget.id === 'chart_age_ranges')        widgetProps.ageData = ageStats;
-                if (widget.id === 'chart_vision')            widgetProps.attrData = attributeStats;
-                if (widget.id === 'chart_facial_hair')       widgetProps.attrData = attributeStats;
-                if (widget.id === 'chart_hair_type')         widgetProps.hairTypeData = hairTypeData;
-                if (widget.id === 'chart_hair_color')        widgetProps.hairColorData = hairColorData;
-                if (widget.id === 'kpi_store_quarter')     { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
-                if (widget.id === 'chart_sales_quarter')    { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
-                if (widget.id === 'kpi_store_period')      { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }
-                if (widget.id === 'campaigns')               widgetProps.clientId = id;
-                if (widget.id === 'chart_sales_daily')     { widgetProps.labels = periodSeries.labels; widgetProps.visitors = periodSeries.values; widgetProps.loading = isLoadingData; }
+                if (widget.id === 'flow_trend')              { widgetProps.dailyData = dailyStats; widgetProps.genderData = genderStats; }
+                if (widget.id === 'hourly_flow')             { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'attributes')                widgetProps.attrData = attributeStats;
+                if (widget.id === 'kpi_flow_stats')          { widgetProps.totalVisitors = totalVisitors; widgetProps.avgVisitorsPerDay = avgVisitorsPerDay; widgetProps.avgVisitSeconds = avgVisitSeconds; }
+                if (widget.id === 'chart_age_ranges')          widgetProps.ageData = ageStats;
+                if (widget.id === 'chart_vision')              widgetProps.attrData = attributeStats;
+                if (widget.id === 'chart_facial_hair')         widgetProps.attrData = attributeStats;
+                if (widget.id === 'chart_hair_type')           widgetProps.hairTypeData = hairTypeData;
+                if (widget.id === 'chart_hair_color')          widgetProps.hairColorData = hairColorData;
+                if (widget.id === 'kpi_store_quarter')       { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
+                if (widget.id === 'chart_sales_quarter')     { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
+                if (widget.id === 'kpi_store_period')        { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }
+                if (widget.id === 'campaigns')                 widgetProps.clientId = id;
+                if (widget.id === 'chart_sales_daily')       { widgetProps.labels = periodSeries.labels; widgetProps.visitors = periodSeries.values; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
 

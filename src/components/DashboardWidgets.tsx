@@ -48,9 +48,26 @@ function useChartJs(
   }, deps);
 }
 
-// ── Canvas wrapper — altura SEMPRE fixa via style ────────────────────────────
-const CanvasBox = ({ height = CHART_H, children }: { height?: number; children: React.ReactNode }) => (
-  <div style={{ position: 'relative', width: '100%', height }} className="min-w-0 flex-shrink-0">
+const CanvasBox = ({
+  height = CHART_H,
+  minHeight,
+  className = '',
+  children,
+}: {
+  height?: number | string;
+  minHeight?: number;
+  className?: string;
+  children: React.ReactNode;
+}) => (
+  <div
+    style={{
+      position: 'relative',
+      width: '100%',
+      height,
+      ...(minHeight == null ? {} : { minHeight }),
+    }}
+    className={`min-w-0 ${typeof height === 'number' ? 'flex-shrink-0' : ''} ${className}`}
+  >
     {children}
   </div>
 );
@@ -452,9 +469,11 @@ export const WidgetAttributes = ({ attrData }: { view?: string; attrData?: { lab
   const data = (attrData || []).filter(a => !a.label.startsWith('_')).filter(a => ['Óculos','Barba','Máscara','Chapéu/Boné'].includes(a.label));
   const display = data.length > 0 ? data : [{ label:'Óculos', value:0 },{ label:'Barba', value:0 },{ label:'Máscara', value:0 },{ label:'Chapéu/Boné', value:0 }];
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <h3 className="font-bold text-white mb-4 flex items-center gap-2 uppercase text-xs tracking-wider"><Users size={14} className="text-orange-500" />Atributos</h3>
-      <HorizontalBarChart data={display} color="bg-orange-500" />
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <h3 className="font-bold text-white mb-3 flex items-center gap-2 uppercase text-xs tracking-wider flex-none"><Users size={14} className="text-orange-500" />Atributos</h3>
+      <div className="flex-1 min-h-0 overflow-auto">
+        <HorizontalBarChart data={display} color="bg-orange-500" />
+      </div>
     </div>
   );
 };
@@ -546,17 +565,45 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
   const fmtDate = (d: string | null) => d ? new Date(d).toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '—';
   const fmtSec = (s: number) => { const m = Math.floor(s / 60); const sec = s % 60; return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; };
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div className="flex items-center justify-between mb-4">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <div className="flex items-center justify-between mb-4 flex-none">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Activity size={14} className="text-emerald-500" />Engajamento em Campanhas</h3>
         <span className="text-[10px] text-gray-400 border border-gray-800 px-2 py-1 rounded-md">Automático</span>
       </div>
-      {loading ? <div className="flex items-center justify-center py-10 text-gray-500 text-sm">Carregando...</div>
-        : rows.length === 0 ? <div className="flex flex-col items-center justify-center py-10 gap-2 text-gray-500 text-sm"><p>Nenhuma campanha disponível.</p><p className="text-xs text-gray-600">Aguardando sincronização automática.</p></div>
-        : <div className="overflow-auto"><table className="w-full text-left text-xs">
-            <thead className="text-gray-500 uppercase border-b border-gray-800"><tr><th className="pb-2 pr-4 font-medium">Campanha</th><th className="pb-2 pr-4 font-medium">Início</th><th className="pb-2 pr-4 font-medium">Fim</th><th className="pb-2 pr-4 font-medium text-right">Visitantes</th><th className="pb-2 font-medium text-right">Atenção</th></tr></thead>
-            <tbody className="divide-y divide-gray-800">{rows.map((r, i) => (<tr key={i} className="hover:bg-gray-800/50 transition-colors"><td className="py-2 pr-4 text-white font-medium max-w-[180px] truncate">{r.name || '—'}</td><td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td><td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td><td className="py-2 pr-4 text-emerald-400 text-right font-medium">{Number(r.visitors||0).toLocaleString('pt-BR')}</td><td className="py-2 text-blue-400 text-right font-medium">{r.avg_attention_sec > 0 ? fmtSec(r.avg_attention_sec) : '—'}</td></tr>))}</tbody>
-          </table></div>}
+
+      {loading ? (
+        <div className="flex-1 min-h-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
+      ) : rows.length === 0 ? (
+        <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
+          <p>Nenhuma campanha disponível.</p>
+          <p className="text-xs text-gray-600">Aguardando sincronização automática.</p>
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 overflow-auto">
+          <table className="w-full text-left text-xs">
+            <thead className="text-gray-500 uppercase border-b border-gray-800">
+              <tr>
+                <th className="pb-2 pr-4 font-medium">Campanha</th>
+                <th className="pb-2 pr-4 font-medium">Início</th>
+                <th className="pb-2 pr-4 font-medium">Fim</th>
+                <th className="pb-2 pr-4 font-medium text-right">Visitantes</th>
+                <th className="pb-2 font-medium text-right">Atenção</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800">
+              {rows.map((r, i) => (
+                <tr key={i} className="hover:bg-gray-800/50 transition-colors">
+                  <td className="py-2 pr-4 text-white font-medium max-w-[180px] truncate">{r.name || '—'}</td>
+                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td>
+                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td>
+                  <td className="py-2 pr-4 text-emerald-400 text-right font-medium">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
+                  <td className="py-2 text-blue-400 text-right font-medium">{r.avg_attention_sec > 0 ? fmtSec(r.avg_attention_sec) : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 };
@@ -575,10 +622,10 @@ export const WidgetKPIFlowStats = ({ totalVisitors, avgVisitorsPerDay, avgVisitS
 
 // ── WidgetSalesQuarter ───────────────────────────────────────────────────────
 export const WidgetSalesQuarter = ({
-  quarterData, visitors, sales, loading,
+  quarterData, loading,
 }: {
   quarterData?: { label: string; visitors: number; sales: number }[];
-  visitors?: number; sales?: number; loading?: boolean;
+  loading?: boolean;
 }) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
 
@@ -604,15 +651,15 @@ export const WidgetSalesQuarter = ({
   }, [JSON.stringify(visitorArr)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <h3 className="font-bold text-white mb-2 uppercase text-xs tracking-wider">Total Visitantes — Último Trimestre</h3>
-      <div className="flex gap-4 text-[10px] text-gray-500 mb-3">
+      <div className="flex gap-4 text-[10px] text-gray-500 mb-3 flex-none">
         <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: CJ.neutral }} />Visitantes <strong className="text-white ml-1">{loading ? '…' : totalV.toLocaleString('pt-BR')}</strong></span>
       </div>
-      <CanvasBox>
+      <CanvasBox height="100%" minHeight={0} className="flex-1 min-h-0">
         {loading ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
           : data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados no trimestre</div>
-          : <canvas ref={canvasRef} />}
+          : <canvas ref={canvasRef} className="w-full h-full" />}
       </CanvasBox>
     </div>
   );
