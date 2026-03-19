@@ -1191,4 +1191,13 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    # --once: roda uma vez e sai (usado pelo GitHub Actions)
+    # sem argumento: roda em loop diário (usado localmente)
+    if "--once" in sys.argv:
+        log.info("▶️  Modo --once: executa uma vez e encerra (GitHub Actions)")
+        DOWNLOAD_DIR.mkdir(exist_ok=True)
+        executar_bot()
+        log.info("✅ Modo --once concluído.")
+    else:
+        main()

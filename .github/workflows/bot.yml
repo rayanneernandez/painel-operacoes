@@ -1,0 +1,53 @@
+name: Bot DisplayForce — Atualização Diária
+
+on:
+  # Roda todo dia às 10:00 horário de Brasília (13:00 UTC)
+  schedule:
+    - cron: '0 10 * * *'
+
+  # Permite rodar manualmente pelo botão no GitHub quando precisar
+  workflow_dispatch:
+
+jobs:
+  rodar-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências Python
+        run: pip install -r requirements.txt
+
+      - name: Instalar Chromium (Playwright)
+        run: |
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Rodar o bot
+        env:
+          DISPLAYFORCE_EMAIL: ${{ secrets.DISPLAYFORCE_EMAIL }}
+          DISPLAYFORCE_PASS:  ${{ secrets.DISPLAYFORCE_PASS }}
+          RELATORIO_EMAIL:    ${{ secrets.RELATORIO_EMAIL }}
+          IMAP_EMAIL:         ${{ secrets.IMAP_EMAIL }}
+          IMAP_PASSWORD:      ${{ secrets.IMAP_PASSWORD }}
+          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
+          HEADLESS:           "true"
+          HORARIO_EXECUCAO:   "10:00"
+        run: python bot_displayforce.py --once
+
+      - name: Salvar logs em caso de erro
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-bot
+          path: |
+            bot_displayforce.log
+            downloads_displayforce/
