@@ -108,13 +108,27 @@ def upsert_campanhas(registros: list[dict]) -> int:
     if not registros:
         return 0
     sb  = get_supabase()
-    res = sb.table("campaigns").upsert(
-        registros,
-        on_conflict="client_id,name,start_date,end_date"
-    ).execute()
-    count = len(res.data) if res.data else 0
-    log.info(f"  ✅ {count} campanhas salvas no Supabase")
-    return count
+    try:
+        # on_conflict usa apenas client_id+name (índice incondicional)
+        # para evitar erro com índice parcial condicional do PostgreSQL
+        res = sb.table("campaigns").upsert(
+            registros,
+            on_conflict="client_id,name"
+        ).execute()
+        count = len(res.data) if res.data else 0
+        log.info(f"  ✅ {count} campanhas salvas no Supabase")
+        return count
+    except Exception as e:
+        log.error(f"  ❌ Erro ao salvar campanhas no Supabase: {e}")
+        # Tenta inserir ignorando duplicatas se o upsert falhar
+        try:
+            res2 = sb.table("campaigns").insert(registros, upsert=False).execute()
+            count2 = len(res2.data) if res2.data else 0
+            log.info(f"  ✅ {count2} campanhas inseridas via fallback INSERT")
+            return count2
+        except Exception as e2:
+            log.error(f"  ❌ Fallback INSERT também falhou: {e2}")
+            return 0
 
 
 # ──────────────────────────────────────────────────────────────
