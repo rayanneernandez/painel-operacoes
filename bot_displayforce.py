@@ -639,9 +639,10 @@ def _processar_msg_displayforce(imap, uid, use_uid: bool = False) -> list[str]:
     return []
 
 
-def _buscar_em_pasta(imap, pasta: str, apos_uid: int) -> list[str]:
+def _buscar_em_pasta(imap, pasta: str, apos_uid: int, nome_cliente: str = "") -> list[str]:
     """Tenta encontrar e processar e-mail DisplayForce numa pasta específica.
-    CORRIGIDO: usa uid('search') e uid('fetch') para UIDs reais."""
+    CORRIGIDO: usa uid('search') e uid('fetch') para UIDs reais.
+    nome_cliente: se informado, filtra apenas e-mails cujo remetente contenha esse nome."""
     try:
         status, _ = imap.select(pasta)
         if status != "OK":
@@ -706,6 +707,11 @@ def _buscar_em_pasta(imap, pasta: str, apos_uid: int) -> list[str]:
                 log.info(f"    ⏭️  UID {uid} ignorado — de: '{remetente}' | assunto: '{assunto}'")
                 continue
 
+            # Filtro por cliente: se nome_cliente informado, remetente deve contê-lo
+            if nome_cliente and nome_cliente.lower() not in remetente:
+                log.info(f"    ⏭️  UID {uid} ignorado — remetente '{remetente}' não é do cliente '{nome_cliente}'")
+                continue
+
             log.info(f"  ✉️  DisplayForce detectado em '{pasta}' (UID {uid}) | assunto: '{assunto}'")
             resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
             if resultado:
@@ -716,10 +722,11 @@ def _buscar_em_pasta(imap, pasta: str, apos_uid: int) -> list[str]:
     return []
 
 
-def _verificar_email_displayforce(apos_uid: int) -> list[str]:
+def _verificar_email_displayforce(apos_uid: int, nome_cliente: str = "") -> list[str]:
     """
     Verifica e-mails novos da DisplayForce em INBOX e Spam.
     CORRIGIDO: usa uid('search') e uid('fetch') para UIDs reais do Gmail.
+    nome_cliente: se informado, filtra apenas e-mails cujo remetente contenha esse nome.
     Estratégia 1: UIDs novos (> apos_uid) na INBOX.
     Estratégia 2: busca por remetente displ na INBOX de hoje.
     Estratégia 3: busca ampla por qualquer remetente hoje na INBOX.
@@ -778,6 +785,11 @@ def _verificar_email_displayforce(apos_uid: int) -> list[str]:
                         log.info(f"  ⏭️  UID {uid} ignorado (não é DisplayForce, sem anexo relevante)")
                         continue
 
+                    # Filtro por cliente: ignora e-mail de outro cliente
+                    if nome_cliente and nome_cliente.lower() not in remetente:
+                        log.info(f"  ⏭️  UID {uid} ignorado — remetente '{remetente}' não é do cliente '{nome_cliente}'")
+                        continue
+
                     if tem_anexo and not eh_displayforce:
                         log.info(f"  🔎 UID {uid}: tem anexo Excel/ZIP — tentando processar")
 
@@ -796,6 +808,20 @@ def _verificar_email_displayforce(apos_uid: int) -> list[str]:
             if uids2:
                 log.info(f"  📨 {len(uids2)} e-mail(s) displ.com encontrado(s) hoje na INBOX")
                 for uid in reversed(uids2):
+                    try:
+                        _, msg_data2 = imap.uid('fetch', uid, '(RFC822)')
+                        if not msg_data2 or not msg_data2[0]:
+                            continue
+                        raw2 = msg_data2[0][1]
+                        if not isinstance(raw2, bytes):
+                            continue
+                        msg2      = email.message_from_bytes(raw2)
+                        remetente2 = str(msg2.get("From", "")).lower()
+                        if nome_cliente and nome_cliente.lower() not in remetente2:
+                            log.info(f"  ⏭️  UID {uid} (est.2) ignorado — remetente '{remetente2}' não é do cliente '{nome_cliente}'")
+                            continue
+                    except Exception:
+                        pass
                     resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
                     if resultado:
                         return resultado
@@ -828,6 +854,9 @@ def _verificar_email_displayforce(apos_uid: int) -> list[str]:
                         )
 
                         if tem_anexo or tem_link_relatorio:
+                            if nome_cliente and nome_cliente.lower() not in remetente:
+                                log.info(f"  ⏭️  UID {uid} (est.3) ignorado — remetente '{remetente}' não é do cliente '{nome_cliente}'")
+                                continue
                             log.info(f"  🔎 Estratégia 3: UID {uid} | de: '{remetente}' | assunto: '{assunto}'")
                             resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
                             if resultado:
@@ -838,7 +867,7 @@ def _verificar_email_displayforce(apos_uid: int) -> list[str]:
         # ── Estratégia 4: verifica pasta Spam ────────────────────────────
         for pasta_spam in ["[Gmail]/Spam", "[Gmail]/Lixo eletrônico", "Spam", "Junk", "SPAM",
                            "[Gmail]/Lixo Eletr\u00f4nico"]:
-            resultado = _buscar_em_pasta(imap, pasta_spam, apos_uid)
+            resultado = _buscar_em_pasta(imap, pasta_spam, apos_uid, nome_cliente=nome_cliente)
             if resultado:
                 log.warning(f"  ⚠️  E-mail encontrado na pasta SPAM! Mova para INBOX para evitar isso.")
                 return resultado
@@ -846,19 +875,21 @@ def _verificar_email_displayforce(apos_uid: int) -> list[str]:
     return []
 
 
-def baixar_relatorio_email(timeout_seg: int = TIMEOUT_EMAIL_SEG) -> list[str]:
+def baixar_relatorio_email(timeout_seg: int = TIMEOUT_EMAIL_SEG, nome_cliente: str = "") -> list[str]:
     """
     Aguarda o e-mail da DisplayForce e retorna lista de caminhos de arquivos baixados.
     Verifica a caixa IMAP a cada 15 segundos até timeout_seg.
+    nome_cliente: se informado, filtra apenas e-mails cujo remetente contenha esse nome,
+    evitando que o bot processe e-mail do cliente errado.
     """
-    log.info(f"  Aguardando e-mail com relatório em {IMAP_EMAIL}...")
+    log.info(f"  Aguardando e-mail com relatório em {IMAP_EMAIL} (cliente: '{nome_cliente}')...")
     DOWNLOAD_DIR.mkdir(exist_ok=True)
     inicio     = time.time()
     ultimo_uid = _obter_ultimo_uid()
 
     while time.time() - inicio < timeout_seg:
         try:
-            caminhos = _verificar_email_displayforce(ultimo_uid)
+            caminhos = _verificar_email_displayforce(ultimo_uid, nome_cliente=nome_cliente)
             if caminhos:
                 log.info(f"  ✅ {len(caminhos)} arquivo(s) baixado(s): {caminhos}")
                 return caminhos
@@ -1307,7 +1338,7 @@ def executar_bot():
                 if not exportou:
                     continue
 
-                caminhos = baixar_relatorio_email()
+                caminhos = baixar_relatorio_email(nome_cliente=nome_cliente)
                 if not caminhos:
                     log.error(f"  Relatório não recebido para '{nome_cliente}'")
                     continue
