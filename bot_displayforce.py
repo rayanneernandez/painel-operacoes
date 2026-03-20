@@ -47,32 +47,31 @@ def _env(key: str, default: str) -> str:
 
 # DisplayForce
 DISPLAYFORCE_URL   = "https://id.displayforce.ai/#/platforms"
-DISPLAYFORCE_EMAIL = _env("DISPLAYFORCE_EMAIL", "bruno.lyra@globaltera.com.br")
-DISPLAYFORCE_PASS  = _env("DISPLAYFORCE_PASS",  "Tony@2023")
-RELATORIO_EMAIL    = _env("RELATORIO_EMAIL",    "rayanne.ernandez@globaltera.com.br")
+DISPLAYFORCE_EMAIL = _env("DISPLAYFORCE_EMAIL", "")
+DISPLAYFORCE_PASS  = _env("DISPLAYFORCE_PASS",  "")
+RELATORIO_EMAIL    = _env("RELATORIO_EMAIL",    "")
 
 # E-mail IMAP para receber o relatório da DisplayForce
-IMAP_SERVER   = "imap.gmail.com"
-IMAP_PORT     = 993
-IMAP_EMAIL    = _env("IMAP_EMAIL",    "rayanne.ernandez@globaltera.com.br")
-IMAP_PASSWORD = _env("IMAP_PASSWORD", "nfav lshi hfax jhvu")
+IMAP_SERVER   = _env("IMAP_SERVER", "imap.gmail.com")
+IMAP_PORT     = int(_env("IMAP_PORT", "993"))
+IMAP_EMAIL    = _env("IMAP_EMAIL",    "")
+IMAP_PASSWORD = _env("IMAP_PASSWORD", "")
 
 # Supabase
-SUPABASE_URL = _env("SUPABASE_URL", "https://zkzpvaabjchwnnvuwuls.supabase.co")
-SUPABASE_KEY = _env("SUPABASE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
-    ".eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InprenB2YWFiamNod25udnV3dWxzIiwicm9sZSI6"
-    "InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3MTU3OTYyOSwiZXhwIjoyMDg3MTU1NjI5fQ"
-    ".udqmu2DaEN_WsW1f02UOfb8G8ScshrpMSJKlWM7W11I"
-)
+SUPABASE_URL = _env("SUPABASE_URL", "")
+SUPABASE_KEY = _env("SUPABASE_KEY", "")
 
 # Configurações gerais
-# Horário diário de execução (formato HH:MM, horário de Brasília)
 HORARIO_EXECUCAO  = _env("HORARIO_EXECUCAO", "07:00")
 DOWNLOAD_DIR      = Path("./downloads_displayforce")
 LOG_FILE          = "bot_displayforce.log"
-TIMEOUT_EMAIL_SEG = 600   # aguarda até 10 min pelo e-mail da DisplayForce
-HEADLESS          = _env("HEADLESS", "true").lower() == "true"  # False para ver o browser (debug)
+TIMEOUT_EMAIL_SEG = int(_env("TIMEOUT_EMAIL_SEG", "600"))
+HEADLESS          = _env("HEADLESS", "true").lower() == "true"
+
+try:
+    SYNC_INTERVAL_MIN = int(_env("SYNC_INTERVAL_MIN", "10"))
+except Exception:
+    SYNC_INTERVAL_MIN = 10
 
 # ──────────────────────────────────────────────────────────────
 # LOGGING
@@ -88,6 +87,30 @@ logging.basicConfig(
 )
 log = logging.getLogger("bot_displayforce")
 
+
+def validar_config() -> bool:
+    faltando = []
+    if not SUPABASE_URL:
+        faltando.append("SUPABASE_URL")
+    if not SUPABASE_KEY:
+        faltando.append("SUPABASE_KEY")
+    if not DISPLAYFORCE_EMAIL:
+        faltando.append("DISPLAYFORCE_EMAIL")
+    if not DISPLAYFORCE_PASS:
+        faltando.append("DISPLAYFORCE_PASS")
+    if not RELATORIO_EMAIL:
+        faltando.append("RELATORIO_EMAIL")
+    if not IMAP_EMAIL:
+        faltando.append("IMAP_EMAIL")
+    if not IMAP_PASSWORD:
+        faltando.append("IMAP_PASSWORD")
+
+    if faltando:
+        log.error(f"Config incompleta. Defina as env vars: {', '.join(faltando)}")
+        return False
+
+    return True
+
 # ──────────────────────────────────────────────────────────────
 # SUPABASE — helpers
 # ──────────────────────────────────────────────────────────────
@@ -97,37 +120,72 @@ def get_supabase() -> Client:
 
 
 def buscar_clientes() -> list[dict]:
-    sb  = get_supabase()
-    res = sb.table("clients").select("id, name").eq("status", "active").execute()
-    clientes = res.data or []
-    log.info(f"Clientes encontrados no Supabase: {[c['name'] for c in clientes]}")
-    return clientes
+    sb = get_supabase()
+    try:
+        for status in ("active", "ativo"):
+            res = sb.table("clients").select("id, name, status").eq("status", status).execute()
+            clientes = res.data or []
+            if clientes:
+                log.info(f"Clientes encontrados no Supabase (status={status}): {[c['name'] for c in clientes]}")
+                return clientes
+
+        res = sb.table("clients").select("id, name, status").execute()
+        clientes = res.data or []
+        if clientes:
+            log.warning("Nenhum cliente com status 'active/ativo'. Usando todos os clientes.")
+            log.info(f"Clientes encontrados no Supabase: {[c['name'] for c in clientes]}")
+            return clientes
+
+        log.warning("Nenhum cliente encontrado no Supabase.")
+        return []
+    except Exception as e:
+        log.exception(f"Erro ao buscar clientes no Supabase: {e}")
+        return []
 
 
 def upsert_campanhas(registros: list[dict]) -> int:
     if not registros:
         return 0
-    sb  = get_supabase()
-    try:
-        # on_conflict usa client_id+name+tipo_midia+loja (índice único completo)
-        res = sb.table("campaigns").upsert(
-            registros,
-            on_conflict="client_id,name,tipo_midia,loja"
-        ).execute()
-        count = len(res.data) if res.data else 0
-        log.info(f"  ✅ {count} campanhas salvas no Supabase")
-        return count
-    except Exception as e:
-        log.error(f"  ❌ Erro ao salvar campanhas no Supabase: {e}")
-        # Tenta inserir ignorando duplicatas se o upsert falhar
+
+    sb = get_supabase()
+
+    def _drop_keys(rows: list[dict], keys: set[str]) -> list[dict]:
+        if not keys:
+            return rows
+        out = []
+        for r in rows:
+            rr = dict(r)
+            for k in keys:
+                rr.pop(k, None)
+            out.append(rr)
+        return out
+
+    tentativas = [
+        ("client_id,name,tipo_midia,loja", set()),
+        ("client_id,name,start_date,end_date", set()),
+        ("client_id,name", set()),
+        ("client_id,name,tipo_midia,loja", {"uploaded_at"}),
+        ("client_id,name", {"uploaded_at", "tipo_midia", "loja"}),
+    ]
+
+    for on_conflict, drop_keys in tentativas:
         try:
-            res2 = sb.table("campaigns").insert(registros, upsert=False).execute()
-            count2 = len(res2.data) if res2.data else 0
-            log.info(f"  ✅ {count2} campanhas inseridas via fallback INSERT")
-            return count2
-        except Exception as e2:
-            log.error(f"  ❌ Fallback INSERT também falhou: {e2}")
-            return 0
+            payload = _drop_keys(registros, drop_keys)
+            res = sb.table("campaigns").upsert(payload, on_conflict=on_conflict).execute()
+            count = len(res.data) if res.data else len(payload)
+            log.info(f"  ✅ {count} campanhas salvas no Supabase (on_conflict={on_conflict})")
+            return count
+        except Exception as e:
+            log.warning(f"  Falha no upsert (on_conflict={on_conflict}): {e}")
+
+    try:
+        res2 = sb.table("campaigns").insert(registros, upsert=False).execute()
+        count2 = len(res2.data) if res2.data else len(registros)
+        log.info(f"  ✅ {count2} campanhas inseridas via fallback INSERT")
+        return count2
+    except Exception as e2:
+        log.exception(f"  ❌ Fallback INSERT também falhou: {e2}")
+        return 0
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1371,8 +1429,7 @@ def executar_bot():
 
             browser.close()
 
-        proxima = datetime.now(timezone(timedelta(hours=-3))).strftime("%d/%m/%Y")
-        log.info(f"✅ Rodada concluída — próxima execução amanhã às {HORARIO_EXECUCAO}")
+        log.info("✅ Rodada concluída")
 
     except Exception as e:
         log.exception(f"❌ Erro inesperado na rodada: {e}")
@@ -1386,23 +1443,32 @@ def executar_bot():
 
 def main():
     log.info("🚀 Bot DisplayForce iniciado")
-    log.info(f"   Horário de execução: todo dia às {HORARIO_EXECUCAO} (horário de Brasília)")
+    if not validar_config():
+        return
+
+    if SYNC_INTERVAL_MIN and SYNC_INTERVAL_MIN > 0:
+        log.info(f"   Execução: a cada {SYNC_INTERVAL_MIN} min")
+    else:
+        log.info(f"   Execução: todo dia às {HORARIO_EXECUCAO} (horário de Brasília)")
+
     log.info(f"   Clientes: buscados dinamicamente do Supabase")
     log.info(f"   Relatório enviado para: {RELATORIO_EMAIL}")
 
     DOWNLOAD_DIR.mkdir(exist_ok=True)
 
-    # Executa uma vez imediatamente ao iniciar
     log.info("▶️  Execução inicial ao ligar o bot...")
     executar_bot()
 
-    # Agenda para rodar uma vez por dia no horário configurado
-    schedule.every().day.at(HORARIO_EXECUCAO).do(executar_bot)
+    if SYNC_INTERVAL_MIN and SYNC_INTERVAL_MIN > 0:
+        schedule.every(SYNC_INTERVAL_MIN).minutes.do(executar_bot)
+        log.info(f"⏰ Agendamento ativo — executa a cada {SYNC_INTERVAL_MIN} min (Ctrl+C para parar)")
+    else:
+        schedule.every().day.at(HORARIO_EXECUCAO).do(executar_bot)
+        log.info(f"⏰ Agendamento ativo — próxima execução hoje/amanhã às {HORARIO_EXECUCAO} (Ctrl+C para parar)")
 
-    log.info(f"⏰ Agendamento ativo — próxima execução hoje/amanhã às {HORARIO_EXECUCAO} (Ctrl+C para parar)")
     while True:
         schedule.run_pending()
-        time.sleep(60)  # verifica a cada 1 min (muito mais leve que 30s)
+        time.sleep(30)
 
 
 if __name__ == "__main__":
@@ -1410,7 +1476,9 @@ if __name__ == "__main__":
     # --once: roda uma vez e sai (usado pelo GitHub Actions)
     # sem argumento: roda em loop diário (usado localmente)
     if "--once" in sys.argv:
-        log.info("▶️  Modo --once: executa uma vez e encerra (GitHub Actions)")
+        log.info("▶️  Modo --once: executa uma vez e encerra")
+        if not validar_config():
+            raise SystemExit(2)
         DOWNLOAD_DIR.mkdir(exist_ok=True)
         executar_bot()
         log.info("✅ Modo --once concluído.")
