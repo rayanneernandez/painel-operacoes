@@ -272,66 +272,124 @@ def _to_float(val) -> float | None:
 
 def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
     """
-    Lê o arquivo 'Views of visitors' CSV do DisplayForce e agrega por campanha.
-    Retorna lista de registros prontos para upsert na tabela campaigns.
+    Lê o arquivo 'Views of visitors' CSV do DisplayForce e agrega por
+    Campaign + Device → salva como (name, tipo_midia, loja) na tabela campaigns.
+
+    Estrutura real do CSV (confirmada nos arquivos reais da DisplayForce):
+      - Primeira linha contém 'sep=,' → precisa skiprows=1
+      - Colunas: Campaign, Device, Visitor ID, Content View Start,
+                 Content View End, Content View Duration, ...
     """
     log.info(f"  Processando Views CSV: {caminho_arquivo}")
     try:
+        # O CSV exportado pela DisplayForce começa com "sep=," — pular essa linha
         try:
-            df = pd.read_csv(caminho_arquivo, encoding="utf-8")
+            df = pd.read_csv(caminho_arquivo, skiprows=1, encoding="utf-8")
         except Exception:
-            df = pd.read_csv(caminho_arquivo, encoding="latin-1")
+            df = pd.read_csv(caminho_arquivo, skiprows=1, encoding="latin-1")
     except Exception as e:
-        log.error(f"  Erro ao ler CSV: {e}")
+        log.error(f"  Erro ao ler Views CSV: {e}")
         return []
 
     df.columns = [str(c).strip() for c in df.columns]
-    log.info(f"  Colunas Views CSV: {list(df.columns)}")
+    log.info(f"  Colunas Views CSV ({len(df.columns)}): {list(df.columns)}")
+    log.info(f"  Total de linhas brutas: {len(df)}")
 
-    # Detecta colunas de campanha
-    col_campaign_id   = next((c for c in df.columns if "campaign" in c.lower() and "id" in c.lower()), None)
-    col_campaign_name = next((c for c in df.columns if "campaign" in c.lower() and ("name" in c.lower() or "nome" in c.lower())), None)
-    col_visitor_id    = next((c for c in df.columns if "visitor" in c.lower() and "id" in c.lower()), None)
-    col_view_start    = next((c for c in df.columns if "view start" in c.lower() or "content view start" in c.lower() or "contact start" in c.lower()), None)
-    col_view_end      = next((c for c in df.columns if "view end" in c.lower() or "content view end" in c.lower() or "contact end" in c.lower()), None)
-    col_duration      = next((c for c in df.columns if "duration" in c.lower() or "contact d" in c.lower()), None)
+    # Detecta colunas pelo nome real confirmado nos arquivos
+    def achar(opcoes):
+        for op in opcoes:
+            if op in df.columns:
+                return op
+            for c in df.columns:
+                if op.lower() == c.lower().strip():
+                    return c
+        return None
 
-    log.info(f"  Mapeamento Views: campaign_id={col_campaign_id}, campaign_name={col_campaign_name}, visitor_id={col_visitor_id}")
+    col_campaign  = achar(["Campaign", "Campanha"])
+    col_device    = achar(["Device", "Dispositivo"])
+    col_visitor   = achar(["Visitor ID", "Visitor_ID"])
+    col_start     = achar(["Content View Start", "Contact Start", "View Start"])
+    col_end       = achar(["Content View End",   "Contact End",   "View End"])
+    col_duration  = achar(["Content View Duration", "Contact Duration", "View Duration"])
 
-    if not col_campaign_name:
-        log.warning("  Nenhuma coluna 'Campaign Name' encontrada no Views CSV")
+    log.info(f"  Mapeamento: campaign={col_campaign}, device={col_device}, "
+             f"visitor={col_visitor}, start={col_start}, end={col_end}, dur={col_duration}")
+
+    if not col_campaign:
+        log.warning("  Coluna 'Campaign' não encontrada no Views CSV")
         return []
 
-    # Filtra apenas linhas com campanha
-    df_camp = df[df[col_campaign_name].notna() & (df[col_campaign_name].astype(str).str.strip() != "")].copy()
-    if df_camp.empty:
-        log.warning("  Nenhuma linha com dados de campanha no Views CSV")
+    # Remove linhas sem campanha
+    df = df[df[col_campaign].notna() & (df[col_campaign].astype(str).str.strip() != "")].copy()
+    if df.empty:
+        log.warning("  Nenhuma linha com campanha no Views CSV")
         return []
 
-    agora   = datetime.now(timezone.utc).isoformat()
+    agora     = datetime.now(timezone.utc).isoformat()
     registros = []
 
-    for camp_name, grupo in df_camp.groupby(col_campaign_name):
-        nome = str(camp_name).strip()
-        if not nome or nome.lower() == "nan":
+    # Agrupa por Campaign + Device (cada linha = 1 tela em 1 loja)
+    group_cols = [col_campaign]
+    if col_device:
+        group_cols.append(col_device)
+
+    for chave, grupo in df.groupby(group_cols):
+        campaign_val = str(chave[0] if isinstance(chave, tuple) else chave).strip()
+        device_val   = str(chave[1] if isinstance(chave, tuple) and len(chave) > 1 else "").strip()
+
+        if not campaign_val or campaign_val.lower() == "nan":
             continue
 
-        # Contagem de visitantes únicos
-        visitantes = grupo[col_visitor_id].nunique() if col_visitor_id else len(grupo)
+        # ── TIPO_MIDIA: parte do device após " - " ──────────────────────────
+        # Ex: "Filial 309 - Totem 1"  → tipo_midia = "Totem 1"
+        # Ex: "Totem Medicamentos"     → tipo_midia = "Totem Medicamentos"
+        if device_val and " - " in device_val:
+            tipo_midia = device_val.split(" - ", 1)[1].strip()
+        else:
+            tipo_midia = device_val
 
-        # Datas de início e fim
-        start_date = None
-        end_date   = None
-        if col_view_start:
+        # ── LOJA: extrai da campanha (remove prefixo "Filial ") ─────────────
+        # Ex: "Filial Dom Joaquim - 309" → loja = "Dom Joaquim - 309"
+        loja = campaign_val
+        if loja.lower().startswith("filial "):
+            loja = loja[7:].strip()
+
+        # ── Visitantes únicos ───────────────────────────────────────────────
+        visitantes = grupo[col_visitor].nunique() if col_visitor else len(grupo)
+
+        # ── Datas de início e fim ───────────────────────────────────────────
+        start_date = end_date = None
+        if col_start:
             try:
-                datas = pd.to_datetime(grupo[col_view_start], errors="coerce").dropna()
+                datas = pd.to_datetime(grupo[col_start], errors="coerce").dropna()
                 if not datas.empty:
                     start_date = datas.min().isoformat()
-                    end_date   = datas.max().isoformat()
+            except Exception:
+                pass
+        if col_end:
+            try:
+                datas_fim = pd.to_datetime(grupo[col_end], errors="coerce").dropna()
+                if not datas_fim.empty:
+                    end_date = datas_fim.max().isoformat()
             except Exception:
                 pass
 
-        # Duração média de atenção em segundos
+        # ── Duração total (dias e hh:mm:ss) ─────────────────────────────────
+        duration_days = None
+        duration_hms  = None
+        if start_date and end_date:
+            try:
+                delta = pd.to_datetime(end_date) - pd.to_datetime(start_date)
+                total_sec    = int(delta.total_seconds())
+                duration_days = round(total_sec / 86400, 2)
+                hh = total_sec // 3600
+                mm = (total_sec % 3600) // 60
+                ss = total_sec % 60
+                duration_hms = f"{hh:02d}:{mm:02d}:{ss:02d}"
+            except Exception:
+                pass
+
+        # ── Atenção média em segundos ────────────────────────────────────────
         avg_attention = 0
         if col_duration:
             try:
@@ -341,18 +399,20 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
 
         reg = {
             "client_id":         client_id,
-            "name":              nome,
+            "name":              campaign_val,   # nome da campanha / loja
+            "tipo_midia":        tipo_midia,     # tipo de tela (Totem, Caixa, etc.)
+            "loja":              loja,           # nome da loja
             "start_date":        start_date,
             "end_date":          end_date,
-            "duration_days":     None,
-            "duration_hms":      None,
+            "duration_days":     duration_days,
+            "duration_hms":      duration_hms,
             "visitors":          int(visitantes),
             "avg_attention_sec": avg_attention,
             "uploaded_at":       agora,
         }
         registros.append(reg)
 
-    log.info(f"  {len(registros)} campanhas extraídas do Views CSV")
+    log.info(f"  {len(registros)} registros extraídos do Views CSV")
     return registros
 
 
