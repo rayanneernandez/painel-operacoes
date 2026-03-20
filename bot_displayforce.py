@@ -37,9 +37,42 @@ from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeo
 
 # ──────────────────────────────────────────────────────────────
 # CONFIGURAÇÕES — lê de variáveis de ambiente ou usa defaults
-# Para rodar localmente: edite os valores abaixo
-# Para Railway/Render: configure as env vars no painel deles
 # ──────────────────────────────────────────────────────────────
+
+def _carregar_env_arquivo(path: str = ".env") -> None:
+    try:
+        if not os.path.exists(path):
+            return
+        with open(path, "r", encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"):
+                    continue
+
+                if line.lower().startswith("$env:"):
+                    line = line[5:].strip()
+
+                if "=" not in line:
+                    continue
+
+                k, v = line.split("=", 1)
+                k = k.strip()
+                v = v.strip()
+
+                if not k or not v:
+                    continue
+
+                if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                    v = v[1:-1]
+
+                if k not in os.environ:
+                    os.environ[k] = v
+    except Exception:
+        return
+
+
+_carregar_env_arquivo(os.environ.get("DOTENV_PATH", ".env"))
+
 
 def _env(key: str, default: str) -> str:
     """Lê variável de ambiente; usa default se não existir."""
@@ -60,6 +93,8 @@ IMAP_PASSWORD = _env("IMAP_PASSWORD", "")
 # Supabase
 SUPABASE_URL = _env("SUPABASE_URL", "")
 SUPABASE_KEY = _env("SUPABASE_KEY", "")
+if not SUPABASE_KEY:
+    SUPABASE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY", "")
 
 # Configurações gerais
 HORARIO_EXECUCAO  = _env("HORARIO_EXECUCAO", "07:00")
