@@ -109,11 +109,10 @@ def upsert_campanhas(registros: list[dict]) -> int:
         return 0
     sb  = get_supabase()
     try:
-        # on_conflict usa apenas client_id+name (índice incondicional)
-        # para evitar erro com índice parcial condicional do PostgreSQL
+        # on_conflict usa client_id+name+tipo_midia+loja (índice único completo)
         res = sb.table("campaigns").upsert(
             registros,
-            on_conflict="client_id,name"
+            on_conflict="client_id,name,tipo_midia,loja"
         ).execute()
         count = len(res.data) if res.data else 0
         log.info(f"  ✅ {count} campanhas salvas no Supabase")
@@ -182,11 +181,14 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
     log.info(f"  Colunas encontradas: {list(df.columns)}")
 
     COL_MAP = {
-        # Coluna principal do nome da campanha — tenta MIDIA_VALIDADA e TIPO_MIDIA
-        "name":          ["MIDIA_VALIDADA", "MÍDIA_VALIDADA", "MIDIA VALIDADA",
-                          "TIPO_MIDIA", "TIPO MIDIA", "Campanha", "Campaign", "Mídia"],
-        # LOJA é coluna complementar (usada para compor o nome quando TIPO_MIDIA existe)
-        "loja":          ["LOJA", "Loja", "Store", "Unidade", "Filial"],
+        # Nome da campanha (ex: "CLINIC", "VERÃO 2025")
+        "campanha":      ["CAMPANHA", "Campanha", "Campaign Name", "Campaign",
+                          "MIDIA_VALIDADA", "MÍDIA_VALIDADA", "MIDIA VALIDADA"],
+        # Tipo de mídia (ex: "Calhau", "TOT", "CAIXA")
+        "tipo_midia":    ["TIPO_MIDIA", "TIPO MIDIA", "Tipo Midia", "Tipo_Midia",
+                          "Mídia", "Midia", "Type"],
+        # Loja/unidade (ex: "309 - Dom Joaquim Posto")
+        "loja":          ["LOJA", "Loja", "Store", "Unidade", "Filial", "deviceID"],
         "start_date":    ["INICIO_EXIBIÇÃO", "INÍCIO_EXIBIÇÃO", "INICIO EXIBIÇÃO",
                           "INICIO_EXIBICAO", "Início", "Start", "Data Início"],
         "end_date":      ["FIM_EXIBIÇÃO", "FIM EXIBIÇÃO", "FIM_EXIBICAO", "Fim", "End", "Data Fim"],
@@ -213,28 +215,33 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
     agora     = datetime.now(timezone.utc).isoformat()
 
     for _, row in df.iterrows():
-        # Monta o nome da campanha
-        # Se tiver TIPO_MIDIA e LOJA → "TIPO_MIDIA | LOJA"  (ex: "Calhau | 309 - Dom Joaquim Posto")
-        # Se tiver apenas TIPO_MIDIA → usa o valor direto
-        # Se tiver MIDIA_VALIDADA → usa esse
-        tipo_midia_col = mapa.get("name")
+        # Extrai campanha, tipo_midia e loja como campos separados
+        campanha_col   = mapa.get("campanha")
+        tipo_midia_col = mapa.get("tipo_midia")
         loja_col       = mapa.get("loja")
 
-        nome_base = str(row.get(tipo_midia_col, "")).strip() if tipo_midia_col else ""
-        loja_val  = str(row.get(loja_col, "")).strip()       if loja_col       else ""
+        campanha_val   = str(row.get(campanha_col,   "")).strip() if campanha_col   else ""
+        tipo_midia_val = str(row.get(tipo_midia_col, "")).strip() if tipo_midia_col else ""
+        loja_val       = str(row.get(loja_col,       "")).strip() if loja_col       else ""
 
-        if nome_base.lower() in ("", "nan"):
+        # Normaliza "nan"
+        campanha_val   = "" if campanha_val.lower()   == "nan" else campanha_val
+        tipo_midia_val = "" if tipo_midia_val.lower() == "nan" else tipo_midia_val
+        loja_val       = "" if loja_val.lower()       == "nan" else loja_val
+
+        # Linha inválida se não tiver nem campanha nem tipo_midia
+        if not campanha_val and not tipo_midia_val:
             continue
 
-        # Combina TIPO_MIDIA + LOJA se ambos existirem e não forem iguais
-        if loja_val and loja_val.lower() not in ("", "nan") and loja_val != nome_base:
-            nome = f"{nome_base} | {loja_val}"
-        else:
-            nome = nome_base
+        # name = nome da campanha (para agrupar no widget)
+        # Se tiver coluna CAMPANHA separada usa ela; senão usa tipo_midia como nome
+        nome = campanha_val if campanha_val else tipo_midia_val
 
         reg = {
             "client_id":         client_id,
             "name":              nome,
+            "tipo_midia":        tipo_midia_val,
+            "loja":              loja_val,
             "start_date":        parse_data(row.get(mapa["start_date"])) if mapa["start_date"] else None,
             "end_date":          parse_data(row.get(mapa["end_date"]))   if mapa["end_date"]   else None,
             "duration_days":     _to_float(row.get(mapa["duration_days"])) if mapa["duration_days"] else None,
@@ -245,7 +252,7 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
         }
         registros.append(reg)
 
-    log.info(f"  {len(registros)} campanhas extraídas do Excel")
+    log.info(f"  {len(registros)} linhas extraídas do Excel")
     return registros
 
 

@@ -558,16 +558,33 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
     if (!clientId) return;
     setLoading(true);
     import('../lib/supabase').then(({ default: supabase }) => {
-      supabase.from('campaigns').select('name,start_date,end_date,visitors,avg_attention_sec').eq('client_id', clientId).order('start_date', { ascending: false }).limit(50)
+      supabase
+        .from('campaigns')
+        .select('name,tipo_midia,loja,start_date,end_date,duration_days,duration_hms,visitors,avg_attention_sec')
+        .eq('client_id', clientId)
+        .order('start_date', { ascending: false })
+        .limit(100)
         .then(({ data }) => { setRows(data || []); setLoading(false); });
     });
   }, [clientId]);
-  const fmtDate = (d: string | null) => d ? new Date(d).toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' }) : '—';
-  const fmtSec = (s: number) => { const m = Math.floor(s / 60); const sec = s % 60; return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`; };
+
+  const fmtDate = (d: string | null) =>
+    d ? new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
+
+  const fmtAtencao = (s: number, hms: string | null) => {
+    if (hms && hms.trim() && hms !== 'None' && hms !== 'nan') return hms.trim();
+    if (!s || s === 0) return '—';
+    const m = Math.floor(s / 60);
+    const sec = s % 60;
+    return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  };
+
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
-      <div className="flex items-center justify-between mb-4 flex-none">
-        <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Activity size={14} className="text-emerald-500" />Engajamento em Campanhas</h3>
+      <div className="flex items-center justify-between mb-3 flex-none">
+        <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
+          <Activity size={14} className="text-emerald-500" />Engajamento em Campanhas
+        </h3>
         <span className="text-[10px] text-gray-400 border border-gray-800 px-2 py-1 rounded-md">Automático</span>
       </div>
 
@@ -581,23 +598,31 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
       ) : (
         <div className="flex-1 min-h-0 overflow-auto">
           <table className="w-full text-left text-xs">
-            <thead className="text-gray-500 uppercase border-b border-gray-800">
+            <thead className="sticky top-0 bg-gray-900 text-gray-500 uppercase border-b border-gray-800 z-10">
               <tr>
-                <th className="pb-2 pr-4 font-medium">Campanha</th>
-                <th className="pb-2 pr-4 font-medium">Início</th>
-                <th className="pb-2 pr-4 font-medium">Fim</th>
-                <th className="pb-2 pr-4 font-medium text-right">Visitantes</th>
-                <th className="pb-2 font-medium text-right">Atenção</th>
+                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Campanha</th>
+                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Tipo Mídia</th>
+                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Loja</th>
+                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Início Exibição</th>
+                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Fim Exibição</th>
+                <th className="pb-2 pr-3 font-medium whitespace-nowrap text-right">Dias</th>
+                <th className="pb-2 pr-3 font-medium whitespace-nowrap text-right">Tempo</th>
+                <th className="pb-2 pr-3 font-medium whitespace-nowrap text-right">Visitantes</th>
+                <th className="pb-2 font-medium whitespace-nowrap text-right">Atenção</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800">
+            <tbody className="divide-y divide-gray-800/60">
               {rows.map((r, i) => (
-                <tr key={i} className="hover:bg-gray-800/50 transition-colors">
-                  <td className="py-2 pr-4 text-white font-medium max-w-[180px] truncate">{r.name || '—'}</td>
-                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td>
-                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td>
-                  <td className="py-2 pr-4 text-emerald-400 text-right font-medium">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
-                  <td className="py-2 text-blue-400 text-right font-medium">{r.avg_attention_sec > 0 ? fmtSec(r.avg_attention_sec) : '—'}</td>
+                <tr key={i} className="hover:bg-gray-800/40 transition-colors">
+                  <td className="py-1.5 pr-3 text-white font-medium max-w-[120px] truncate">{r.name || '—'}</td>
+                  <td className="py-1.5 pr-3 text-purple-400 whitespace-nowrap">{r.tipo_midia || '—'}</td>
+                  <td className="py-1.5 pr-3 text-gray-300 max-w-[160px] truncate">{r.loja || '—'}</td>
+                  <td className="py-1.5 pr-3 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td>
+                  <td className="py-1.5 pr-3 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td>
+                  <td className="py-1.5 pr-3 text-yellow-400 text-right">{r.duration_days != null ? Number(r.duration_days).toFixed(0) : '—'}</td>
+                  <td className="py-1.5 pr-3 text-gray-400 text-right font-mono">{r.duration_hms && r.duration_hms !== 'None' ? r.duration_hms : '—'}</td>
+                  <td className="py-1.5 pr-3 text-emerald-400 text-right font-medium">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
+                  <td className="py-1.5 text-blue-400 text-right font-medium">{fmtAtencao(r.avg_attention_sec, r.duration_hms)}</td>
                 </tr>
               ))}
             </tbody>
