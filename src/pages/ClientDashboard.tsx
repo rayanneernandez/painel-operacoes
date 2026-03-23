@@ -303,9 +303,13 @@ export function ClientDashboard() {
       }
 
       const { data: rollups } = await supabase
-        .from('visitor_analytics_rollups').select('*').eq('client_id', id)
-        .lte('start', `${startDay}T00:00:00`).gte('end', `${endDay}T23:59:59.999Z`)
-        .order('updated_at', { ascending: false }).limit(1);
+        .from('visitor_analytics_rollups')
+        .select('*')
+        .eq('client_id', id)
+        .eq('start', startIso)
+        .eq('end', endIso)
+        .order('updated_at', { ascending: false })
+        .limit(1);
 
       const rollup = rollups?.[0] ?? null;
       if (rollup) {
@@ -631,22 +635,38 @@ export function ClientDashboard() {
     const prevStart = new Date(prevEnd.getTime() - (dayCount - 1) * 86400000);
     setIsLoadingCompare(true);
     try {
+      const prevStartAligned = new Date(prevStart); prevStartAligned.setUTCHours(0, 0, 0, 0);
+      const prevEndAligned   = new Date(prevEnd);   prevEndAligned.setUTCHours(23, 59, 59, 999);
+      const prevStartIso = prevStartAligned.toISOString();
+      const prevEndIso   = prevEndAligned.toISOString();
+
       if (deviceIds.length === 0) {
-        const prevStartDay = prevStart.toISOString().slice(0, 10);
-        const prevEndDay   = prevEnd.toISOString().slice(0, 10);
-        const { data: rollups } = await supabase.from('visitor_analytics_rollups').select('visitors_per_day')
-          .eq('client_id', id).lte('start', `${prevStartDay}T00:00:00`).gte('end', `${prevEndDay}T23:59:59.999Z`)
-          .order('updated_at', { ascending: false }).limit(1);
+        const { data: rollups } = await supabase
+          .from('visitor_analytics_rollups')
+          .select('visitors_per_day')
+          .eq('client_id', id)
+          .eq('start', prevStartIso)
+          .eq('end', prevEndIso)
+          .order('updated_at', { ascending: false })
+          .limit(1);
         const found = rollups?.[0] as any;
         if (found?.visitors_per_day) {
           setComparePrevVisitorsPerDay(found.visitors_per_day || {});
         } else {
-          const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, start: prevStart.toISOString(), end: prevEnd.toISOString(), rebuild_rollup: true }) });
+          const resp = await fetch('/api/sync-analytics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: id, start: prevStartIso, end: prevEndIso, rebuild_rollup: true }),
+          });
           const json = resp.ok ? await resp.json() : null;
           setComparePrevVisitorsPerDay(json?.dashboard?.visitors_per_day || {});
         }
       } else {
-        const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, start: prevStart.toISOString(), end: prevEnd.toISOString(), rebuild_rollup: true, devices: deviceIds }) });
+        const resp = await fetch('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: id, start: prevStartIso, end: prevEndIso, rebuild_rollup: true, devices: deviceIds }),
+        });
         const json = resp.ok ? await resp.json() : null;
         setComparePrevVisitorsPerDay(json?.dashboard?.visitors_per_day || {});
       }
