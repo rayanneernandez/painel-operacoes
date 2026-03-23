@@ -491,11 +491,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const lockKey = `${client_id}:${rangeStart}:${rangeEnd}`;
       if (_serverRebuilding.has(lockKey)) {
-        const { data: existing } = await supabase.from("visitor_analytics_rollups").select("*").eq("client_id", client_id).order("updated_at",{ascending:false}).limit(1);
+        const { data: existing } = await supabase
+          .from("visitor_analytics_rollups")
+          .select("*")
+          .eq("client_id", client_id)
+          .eq("start", rangeStart)
+          .eq("end", rangeEnd)
+          .order("updated_at", { ascending: false })
+          .limit(1);
+
         if (existing?.[0]) {
           const r = existing[0];
           return ok(res, {
-            message:"Rebuild em andamento — retornando rollup existente",
+            message:"Rebuild em andamento — retornando rollup do período",
             start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0,
             total_in_db:r.total_visitors, next_offset:null, done:true,
             dashboard: {
@@ -512,6 +520,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             stored_rollup:true,
           });
         }
+
         return ok(res, { message:"Rebuild em andamento", done:false, next_offset:null });
       }
 

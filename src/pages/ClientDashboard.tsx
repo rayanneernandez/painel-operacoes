@@ -319,25 +319,45 @@ export function ClientDashboard() {
         return;
       }
 
-      console.log('[Dashboard] Sem rollup — acionando rebuild em background...');
-      setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-      setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
-      setGenderStats([]); setAttributeStats([]); setAgeStats([]);
-      setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
-      setComparePrevVisitorsPerDay({});
-      setIsLoadingData(false);
+      console.log('[Dashboard] Sem rollup — acionando rebuild...');
 
-      const rebuildKey = `${id}:${startDay}:${endDay}:${deviceIds.join(',')}`;
-      if (_rebuilding.has(rebuildKey)) return;
-      _rebuilding.add(rebuildKey);
+      const rebuildKey = `${id}:${startIso}:${endIso}:${deviceIds.join(',')}`;
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      const tryFetchExactRollup = async () => {
+        const { data: r2 } = await supabase
+          .from('visitor_analytics_rollups')
+          .select('*')
+          .eq('client_id', id)
+          .eq('start', startIso)
+          .eq('end', endIso)
+          .order('updated_at', { ascending: false })
+          .limit(1);
+        return r2?.[0] ?? null;
+      };
+
       setSyncMessage('Calculando dados do banco...');
+
+      if (_rebuilding.has(rebuildKey)) {
+        for (let i = 0; i < 8; i++) {
+          await sleep(900);
+          const r = await tryFetchExactRollup();
+          if (r) { applyRollup(r); setSyncMessage(''); return; }
+        }
+        setSyncMessage('');
+        return;
+      }
+
+      _rebuilding.add(rebuildKey);
 
       try {
         const resp = await fetch('/api/sync-analytics', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
         });
         const json = resp.ok ? await resp.json() : null;
+
         if (json?.dashboard) {
           applyRollup({
             total_visitors:         json.dashboard.total_visitors,
@@ -351,9 +371,23 @@ export function ClientDashboard() {
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
           });
           setSyncMessage(`✅ ${json.dashboard.total_visitors.toLocaleString()} visitantes carregados.`);
-        } else {
-          setSyncMessage('');
+          return;
         }
+
+        if (json?.done === false) {
+          for (let i = 0; i < 10; i++) {
+            await sleep(900);
+            const r = await tryFetchExactRollup();
+            if (r) { applyRollup(r); setSyncMessage(''); return; }
+          }
+        }
+
+        setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
+        setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
+        setGenderStats([]); setAttributeStats([]); setAgeStats([]);
+        setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
+        setComparePrevVisitorsPerDay({});
+        setSyncMessage('');
       } catch (e) {
         console.warn('[Dashboard] Rebuild falhou:', e);
         setSyncMessage('');

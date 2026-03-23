@@ -1,16 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useEffect } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { 
-  LayoutDashboard, 
-  Users, 
-  Shield, 
-  Settings, 
+import {
+  LayoutDashboard,
+  Users,
+  Shield,
+  Settings,
   LogOut,
   FileText,
   History,
-  Sun,
-  Moon
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import globaliaLogo from '../assets/globalia.png';
@@ -19,22 +17,10 @@ export function Layout() {
   const location = useLocation();
   const navigate = useNavigate();
   const { logout, user } = useAuth();
-  const [theme, setTheme] = useState<'dark' | 'light'>('dark');
-
-  const toggleTheme = () => {
-    const newTheme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(newTheme);
-    document.documentElement.classList.toggle('dark', newTheme === 'dark');
-    // You might want to persist this in localStorage
-    localStorage.setItem('theme', newTheme);
-  };
 
   useEffect(() => {
-    const savedTheme = localStorage.getItem('theme') as 'dark' | 'light' | null;
-    if (savedTheme) {
-      setTheme(savedTheme);
-      document.documentElement.classList.toggle('dark', savedTheme === 'dark');
-    }
+    document.documentElement.classList.add('dark');
+    localStorage.setItem('theme', 'dark');
   }, []);
 
   const menuItems = [
@@ -131,15 +117,7 @@ export function Layout() {
                 <p className="text-xs text-gray-500 truncate">{user?.email || ''}</p>
               </div>
             </div>
-            
-            {/* Theme Toggle Button */}
-            <button 
-              onClick={toggleTheme}
-              className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white transition-colors"
-              title={theme === 'dark' ? "Mudar para Modo Claro" : "Mudar para Modo Escuro"}
-            >
-              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
+
           </div>
           <button 
             onClick={() => {

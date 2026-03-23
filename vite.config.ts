@@ -9,6 +9,7 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
 export default defineConfig({
+  base: '/',
   plugins: [react()],
   css: {
     postcss: {
@@ -34,12 +35,18 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        secure: false,
+      },
       '/api-proxy': {
         target: 'https://api.displayforce.ai',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api-proxy/, ''),
         secure: false,
-      }
+      },
     },
   },
 })
+
