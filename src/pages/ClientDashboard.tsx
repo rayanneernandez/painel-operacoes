@@ -1084,7 +1084,9 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
 
                 const heightPx = Number(widgetLayout[widget.id]?.heightPx);
-                const widgetStyle = Number.isFinite(heightPx) ? { height: Math.round(heightPx) } : undefined;
+                const defaultHeightPx = widget.id === 'campaigns' ? 420 : NaN;
+                const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : defaultHeightPx;
+                const widgetStyle = Number.isFinite(resolvedHeightPx) ? { height: Math.round(resolvedHeightPx) } : undefined;
 
                 return (
                   <div key={widget.id} style={widgetStyle ?? { minHeight: 280 }} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>

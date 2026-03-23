@@ -734,7 +734,7 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
           <p className="text-xs text-gray-600">Aguardando sincronização automática.</p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto overflow-x-auto" style={{ minHeight: 0 }}>
+        <div className="flex-1 overflow-y-auto overflow-x-auto" style={{ minHeight: 0, maxHeight: '100%' }}>
           <table className="w-full text-left text-xs">
             <thead className="sticky top-0 bg-gray-900 text-gray-500 uppercase border-b border-gray-800 z-10">
               <tr>
