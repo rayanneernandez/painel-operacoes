@@ -118,49 +118,160 @@ function AttrBarList({ items }: { items: { label: string; value: number; color: 
 }
 
 // ── ChartDonut (Chart.js) — usado por Vision/FacialHair/Hair ────────────────
-function ChartDonut({ labels, values, colors }: { labels: string[]; values: number[]; colors: string[] }) {
+function ChartDonut({
+  labels,
+  values,
+  colors,
+  height = 160,
+  cutout = '65%',
+  rotation = -90,
+  circumference = 360,
+  borderWidth = 2,
+  hoverOffset = 8,
+  showCenter = false,
+  centerTitle,
+  centerValue,
+  legendVariant = 'square',
+}: {
+  labels: string[];
+  values: number[];
+  colors: string[];
+  height?: number;
+  cutout?: string | number;
+  rotation?: number;
+  circumference?: number;
+  borderWidth?: number;
+  hoverOffset?: number;
+  showCenter?: boolean;
+  centerTitle?: string;
+  centerValue?: string;
+  legendVariant?: 'square' | 'dot';
+}) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const total = values.reduce((a, b) => a + b, 0);
   const safeColors = values.map((v, i) => v > 0 ? (colors[i] ?? '#6b7280') : 'transparent');
   const safeBorder = values.map((v) => v > 0 ? '#111827' : 'transparent');
 
+  const topIdx = values.length
+    ? values.reduce((best, v, i) => (Number(v) > Number(values[best]) ? i : best), 0)
+    : 0;
+  const topLabel = labels[topIdx] ?? '';
+  const topPct = total > 0 ? ((Number(values[topIdx] ?? 0) / total) * 100) : 0;
+  const cTitle = centerTitle ?? (showCenter ? topLabel : '');
+  const cValue = centerValue ?? (showCenter ? `${topPct.toFixed(1)}%` : '');
+
   useChartJs(canvasRef, () => {
     if (total === 0) return null;
     return {
       type: 'doughnut',
-      data: { labels, datasets: [{ data: values, backgroundColor: safeColors, borderColor: safeBorder, borderWidth: 2, hoverOffset: 8 }] },
+      data: {
+        labels,
+        datasets: [{
+          data: values,
+          backgroundColor: safeColors,
+          borderColor: safeBorder,
+          borderWidth,
+          hoverOffset,
+          rotation,
+          circumference,
+        }],
+      },
       options: {
-        responsive: true, maintainAspectRatio: false, cutout: '65%',
+        responsive: true,
+        maintainAspectRatio: false,
+        cutout,
         plugins: {
           legend: { display: false },
           tooltip: {
-            backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth: 1,
-            padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont,
+            backgroundColor: CJ.bg,
+            borderColor: 'rgba(255,255,255,0.12)',
+            borderWidth: 1,
+            padding: CJ.tooltipPadding,
+            titleFont: CJ.titleFont,
+            bodyFont: CJ.bodyFont,
             filter: (item: any) => Number(item.raw) > 0,
-            callbacks: { label: (ctx: any) => `  ${ctx.label}: ${total > 0 ? ((Number(ctx.raw) / total) * 100).toFixed(1) : 0}%` },
+            callbacks: {
+              label: (ctx: any) => `  ${ctx.label}: ${total > 0 ? ((Number(ctx.raw) / total) * 100).toFixed(1) : 0}%`,
+            },
           },
         },
       },
     };
-  }, [JSON.stringify(values), JSON.stringify(safeColors)]);
+  }, [JSON.stringify(values), JSON.stringify(safeColors), cutout, rotation, circumference, borderWidth, hoverOffset]);
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <CanvasBox height={160}>
+      <CanvasBox height={height}>
         {total === 0
           ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-          : <canvas ref={canvasRef} />}
+          : <>
+              <canvas ref={canvasRef} />
+              {(cTitle || cValue) && (
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="text-center px-2">
+                    {cTitle && <div className="text-[10px] text-gray-400 uppercase tracking-wider leading-none">{cTitle}</div>}
+                    {cValue && <div className="text-xl font-bold text-white mt-1 leading-none">{cValue}</div>}
+                  </div>
+                </div>
+              )}
+            </>}
       </CanvasBox>
       {total > 0 && (
         <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
           {labels.map((l, i) => values[i] > 0 && (
             <span key={i} className="flex items-center gap-1 text-[11px] text-gray-300">
-              <span className="w-2.5 h-2.5 rounded-sm inline-block flex-shrink-0" style={{ background: colors[i] ?? '#6b7280' }} />
+              <span
+                className={`w-2.5 h-2.5 inline-block flex-shrink-0 ${legendVariant === 'dot' ? 'rounded-full' : 'rounded-sm'}`}
+                style={{ background: colors[i] ?? '#6b7280' }}
+              />
               {l} ({total > 0 ? ((values[i] / total) * 100).toFixed(1) : 0}%)
             </span>
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function StackedPill100({
+  items,
+  height = 18,
+}: {
+  items: { label: string; value: number; color: string }[];
+  height?: number;
+}) {
+  const safe = (items || []).filter((x) => Number(x.value) > 0);
+  const total = safe.reduce((a, x) => a + Number(x.value || 0), 0);
+
+  if (total <= 0 || safe.length === 0) {
+    return <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>;
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div
+        className="w-full overflow-hidden rounded-full bg-gray-800 border border-gray-700"
+        style={{ height }}
+      >
+        <div className="flex h-full w-full">
+          {safe.map((it, i) => (
+            <div
+              key={`${it.label}-${i}`}
+              className={`h-full ${i === 0 ? '' : 'border-l border-gray-900/60'}`}
+              style={{ flex: Number(it.value) || 0, background: it.color }}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
+        {safe.map((it, i) => (
+          <span key={`${it.label}-legend-${i}`} className="flex items-center gap-1 text-[11px] text-gray-300">
+            <span className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0" style={{ background: it.color }} />
+            {it.label} ({((Number(it.value) / total) * 100).toFixed(1)}%)
+          </span>
+        ))}
+      </div>
     </div>
   );
 }
@@ -497,7 +608,17 @@ export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: 
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Visão</h3>
       {items.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
         : items.length === 1 ? <AttrBarList items={items} />
-        : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} />}
+        : <ChartDonut
+            labels={items.map(x=>x.label)}
+            values={items.map(x=>x.value)}
+            colors={items.map(x=>x.color)}
+            height={140}
+            cutout="72%"
+            rotation={-90}
+            circumference={180}
+            showCenter
+            legendVariant="dot"
+          />}
     </div>
   );
 };
@@ -519,7 +640,16 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Pelos Faciais</h3>
       {items.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
         : items.length === 1 ? <AttrBarList items={items} />
-        : <ChartDonut labels={items.map(x=>x.label)} values={items.map(x=>x.value)} colors={items.map(x=>x.color)} />}
+        : <ChartDonut
+            labels={items.map(x=>x.label)}
+            values={items.map(x=>x.value)}
+            colors={items.map(x=>x.color)}
+            cutout="78%"
+            borderWidth={1}
+            hoverOffset={10}
+            showCenter
+            legendVariant="square"
+          />}
     </div>
   );
 };
@@ -532,7 +662,7 @@ export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: strin
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Tipo de Cabelo</h3>
       {labels.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
         : labels.length === 1 ? <AttrBarList items={labels.map((l,i)=>({ label:l, value:values[i], color:colors[i] }))} />
-        : <ChartDonut labels={labels} values={values} colors={colors} />}
+        : <ChartDonut labels={labels} values={values} colors={colors} cutout="58%" borderWidth={3} hoverOffset={12} legendVariant="dot" />}
     </div>
   );
 };
@@ -540,12 +670,18 @@ export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: strin
 // ── WidgetHairColor ──────────────────────────────────────────────────────────
 export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: string; value: number }[] }) => {
   const { labels, values, colors } = mapHairData(hairColorData, HAIR_COLOR_MAP);
+  const items = labels.map((l, i) => ({ label: l, value: values[i], color: colors[i] }))
+    .filter((x) => Number(x.value) > 0)
+    .sort((a, b) => b.value - a.value);
+
+  const top = items.slice(0, 6);
+  const restSum = items.slice(6).reduce((a, x) => a + Number(x.value || 0), 0);
+  const finalItems = restSum > 0 ? [...top, { label: 'Outros', value: restSum, color: '#6b7280' }] : top;
+
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Cor de Cabelo</h3>
-      {labels.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : labels.length === 1 ? <AttrBarList items={labels.map((l,i)=>({ label:l, value:values[i], color:colors[i] }))} />
-        : <ChartDonut labels={labels} values={values} colors={colors} />}
+      <StackedPill100 items={finalItems} />
     </div>
   );
 };
@@ -571,17 +707,19 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
   const fmtDate = (d: string | null) =>
     d ? new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
 
-  const fmtAtencao = (s: number, hms: string | null) => {
-    if (hms && hms.trim() && hms !== 'None' && hms !== 'nan') return hms.trim();
+  const fmtAtencao = (s: number) => {
     if (!s || s === 0) return '—';
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
+    const total = Math.floor(Number(s));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const sec = total % 60;
+    if (h > 0) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
     return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   };
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
-      <div className="flex items-center justify-between mb-3 flex-none">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col overflow-hidden" style={{ minHeight: '200px' }}>
+      <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
           <Activity size={14} className="text-emerald-500" />Engajamento em Campanhas
         </h3>
@@ -589,14 +727,14 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
       </div>
 
       {loading ? (
-        <div className="flex-1 min-h-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
+        <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
       ) : rows.length === 0 ? (
-        <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
+        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
           <p>Nenhuma campanha disponível.</p>
           <p className="text-xs text-gray-600">Aguardando sincronização automática.</p>
         </div>
       ) : (
-        <div className="flex-1 min-h-0 overflow-auto">
+        <div className="flex-1 overflow-y-auto overflow-x-auto" style={{ minHeight: 0 }}>
           <table className="w-full text-left text-xs">
             <thead className="sticky top-0 bg-gray-900 text-gray-500 uppercase border-b border-gray-800 z-10">
               <tr>
@@ -622,7 +760,7 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
                   <td className="py-1.5 pr-3 text-yellow-400 text-right">{r.duration_days != null ? Number(r.duration_days).toFixed(0) : '—'}</td>
                   <td className="py-1.5 pr-3 text-gray-400 text-right font-mono">{r.duration_hms && r.duration_hms !== 'None' ? r.duration_hms : '—'}</td>
                   <td className="py-1.5 pr-3 text-emerald-400 text-right font-medium">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
-                  <td className="py-1.5 text-blue-400 text-right font-medium">{fmtAtencao(r.avg_attention_sec, r.duration_hms)}</td>
+                  <td className="py-1.5 text-blue-400 text-right font-medium">{fmtAtencao(r.avg_attention_sec)}</td>
                 </tr>
               ))}
             </tbody>
