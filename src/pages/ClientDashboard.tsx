@@ -11,7 +11,29 @@ import type { WidgetType } from '../components/DashboardWidgets';
 import { ExportButton } from '../components/ExportButton';
 import supabase from '../lib/supabase';
 
+// ── Controle de rebuild em andamento (nível de módulo) ───────────────────────
 const _rebuilding = new Set<string>();
+
+// ── Intervalo mínimo entre syncs (1 hora em ms) ──────────────────────────────
+const SYNC_INTERVAL_MS = 60 * 60 * 1000;
+
+// ── Chave de localStorage para rastrear último sync por client_id ─────────────
+const lastSyncKey = (cid: string) => `last_bg_sync_${cid}`;
+
+function shouldSync(clientId: string): boolean {
+  try {
+    const raw = localStorage.getItem(lastSyncKey(clientId));
+    if (!raw) return true;
+    const last = Number(raw);
+    return Number.isFinite(last) && Date.now() - last > SYNC_INTERVAL_MS;
+  } catch {
+    return true;
+  }
+}
+
+function markSynced(clientId: string) {
+  try { localStorage.setItem(lastSyncKey(clientId), String(Date.now())); } catch {}
+}
 
 type CameraType = {
   id: string; name: string; status: 'online' | 'offline';
@@ -55,9 +77,9 @@ export function ClientDashboard() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const autoTodayRef = useRef(true);
 
-  const [_isSyncing, setIsSyncing] = useState(false);
+  // ── Sync state — apenas indicador leve, não bloqueia UI ──────────────────
+  const [syncStatus, setSyncStatus]   = useState<'idle' | 'syncing' | 'done'>('idle');
   const [isSyncingStores, setIsSyncingStores] = useState(false);
-  const [syncMessage, setSyncMessage] = useState('');
   const syncingRef = useRef(false);
   const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
 
@@ -79,12 +101,14 @@ export function ClientDashboard() {
     return () => document.removeEventListener('fullscreenchange', onFsChange);
   }, []);
 
+  // Limpa mensagem "done" após 5s
   useEffect(() => {
-    if (!syncMessage || !syncMessage.startsWith('✅')) return;
-    const t = setTimeout(() => setSyncMessage(''), 5000);
+    if (syncStatus !== 'done') return;
+    const t = setTimeout(() => setSyncStatus('idle'), 5000);
     return () => clearTimeout(t);
-  }, [syncMessage]);
+  }, [syncStatus]);
 
+  // Auto-hoje
   useEffect(() => {
     const tick = () => {
       if (!autoTodayRef.current) return;
@@ -160,6 +184,7 @@ export function ClientDashboard() {
     return [];
   }, [view, selectedStore, selectedCamera]);
 
+  // ── applyRollup — popula todo o estado do dashboard ──────────────────────
   function applyRollup(rollup: any) {
     if (!rollup) return false;
     setTotalVisitors(rollup.total_visitors ?? 0);
@@ -261,20 +286,22 @@ export function ClientDashboard() {
     return true;
   }
 
+  // ── loadData — lê do banco IMEDIATAMENTE, sem esperar sync ───────────────
   const loadData = useCallback(async () => {
     if (!id) return;
     setIsLoadingData(true);
     try {
       const startIso = selectedStartDate.toISOString();
       const endIso   = selectedEndDate.toISOString();
-      const startDay = startIso.slice(0, 10);
-      const endDay   = endIso.slice(0, 10);
 
+      // Filtro por dispositivo: usa rebuild direto do banco (rápido)
       if (deviceIds.length > 0) {
-        setSyncMessage('Calculando dados da loja...');
         const resp = await fetch('/api/sync-analytics', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
+          body: JSON.stringify({
+            client_id: id, start: startIso, end: endIso,
+            rebuild_rollup: true, devices: deviceIds,
+          }),
         });
         const json = resp.ok ? await resp.json() : null;
         if (json?.dashboard) {
@@ -282,26 +309,24 @@ export function ClientDashboard() {
             total_visitors:         json.dashboard.total_visitors,
             avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
             avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-            avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? json.dashboard.avg_attention_seconds ?? 0,
+            avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
             visitors_per_day:       json.dashboard.visitors_per_day,
             visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
             gender_percent:         json.dashboard.gender_percent,
             attributes_percent:     json.dashboard.attributes_percent,
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
           });
-          setSyncMessage('');
         } else {
-          setSyncMessage('');
           setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
           setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
           setGenderStats([]); setAttributeStats([]); setAgeStats([]);
           setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
           setComparePrevVisitorsPerDay({});
         }
-        setIsLoadingData(false);
         return;
       }
 
+      // Rede global: tenta rollup do banco primeiro (instantâneo)
       const { data: rollups } = await supabase
         .from('visitor_analytics_rollups')
         .select('*')
@@ -313,84 +338,57 @@ export function ClientDashboard() {
 
       const rollup = rollups?.[0] ?? null;
       if (rollup) {
-        console.log(`[Dashboard] Rollup carregado ✅ (${rollup.total_visitors} visitantes)`);
+        console.log(`[Dashboard] ✅ Rollup do banco (${rollup.total_visitors} visitantes)`);
         applyRollup(rollup);
-        setIsLoadingData(false);
         return;
       }
 
-      console.log('[Dashboard] Sem rollup — acionando rebuild...');
-
+      // Sem rollup no banco: calcula via SQL (mais lento, mas só acontece 1a vez)
+      console.log('[Dashboard] Sem rollup — calculando via SQL...');
       const rebuildKey = `${id}:${startIso}:${endIso}:${deviceIds.join(',')}`;
-      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-      const tryFetchExactRollup = async () => {
-        const { data: r2 } = await supabase
-          .from('visitor_analytics_rollups')
-          .select('*')
-          .eq('client_id', id)
-          .eq('start', startIso)
-          .eq('end', endIso)
-          .order('updated_at', { ascending: false })
-          .limit(1);
-        return r2?.[0] ?? null;
-      };
-
-      setSyncMessage('Calculando dados do banco...');
 
       if (_rebuilding.has(rebuildKey)) {
+        // Aguarda rebuild já em andamento
         for (let i = 0; i < 8; i++) {
-          await sleep(900);
-          const r = await tryFetchExactRollup();
-          if (r) { applyRollup(r); setSyncMessage(''); return; }
+          await new Promise(r => setTimeout(r, 900));
+          const { data: r2 } = await supabase
+            .from('visitor_analytics_rollups')
+            .select('*').eq('client_id', id).eq('start', startIso).eq('end', endIso)
+            .order('updated_at', { ascending: false }).limit(1);
+          if (r2?.[0]) { applyRollup(r2[0]); return; }
         }
-        setSyncMessage('');
         return;
       }
 
       _rebuilding.add(rebuildKey);
-
       try {
         const resp = await fetch('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
         });
         const json = resp.ok ? await resp.json() : null;
-
         if (json?.dashboard) {
           applyRollup({
             total_visitors:         json.dashboard.total_visitors,
             avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
             avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-            avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? json.dashboard.avg_attention_seconds ?? 0,
+            avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
             visitors_per_day:       json.dashboard.visitors_per_day,
             visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
             gender_percent:         json.dashboard.gender_percent,
             attributes_percent:     json.dashboard.attributes_percent,
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
           });
-          setSyncMessage(`✅ ${json.dashboard.total_visitors.toLocaleString()} visitantes carregados.`);
-          return;
+        } else {
+          // Zera tudo se sem dados
+          setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
+          setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
+          setGenderStats([]); setAttributeStats([]); setAgeStats([]);
+          setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
+          setComparePrevVisitorsPerDay({});
         }
-
-        if (json?.done === false) {
-          for (let i = 0; i < 10; i++) {
-            await sleep(900);
-            const r = await tryFetchExactRollup();
-            if (r) { applyRollup(r); setSyncMessage(''); return; }
-          }
-        }
-
-        setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-        setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
-        setGenderStats([]); setAttributeStats([]); setAgeStats([]);
-        setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
-        setComparePrevVisitorsPerDay({});
-        setSyncMessage('');
       } catch (e) {
         console.warn('[Dashboard] Rebuild falhou:', e);
-        setSyncMessage('');
       } finally {
         _rebuilding.delete(rebuildKey);
       }
@@ -402,78 +400,77 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, view, selectedStore?.id, selectedCamera?.id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  const syncFromApi = useCallback(async (silent = false) => {
-    if (!id || syncingRef.current || document.visibilityState !== 'visible') return;
+  // ── triggerBackgroundSync — dispara sync silencioso se necessário ─────────
+  // Não bloqueia a UI. Usa localStorage para controlar intervalo de 1h.
+  const triggerBackgroundSync = useCallback(async (force = false) => {
+    if (!id) return;
+    if (syncingRef.current) return;
+    if (!force && !shouldSync(id)) {
+      console.log('[BgSync] Ignorado — sync recente');
+      return;
+    }
+    if (document.visibilityState !== 'visible') return;
+
     syncingRef.current = true;
-    setIsSyncing(true);
-    if (!silent) setSyncMessage('Sincronizando...');
+    setSyncStatus('syncing');
 
     try {
-      let offset: number | null = 0;
-      let loops = 0;
-      let totalFetched = 0;
+      const now        = new Date();
+      const rangeStart = selectedStartDate.toISOString();
+      const rangeEnd   = now.toISOString(); // sempre até agora para pegar dados de hoje
 
-      while (offset !== null) {
-        if (++loops > 300) { console.warn('[Sync] limite de loops atingido'); break; }
-        const payload: any = { client_id: id, start: selectedStartDate.toISOString(), end: selectedEndDate.toISOString(), offset, force_full_sync: true };
-        if (deviceIds.length > 0) payload.devices = deviceIds;
+      const payload: any = {
+        client_id: id,
+        start: rangeStart,
+        end: rangeEnd,
+        background_sync: true,
+        force_full_sync: force,
+      };
+      if (deviceIds.length > 0) payload.devices = deviceIds;
 
-        const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-        if (!resp.ok) { const txt = await resp.text(); console.error('[Sync] erro:', resp.status, txt); setSyncMessage(''); return; }
+      const resp = await fetch('/api/sync-analytics', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
 
+      if (resp.ok) {
         const json = await resp.json();
-        totalFetched += Number(json?.externalFetched || 0);
-        const totalInDB = Number(json?.total_in_db || 0);
+        console.log('[BgSync] Iniciado:', json.message);
 
-        if (json?.done === true || json?.next_offset == null) {
-          offset = null;
-          setSyncMessage('Calculando totais...');
-          const _startDay = selectedStartDate.toISOString().slice(0, 10);
-          const _endDay   = selectedEndDate.toISOString().slice(0, 10);
-          const rebuildKey2 = `${id}:${_startDay}:${_endDay}:${deviceIds.join(',')}`;
-          if (_rebuilding.has(rebuildKey2)) { setSyncMessage('✅ Sincronização concluída.'); }
-          else {
-            try {
-              const rebuildResp = await fetch('/api/sync-analytics', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ client_id: id, start: selectedStartDate.toISOString(), end: selectedEndDate.toISOString(), rebuild_rollup: true, ...(deviceIds.length > 0 ? { devices: deviceIds } : {}) }),
-              });
-              const rebuildJson = rebuildResp.ok ? await rebuildResp.json() : null;
-              if (rebuildJson?.dashboard) {
-                applyRollup({
-                  total_visitors:         rebuildJson.dashboard.total_visitors,
-                  avg_visitors_per_day:   rebuildJson.dashboard.avg_visitors_per_day,
-                  avg_visit_time_seconds: rebuildJson.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-                  avg_attention_seconds:  rebuildJson.dashboard.avg_times_seconds?.avg_attention_seconds ?? rebuildJson.dashboard.avg_attention_seconds ?? 0,
-                  visitors_per_day:       rebuildJson.dashboard.visitors_per_day,
-                  visitors_per_hour_avg:  rebuildJson.dashboard.visitors_per_hour_avg,
-                  gender_percent:         rebuildJson.dashboard.gender_percent,
-                  attributes_percent:     rebuildJson.dashboard.attributes_percent,
-                  age_pyramid_percent:    rebuildJson.dashboard.age_pyramid_percent,
-                });
-                setSyncMessage(`✅ ${rebuildJson.dashboard.total_visitors.toLocaleString()} visitantes sincronizados.`);
-              } else {
-                setSyncMessage(`✅ ${totalFetched.toLocaleString()} registros importados.`);
-                await loadData();
-              }
-            } catch { setSyncMessage('✅ Sincronização concluída.'); await loadData(); }
-          }
+        if (json.started) {
+          markSynced(id);
+          // Aguarda o banco processar e recarrega os dados silenciosamente
+          // O background sync no servidor pode levar alguns minutos
+          // Verificamos novamente após 90s para atualizar o dashboard
+          setTimeout(async () => {
+            console.log('[BgSync] Recarregando dados após sync...');
+            await loadData();
+            setSyncStatus('done');
+          }, 90_000);
         } else {
-          offset = Number(json.next_offset);
-          const displayTotal = totalInDB > 0 ? totalInDB : totalFetched;
-          setSyncMessage(`Sincronizando... ${displayTotal.toLocaleString()} registros`);
-          await new Promise((r) => setTimeout(r, 150));
+          setSyncStatus('idle');
         }
       }
-    } catch (err) {
-      console.error('[Sync] erro inesperado:', err);
-      setSyncMessage('');
+    } catch (e) {
+      console.warn('[BgSync] Erro ao disparar sync:', e);
+      setSyncStatus('idle');
     } finally {
       syncingRef.current = false;
-      setIsSyncing(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, selectedStartDate, selectedEndDate, deviceIds]);
+  }, [id, selectedStartDate, deviceIds]);
+
+  // ── Sync periódico in-tab (verifica a cada 30min se passou 1h desde o último)
+  useEffect(() => {
+    if (!id) return;
+    const CHECK_INTERVAL = 30 * 60 * 1000; // verifica a cada 30min
+    const t = setInterval(() => {
+      if (document.visibilityState === 'visible' && shouldSync(id)) {
+        triggerBackgroundSync(false);
+      }
+    }, CHECK_INTERVAL);
+    return () => clearInterval(t);
+  }, [id, triggerBackgroundSync]);
 
   const lastQuarterMonths = useCallback((anchor: Date) => {
     const y = anchor.getUTCFullYear();
@@ -527,10 +524,10 @@ export function ClientDashboard() {
       return undefined;
     };
     const readFrom = async (table: 'sales_daily' | 'sales') => {
-      const a = await sumSalesCount(table, 'date');    if (typeof a === 'number') return a; if (a === null) return null;
+      const a = await sumSalesCount(table, 'date');       if (typeof a === 'number') return a; if (a === null) return null;
       const b = await sumSalesCount(table, 'created_at'); if (typeof b === 'number') return b; if (b === null) return null;
-      const c = await countRows(table, 'created_at');  if (typeof c === 'number') return c; if (c === null) return null;
-      const d = await countRows(table, 'date');        if (typeof d === 'number') return d; if (d === null) return null;
+      const c = await countRows(table, 'created_at');     if (typeof c === 'number') return c; if (c === null) return null;
+      const d = await countRows(table, 'date');           if (typeof d === 'number') return d; if (d === null) return null;
       return 0;
     };
     if (salesSourceRef.current === 'sales_daily') { const v = await readFrom('sales_daily'); if (v === null) { salesSourceRef.current = 'none'; return 0; } return v ?? 0; }
@@ -660,6 +657,7 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, deviceIds, lastQuarterMonths, fetchSalesFromDb, fetchVisitorsFromDb]);
 
+  // ── Carrega dados do banco imediatamente ao montar / mudar período ────────
   useEffect(() => { loadData(); }, [loadData]);
 
   const loadCompareData = useCallback(async () => {
@@ -688,8 +686,7 @@ export function ClientDashboard() {
           setComparePrevVisitorsPerDay(found.visitors_per_day || {});
         } else {
           const resp = await fetch('/api/sync-analytics', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ client_id: id, start: prevStartIso, end: prevEndIso, rebuild_rollup: true }),
           });
           const json = resp.ok ? await resp.json() : null;
@@ -697,8 +694,7 @@ export function ClientDashboard() {
         }
       } else {
         const resp = await fetch('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ client_id: id, start: prevStartIso, end: prevEndIso, rebuild_rollup: true, devices: deviceIds }),
         });
         const json = resp.ok ? await resp.json() : null;
@@ -788,31 +784,62 @@ export function ClientDashboard() {
     if (!id) return;
     setIsSyncingStores(true);
     try {
-      const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, sync_stores: true }) });
-      if (!resp.ok) { const txt = await resp.text(); console.warn('[Stores Sync] Erro API:', txt); setSyncMessage(''); return; }
+      const resp = await fetch('/api/sync-analytics', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: id, sync_stores: true }),
+      });
+      if (!resp.ok) { const txt = await resp.text(); console.warn('[Stores Sync] Erro API:', txt); return; }
       await resp.json();
       await refreshClientAndStores();
-    } catch (e) { console.warn('[Stores Sync] Erro:', e); setSyncMessage(''); }
+    } catch (e) { console.warn('[Stores Sync] Erro:', e); }
     finally { setIsSyncingStores(false); }
   }, [id, refreshClientAndStores]);
 
   useEffect(() => { refreshClientAndStores(); }, [refreshClientAndStores]);
 
+  // ── Inicialização: carrega banco imediatamente, depois sync silencioso ────
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
+
     const run = async () => {
-      if (cancelled || syncingRef.current || isSyncingStores || document.visibilityState !== 'visible') return;
+      if (cancelled) return;
+
+      // 1. Sincroniza estrutura de lojas/câmeras
       await refreshClientAndStores();
+      if (cancelled) return;
+
+      // 2. Sincroniza lojas do servidor (estrutural, não dados)
       await syncStoresFromServer();
-      await syncFromApi(true);
-      await loadData(); await loadWeekFlowData(); await loadQuarterData(); await loadCompareData();
-      setLastUpdate(new Date());
+      if (cancelled) return;
+
+      // 3. Carrega dados do banco IMEDIATAMENTE (sem esperar API externa)
+      await loadData();
+      await loadWeekFlowData();
+      await loadQuarterData();
+      await loadCompareData();
+      if (cancelled) return;
+
+      // 4. Dispara sync em background SE passou 1h (não bloqueia UI)
+      triggerBackgroundSync(false);
     };
+
     void run();
-    const t = setInterval(() => { void run(); }, 10 * 60 * 1000);
+
+    // Recarrega dados do banco a cada 10min (dados já sincronizados pelo background)
+    const t = setInterval(async () => {
+      if (cancelled || document.visibilityState !== 'visible') return;
+      await loadData();
+      await loadWeekFlowData();
+      // Verifica se precisa rodar background sync novamente
+      if (shouldSync(id)) {
+        triggerBackgroundSync(false);
+      }
+    }, 10 * 60 * 1000);
+
     return () => { cancelled = true; clearInterval(t); };
-  }, [id, refreshClientAndStores, syncStoresFromServer, syncFromApi, isSyncingStores, loadData, loadWeekFlowData, loadQuarterData, loadCompareData]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   useEffect(() => {
     let cancelled = false;
@@ -928,14 +955,21 @@ export function ClientDashboard() {
   }, [periodSeries.labels, periodSeries.values, selectedStartDate, comparePrevVisitorsPerDay]);
 
   const getStats = () => [
-    { label: 'Total Visitantes',     value: totalVisitors.toLocaleString(),                                        icon: Users    },
-    { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(),                                    icon: BarChart2 },
-    { label: 'Tempo Médio Visita',   value: formatDuration(avgVisitSeconds),                                       icon: Clock    },
-    { label: 'Tempo de Atenção',     value: avgAttentionSeconds > 0 ? formatDuration(avgAttentionSeconds) : '—',  icon: Clock    },
+    { label: 'Total Visitantes',     value: totalVisitors.toLocaleString(),                                       icon: Users     },
+    { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(),                                   icon: BarChart2 },
+    { label: 'Tempo Médio Visita',   value: formatDuration(avgVisitSeconds),                                      icon: Clock     },
+    { label: 'Tempo de Atenção',     value: avgAttentionSeconds > 0 ? formatDuration(avgAttentionSeconds) : '—', icon: Clock     },
   ];
 
   const clientName = clientData?.name || 'Carregando...';
   const clientLogo = clientData?.logo;
+
+  // Mensagem de status do sync (não bloqueia a UI)
+  const syncMessage = syncStatus === 'syncing'
+    ? 'Atualizando dados em segundo plano...'
+    : syncStatus === 'done'
+    ? '✅ Dados atualizados.'
+    : null;
 
   return (
     <div
@@ -972,8 +1006,14 @@ export function ClientDashboard() {
               <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2"><Globe className="text-emerald-500" />Dashboard Geral</h1>
               <p className="text-sm sm:text-base text-gray-400 mt-1">Monitorando {stores.length} lojas nesta rede</p>
               {!apiConfig?.api_key && <p className="text-xs text-yellow-400 mt-1">API não configurada ⚠️</p>}
+              {/* Indicador de sync leve — não bloqueia UI */}
               {syncMessage && (
-                <p className={`text-xs mt-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : syncMessage.startsWith('Erro') ? 'text-red-400' : 'text-yellow-400'}`}>{syncMessage}</p>
+                <p className={`text-xs mt-1 flex items-center gap-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : 'text-gray-500'}`}>
+                  {syncStatus === 'syncing' && (
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse" />
+                  )}
+                  {syncMessage}
+                </p>
               )}
             </div>
           </div>
@@ -997,7 +1037,7 @@ export function ClientDashboard() {
             {/* Botões de ação + Date Picker */}
             <div className="flex flex-row items-start gap-2 w-full sm:w-auto">
 
-              {/* ── Botão Fullscreen ──────────────────────────────────────── */}
+              {/* Fullscreen */}
               <button
                 onClick={toggleFullscreen}
                 title={isFullscreen ? 'Sair da tela cheia' : 'Modo apresentação'}
@@ -1008,31 +1048,18 @@ export function ClientDashboard() {
                   : <Maximize2 size={16} className="text-gray-400" />}
               </button>
 
-              {/* ── Botão Exportar ────────────────────────────────────────── */}
+              {/* Exportar */}
               <ExportButton
                 data={{
                   clientName,
                   period: { start: selectedStartDate, end: selectedEndDate },
-                  kpis: {
-                    totalVisitors,
-                    avgVisitorsPerDay,
-                    avgVisitSeconds,
-                    avgAttentionSeconds,
-                  },
-                  dailyStats,
-                  hourlyStats,
-                  genderStats,
-                  ageStats,
-                  attributeStats,
-                  hairTypeData,
-                  hairColorData,
-                  visitorsPerDayMap,
-                  quarterBars,
-                  dashboardRef,
+                  kpis: { totalVisitors, avgVisitorsPerDay, avgVisitSeconds, avgAttentionSeconds },
+                  dailyStats, hourlyStats, genderStats, ageStats, attributeStats,
+                  hairTypeData, hairColorData, visitorsPerDayMap, quarterBars, dashboardRef,
                 }}
               />
 
-              {/* ── Date Picker ───────────────────────────────────────────── */}
+              {/* Date Picker */}
               <div className="flex flex-col items-end flex-1 sm:flex-none">
                 <div className="relative w-full sm:w-auto">
                   <button onClick={() => setShowDatePicker(!showDatePicker)} className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors">
@@ -1099,10 +1126,10 @@ export function ClientDashboard() {
                 if (!Component) return null;
 
                 const defaultSpanForSize = (size: WidgetType['size']) => {
-                  if (size === 'full') return 12;
-                  if (size === 'third') return 4;
+                  if (size === 'full')    return 12;
+                  if (size === 'third')   return 4;
                   if (size === 'quarter') return 3;
-                  if (size === '2/3') return 8;
+                  if (size === '2/3')     return 8;
                   return 6;
                 };
 

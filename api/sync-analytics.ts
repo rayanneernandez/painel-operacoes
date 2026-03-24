@@ -44,7 +44,6 @@ function asISODateUTC(d: Date) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}-${String(d.getUTCDate()).padStart(2,"0")}`;
 }
 
-// ── CORREÇÃO 1: lê content_view_duration da API ──────────────────────────────
 function extractTimes(visit: any) {
   const startRaw = visit.start ?? visit.timestamp ?? visit.start_time ?? visit.begin ?? null;
   const endRaw   = visit.end   ?? visit.end_time   ?? visit.finish      ?? null;
@@ -58,8 +57,6 @@ function extractTimes(visit: any) {
       durationFromStartEnd = Math.round((e - s) / 1000);
   }
 
-  // tracks_duration = tempo real de visita (soma das tracks)
-  // content_view_duration = tempo de atenção (vendo campanha/conteúdo)
   return {
     startTs,
     endTs,
@@ -74,7 +71,6 @@ function extractTimes(visit: any) {
       ?? safeNumber(visit.dwell_time)
       ?? safeNumber(visit.time_in_frame_seconds)
       ?? null,
-    // CORREÇÃO: lê content_view_duration como tempo de atenção
     contactTimeSeconds: safeNumber(visit.content_view_duration)
       ?? safeNumber(visit.contact_time_seconds)
       ?? safeNumber(visit.contact_time)
@@ -132,7 +128,6 @@ function headwearToBool(val: any): boolean | null {
   return null;
 }
 
-// ── CORREÇÃO 2: salva contact_time_seconds no upsert ─────────────────────────
 function buildAndDeduplicateRows(combined: any[], client_id: string) {
   const dedupMap = new Map<string, any>();
   for (const visit of combined) {
@@ -165,7 +160,7 @@ function buildAndDeduplicateRows(combined: any[], client_id: string) {
       },
       visit_time_seconds:   visitTimeSeconds,
       dwell_time_seconds:   dwellTimeSeconds,
-      contact_time_seconds: contactTimeSeconds, // ← agora vem de content_view_duration
+      contact_time_seconds: contactTimeSeconds,
       raw_data: visit,
     });
   }
@@ -211,7 +206,6 @@ async function fetchAllDBRows(
   return all;
 }
 
-// ── CORREÇÃO 3: buildRollup retorna avg_contact_time_seconds no dashboard ─────
 function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEnd: string) {
   const startMs = Date.parse(rangeStart), endMs = Date.parse(rangeEnd);
   const daysInRange = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs
@@ -289,7 +283,6 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       hairTypeCount[htk] = (hairTypeCount[htk] ?? 0) + 1; hairTypeKnown++;
     }
 
-    // Tempos
     if (typeof row.visit_time_seconds === "number" && Number.isFinite(row.visit_time_seconds)) {
       sumVisit += row.visit_time_seconds; cntVisit++;
     } else if (row.timestamp && row.end_timestamp) {
@@ -298,8 +291,6 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     }
     if (typeof row.dwell_time_seconds   === "number" && Number.isFinite(row.dwell_time_seconds))
       { sumDwell   += row.dwell_time_seconds;   cntDwell++;   }
-
-    // CORREÇÃO: acumula contact_time_seconds (= content_view_duration da API)
     if (typeof row.contact_time_seconds === "number" && Number.isFinite(row.contact_time_seconds) && row.contact_time_seconds > 0)
       { sumContact += row.contact_time_seconds; cntContact++; }
   }
@@ -329,22 +320,175 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_dwell_time_seconds:   cntDwell   > 0 ? Number((sumDwell   / cntDwell).toFixed(2))   : null,
-    // CORREÇÃO: agora calculado corretamente
     avg_contact_time_seconds: cntContact > 0 ? Number((sumContact / cntContact).toFixed(2)) : null,
     updated_at: new Date().toISOString(),
   };
 }
 
+// ── Controle de sync em andamento (evita paralelo) ───────────────────────────
 const _serverRebuilding = new Set<string>();
+const _activeSyncs      = new Set<string>();
+
+// ── Marca último sync no Supabase ────────────────────────────────────────────
+async function markSyncDone(client_id: string) {
+  await supabase.from("client_sync_state").upsert(
+    { client_id, last_synced_at: new Date().toISOString(), updated_at: new Date().toISOString() },
+    { onConflict: "client_id" }
+  );
+}
+
+// ── Verifica se precisa sincronizar (última sync há mais de 1h) ──────────────
+async function needsSync(client_id: string, forceSync = false): Promise<boolean> {
+  if (forceSync) return true;
+  const { data } = await supabase
+    .from("client_sync_state")
+    .select("last_synced_at")
+    .eq("client_id", client_id)
+    .single();
+  if (!data?.last_synced_at) return true; // nunca sincronizou
+  const lastSync = Date.parse(data.last_synced_at);
+  const ONE_HOUR = 60 * 60 * 1000;
+  return Date.now() - lastSync > ONE_HOUR;
+}
+
+// ── Sync paginado da API externa (sem bloquear, roda em background) ──────────
+async function runBackgroundSync(
+  client_id: string,
+  cfg: ClientApiConfig,
+  rangeStart: string,
+  rangeEnd: string,
+  devices: any[]
+) {
+  const syncKey = `${client_id}:${rangeStart}:${rangeEnd}`;
+  if (_activeSyncs.has(syncKey)) {
+    console.log(`[BgSync] Já em andamento para ${client_id}, pulando.`);
+    return;
+  }
+  _activeSyncs.add(syncKey);
+
+  try {
+    const analyticsUrl = `${(cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "")}${
+      cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`
+    }`;
+
+    const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+    const ck = cfg.custom_header_key?.trim();
+    const cv = cfg.custom_header_value?.trim();
+    if (ck && cv)                  headers[ck] = cv;
+    else if (cfg.api_key?.trim())  headers["X-API-Token"] = cfg.api_key.trim();
+    else { console.error("[BgSync] api_key não configurada"); return; }
+
+    const baseBody: any = {
+      start: rangeStart, end: rangeEnd,
+      tracks:              cfg.collect_tracks       ?? true,
+      face_quality:        cfg.collect_face_quality ?? true,
+      glasses:             cfg.collect_glasses      ?? true,
+      facial_hair:         cfg.collect_beard        ?? true,
+      hair_color:          cfg.collect_hair_color   ?? true,
+      hair_type:           cfg.collect_hair_type    ?? true,
+      headwear:            cfg.collect_headwear     ?? true,
+      additional_attributes: ["smile","pitch","yaw","x","y","height"],
+    };
+    if (devices.length > 0) baseBody.devices = devices;
+
+    const limit = 1000;
+    let   offset = 0;
+    let   pageCount = 0;
+    let   totalFetched = 0;
+    const MAX_PAGES = 500;
+
+    while (pageCount < MAX_PAGES) {
+      pageCount++;
+      let resp: Response;
+      try {
+        resp = await fetch(analyticsUrl, {
+          method: "POST", headers,
+          body: JSON.stringify({ ...baseBody, limit, offset }),
+        });
+      } catch (e) {
+        console.error("[BgSync] Fetch error:", e);
+        break;
+      }
+
+      if (!resp.ok) {
+        console.error(`[BgSync] API retornou ${resp.status}`);
+        break;
+      }
+
+      const json    = await resp.json();
+      const page    = Array.isArray(json?.payload) ? json.payload : [];
+      const apiTotal = Number(json?.pagination?.total);
+
+      if (page.length > 0) {
+        totalFetched += page.length;
+        const rows = buildAndDeduplicateRows(page, client_id);
+        for (let i = 0; i < rows.length; i += 500) {
+          const { error } = await supabase
+            .from("visitor_analytics")
+            .upsert(rows.slice(i, i + 500), { onConflict: "visit_uid", ignoreDuplicates: true });
+          if (error) console.error(`[BgSync] Upsert erro:`, error);
+        }
+      }
+
+      const done = page.length < limit
+        || (Number.isFinite(apiTotal) && apiTotal > 0 && offset + page.length >= apiTotal)
+        || page.length === 0;
+
+      if (done) break;
+      offset += limit;
+
+      // Pausa leve para não sobrecarregar a API
+      await new Promise(r => setTimeout(r, 200));
+    }
+
+    console.log(`[BgSync] ✅ Concluído: ${totalFetched} registros para ${client_id}`);
+
+    // Rebuild rollup após sync
+    const deviceNums = devices.map(Number).filter(Number.isFinite);
+    if (deviceNums.length > 0) {
+      const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
+      if (rows.length > 0) {
+        const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        await supabase.from("visitor_analytics_rollups").upsert(
+          { ...rr, client_id, start: rangeStart, end: rangeEnd },
+          { onConflict: "client_id,start,end" }
+        );
+      }
+    } else {
+      const { data: rpcData } = await supabase.rpc("build_visitor_rollup", {
+        p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd,
+      });
+      if (rpcData && Number(rpcData.total_visitors) > 0) {
+        await supabase.from("visitor_analytics_rollups").upsert(
+          { client_id, start: rangeStart, end: rangeEnd, ...rpcData, updated_at: new Date().toISOString() },
+          { onConflict: "client_id,start,end" }
+        );
+      }
+    }
+
+    await markSyncDone(client_id);
+  } catch (e) {
+    console.error("[BgSync] Erro inesperado:", e);
+  } finally {
+    _activeSyncs.delete(syncKey);
+  }
+}
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") return bad(res, 405, { error: "Method Not Allowed" });
 
-    const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup, sync_stores } = (req.body as any) ?? {};
+    const {
+      client_id, start, end, devices, auth,
+      offset: incomingOffset, force_full_sync, rebuild_rollup, sync_stores,
+      // NOVO: check_sync_needed — apenas verifica se precisa sincronizar
+      check_sync_needed,
+      // NOVO: background_sync — dispara sync em background e retorna imediatamente
+      background_sync,
+    } = (req.body as any) ?? {};
 
-    const authHeader    = req.headers.authorization;
-    const providedAuth  = typeof authHeader === "string" && authHeader.startsWith("Bearer ")
+    const authHeader   = req.headers.authorization;
+    const providedAuth = typeof authHeader === "string" && authHeader.startsWith("Bearer ")
       ? authHeader.slice("Bearer ".length) : auth;
     if (providedAuth && providedAuth !== "painel@2026*") return bad(res, 401, { error: "Não autorizado" });
     if (!client_id) return bad(res, 400, { error: "client_id é obrigatório" });
@@ -357,24 +501,68 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (apiCfgErr || !apiCfg) return bad(res, 400, { error: "Config da API não encontrada", details: apiCfgErr });
 
-    const cfg          = apiCfg as ClientApiConfig;
-    const analyticsUrl = `${(cfg.api_endpoint||"https://api.displayforce.ai").replace(/\/$/,"")}${cfg.analytics_endpoint?.startsWith("/")?cfg.analytics_endpoint:`/${cfg.analytics_endpoint||"public/v1/stats/visitor/list"}`}`;
+    const cfg = apiCfg as ClientApiConfig;
 
-    const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
-    const ck = cfg.custom_header_key?.trim();
-    const cv = cfg.custom_header_value?.trim();
-    if (ck && cv)             headers[ck] = cv;
-    else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
-    else return bad(res, 400, { error: "api_key não configurada" });
+    // ── NOVO: check_sync_needed — retorna se precisa sincronizar ────────────
+    if (check_sync_needed === true) {
+      const needed = await needsSync(client_id, false);
+      const { data: state } = await supabase
+        .from("client_sync_state")
+        .select("last_synced_at")
+        .eq("client_id", client_id)
+        .single();
+      return ok(res, {
+        needs_sync: needed,
+        last_synced_at: state?.last_synced_at ?? null,
+      });
+    }
+
+    // ── NOVO: background_sync — dispara sync assíncrono e retorna imediatamente
+    if (background_sync === true) {
+      const forceSync = force_full_sync === true;
+      const needed    = await needsSync(client_id, forceSync);
+
+      if (!needed) {
+        return ok(res, {
+          message: "Sync não necessário (última sync recente)",
+          needs_sync: false,
+          started: false,
+        });
+      }
+
+      const now        = new Date();
+      const rangeStart = String(start || cfg.collection_start || "2025-01-01T00:00:00.000Z");
+      const rangeEnd   = String(end   || cfg.collection_end   || now.toISOString());
+      const deviceList = Array.isArray(devices) ? devices : [];
+
+      // Dispara em background sem aguardar
+      runBackgroundSync(client_id, cfg, rangeStart, rangeEnd, deviceList).catch(e =>
+        console.error("[BgSync] Erro não tratado:", e)
+      );
+
+      return ok(res, {
+        message: "Sync iniciado em background",
+        needs_sync: true,
+        started: true,
+        range: { start: rangeStart, end: rangeEnd },
+      });
+    }
 
     // ── sync_stores ──────────────────────────────────────────────────────────
     if (sync_stores === true) {
       const base = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
+      const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+      const ck = cfg.custom_header_key?.trim();
+      const cv = cfg.custom_header_value?.trim();
+      if (ck && cv)                 headers[ck] = cv;
+      else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
+
       const fetchWithFallback = async (url: string, body: any) => {
         let r = await fetch(`${url}?recursive=true&limit=100&offset=0`, { method: "GET", headers });
         if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
         return r;
       };
+
       const folderUrl   = `${base}/public/v1/folder/list`;
       const folderBody  = { id:[], name:[], parent_ids:[], recursive:true, limit:100, offset:0 };
       const foldersResp = await fetchWithFallback(folderUrl, folderBody);
@@ -458,6 +646,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const MAX_PAGES  = force_full_sync ? 500   : 50;
     const deviceNums = Array.isArray(devices) ? (devices as any[]).map(Number).filter(Number.isFinite) : [];
 
+    const analyticsUrl = `${(cfg.api_endpoint||"https://api.displayforce.ai").replace(/\/$/,"")}${cfg.analytics_endpoint?.startsWith("/")?cfg.analytics_endpoint:`/${cfg.analytics_endpoint||"public/v1/stats/visitor/list"}`}`;
+    const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+    const ck = cfg.custom_header_key?.trim();
+    const cv = cfg.custom_header_value?.trim();
+    if (ck && cv)                 headers[ck] = cv;
+    else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
+    else return bad(res, 400, { error: "api_key não configurada" });
+
     // ── rebuild_rollup ────────────────────────────────────────────────────────
     if (rebuild_rollup === true) {
       if (deviceNums.length > 0) {
@@ -481,7 +677,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             avg_times_seconds: {
               avg_visit_time_seconds:   rr.avg_visit_time_seconds,
               avg_dwell_time_seconds:   rr.avg_dwell_time_seconds,
-              // CORREÇÃO: incluso no retorno
               avg_attention_seconds:    rr.avg_contact_time_seconds,
             },
           },
@@ -520,73 +715,72 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             stored_rollup:true,
           });
         }
-
         return ok(res, { message:"Rebuild em andamento", done:false, next_offset:null });
       }
 
       _serverRebuilding.add(lockKey);
 
-      const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
-        p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd,
-      });
+      try {
+        const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
+          p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd,
+        });
 
-      if (rpcErr) {
-        console.error("[rebuild_rollup] RPC error:", rpcErr);
-        _serverRebuilding.delete(lockKey);
-        return bad(res, 500, { error:"Erro ao calcular rollup via SQL", details:rpcErr });
-      }
+        if (rpcErr) {
+          console.error("[rebuild_rollup] RPC error:", rpcErr);
+          return bad(res, 500, { error:"Erro ao calcular rollup via SQL", details:rpcErr });
+        }
 
-      const stats         = rpcData as any;
-      const totalVisitors = Number(stats?.total_visitors ?? 0);
+        const stats         = rpcData as any;
+        const totalVisitors = Number(stats?.total_visitors ?? 0);
 
-      if (totalVisitors === 0) {
-        _serverRebuilding.delete(lockKey);
-        return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
-      }
+        if (totalVisitors === 0) {
+          return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
+        }
 
-      const rollupRow = {
-        client_id, start:rangeStart, end:rangeEnd,
-        total_visitors:           totalVisitors,
-        avg_visitors_per_day:     stats.avg_visitors_per_day     ?? 0,
-        visitors_per_day:         stats.visitors_per_day         ?? {},
-        visitors_per_hour_avg:    stats.visitors_per_hour_avg    ?? {},
-        age_pyramid_percent:      stats.age_pyramid_percent      ?? {},
-        gender_percent:           stats.gender_percent           ?? {},
-        attributes_percent:       stats.attributes_percent       ?? {},
-        avg_visit_time_seconds:   stats.avg_visit_time_seconds   ?? null,
-        avg_dwell_time_seconds:   null,
-        // RPC SQL não calcula contact_time — ficará null até ser recalculado via fetchAllDBRows
-        avg_contact_time_seconds: stats.avg_contact_time_seconds ?? null,
-        updated_at: new Date().toISOString(),
-      };
+        const rollupRow = {
+          client_id, start:rangeStart, end:rangeEnd,
+          total_visitors:           totalVisitors,
+          avg_visitors_per_day:     stats.avg_visitors_per_day     ?? 0,
+          visitors_per_day:         stats.visitors_per_day         ?? {},
+          visitors_per_hour_avg:    stats.visitors_per_hour_avg    ?? {},
+          age_pyramid_percent:      stats.age_pyramid_percent      ?? {},
+          gender_percent:           stats.gender_percent           ?? {},
+          attributes_percent:       stats.attributes_percent       ?? {},
+          avg_visit_time_seconds:   stats.avg_visit_time_seconds   ?? null,
+          avg_dwell_time_seconds:   null,
+          avg_contact_time_seconds: stats.avg_contact_time_seconds ?? null,
+          updated_at: new Date().toISOString(),
+        };
 
-      const { error: saveErr } = await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict:"client_id,start,end" });
-      if (saveErr) console.error("[rebuild_rollup] Erro ao salvar rollup:", saveErr);
+        const { error: saveErr } = await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict:"client_id,start,end" });
+        if (saveErr) console.error("[rebuild_rollup] Erro ao salvar rollup:", saveErr);
 
-      _serverRebuilding.delete(lockKey);
-      return ok(res, {
-        message:"Rollup recalculado via SQL",
-        start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0,
-        total_in_db:totalVisitors, next_offset:null, done:true,
-        dashboard: {
-          total_visitors:        totalVisitors,
-          avg_visitors_per_day:  rollupRow.avg_visitors_per_day,
-          visitors_per_day:      rollupRow.visitors_per_day,
-          visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
-          gender_percent:        rollupRow.gender_percent,
-          attributes_percent:    rollupRow.attributes_percent,
-          age_pyramid_percent:   rollupRow.age_pyramid_percent,
-          avg_times_seconds: {
-            avg_visit_time_seconds: rollupRow.avg_visit_time_seconds,
-            avg_dwell_time_seconds: null,
-            avg_attention_seconds:  rollupRow.avg_contact_time_seconds,
+        return ok(res, {
+          message:"Rollup recalculado via SQL",
+          start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0,
+          total_in_db:totalVisitors, next_offset:null, done:true,
+          dashboard: {
+            total_visitors:        totalVisitors,
+            avg_visitors_per_day:  rollupRow.avg_visitors_per_day,
+            visitors_per_day:      rollupRow.visitors_per_day,
+            visitors_per_hour_avg: rollupRow.visitors_per_hour_avg,
+            gender_percent:        rollupRow.gender_percent,
+            attributes_percent:    rollupRow.attributes_percent,
+            age_pyramid_percent:   rollupRow.age_pyramid_percent,
+            avg_times_seconds: {
+              avg_visit_time_seconds: rollupRow.avg_visit_time_seconds,
+              avg_dwell_time_seconds: null,
+              avg_attention_seconds:  rollupRow.avg_contact_time_seconds,
+            },
           },
-        },
-        stored_rollup: !saveErr,
-      });
+          stored_rollup: !saveErr,
+        });
+      } finally {
+        _serverRebuilding.delete(lockKey);
+      }
     }
 
-    // ── Paginação da API externa ──────────────────────────────────────────────
+    // ── Paginação da API externa (modo legado — mantido para compatibilidade) ─
     let apiReportedTotal: number | null = null;
     let lastSig: string | null = null;
     let pageCount = 0;
@@ -625,7 +819,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const next_offset = offset === 0 ? null : offset;
     const done        = next_offset === null;
 
-    // ── Sem dados novos da API ────────────────────────────────────────────────
     if (combined.length === 0) {
       if (deviceNums.length > 0) {
         const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
@@ -652,7 +845,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", { p_client_id:client_id, p_start:rangeStart, p_end:rangeEnd });
       if (!rpcErr && rpcData) {
-        const stats         = rpcData as any;
+        const stats = rpcData as any;
         const totalVisitors = Number(stats?.total_visitors ?? 0);
         if (totalVisitors > 0) {
           const rollupRow = {
@@ -689,7 +882,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return ok(res, { message:"Sem dados", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
     }
 
-    // ── Upsert novos registros ────────────────────────────────────────────────
     const toUpsert = buildAndDeduplicateRows(combined, client_id);
     let upserted = 0;
     for (let i = 0; i < toUpsert.length; i += 500) {
