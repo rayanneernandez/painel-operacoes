@@ -233,7 +233,7 @@ function ChartDonut({
   );
 }
 
-function ChartPie({ labels, values, colors, height = 220 }: { labels: string[]; values: number[]; colors: string[]; height?: number }) {
+function ChartPie({ labels, values, colors, height = 180 }: { labels: string[]; values: number[]; colors: string[]; height?: number }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const total = values.reduce((a, b) => a + b, 0);
   const safeColors = values.map((v, i) => v > 0 ? (colors[i] ?? '#6b7280') : 'transparent');
@@ -739,7 +739,7 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
         ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
         : finalItems.length === 1
           ? <AttrBarList items={finalItems} />
-          : <ChartPie labels={finalItems.map(x=>x.label)} values={finalItems.map(x=>x.value)} colors={finalItems.map(x=>x.color)} height={220} />}
+          : <ChartPie labels={finalItems.map(x=>x.label)} values={finalItems.map(x=>x.value)} colors={finalItems.map(x=>x.color)} height={180} />}
     </div>
   );
 };
