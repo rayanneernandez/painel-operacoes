@@ -233,6 +233,60 @@ function ChartDonut({
   );
 }
 
+function ChartPie({ labels, values, colors, height = 220 }: { labels: string[]; values: number[]; colors: string[]; height?: number }) {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const total = values.reduce((a, b) => a + b, 0);
+  const safeColors = values.map((v, i) => v > 0 ? (colors[i] ?? '#6b7280') : 'transparent');
+  const safeBorder = values.map((v) => v > 0 ? '#111827' : 'transparent');
+
+  useChartJs(canvasRef, () => {
+    if (total === 0) return null;
+    return {
+      type: 'pie',
+      data: { labels, datasets: [{ data: values, backgroundColor: safeColors, borderColor: safeBorder, borderWidth: 2, hoverOffset: 10, rotation: -90 }] },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            backgroundColor: CJ.bg,
+            borderColor: 'rgba(255,255,255,0.12)',
+            borderWidth: 1,
+            padding: CJ.tooltipPadding,
+            titleFont: CJ.titleFont,
+            bodyFont: CJ.bodyFont,
+            filter: (item: any) => Number(item.raw) > 0,
+            callbacks: {
+              label: (ctx: any) => `  ${ctx.label}: ${total > 0 ? ((Number(ctx.raw) / total) * 100).toFixed(1) : 0}%`,
+            },
+          },
+        },
+      },
+    };
+  }, [JSON.stringify(values), JSON.stringify(safeColors), height]);
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <CanvasBox height={height}>
+        {total === 0
+          ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+          : <canvas ref={canvasRef} />}
+      </CanvasBox>
+      {total > 0 && (
+        <div className="flex flex-wrap justify-center gap-x-3 gap-y-1">
+          {labels.map((l, i) => values[i] > 0 && (
+            <span key={i} className="flex items-center gap-1 text-[11px] text-gray-300">
+              <span className="w-2.5 h-2.5 rounded-full inline-block flex-shrink-0" style={{ background: colors[i] ?? '#6b7280' }} />
+              {l} ({total > 0 ? ((values[i] / total) * 100).toFixed(1) : 0}%)
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StackedPill100({
   items,
   height = 18,
@@ -681,7 +735,11 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Cor de Cabelo</h3>
-      <StackedPill100 items={finalItems} />
+      {finalItems.length === 0
+        ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : finalItems.length === 1
+          ? <AttrBarList items={finalItems} />
+          : <ChartPie labels={finalItems.map(x=>x.label)} values={finalItems.map(x=>x.value)} colors={finalItems.map(x=>x.color)} height={220} />}
     </div>
   );
 };
