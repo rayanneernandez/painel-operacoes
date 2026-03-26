@@ -415,11 +415,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const foldersResp = await fetchFF(`${base}/public/v1/folder/list`, { id:[], name:[], parent_ids:[], recursive:true, limit:100, offset:0 });
       if (!foldersResp.ok) { const txt = await foldersResp.text(); return bad(res, foldersResp.status, { error:"Erro ao buscar lojas", details:txt }); }
-      const folders = Array.isArray((await foldersResp.json())?.data) ? (await foldersResp.clone().json())?.data : [];
+      const foldersJson = await foldersResp.json();
+      const folders = Array.isArray(foldersJson?.data) ? foldersJson.data : Array.isArray(foldersJson?.payload) ? foldersJson.payload : Array.isArray(foldersJson) ? foldersJson : [];
 
       const devicesResp = await fetchFF(`${base}/public/v1/device/list`, { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags"], limit:100, offset:0 });
       if (!devicesResp.ok) { const txt = await devicesResp.text(); return bad(res, devicesResp.status, { error:"Erro ao buscar dispositivos", details:txt }); }
-      const devicesData = Array.isArray((await devicesResp.json())?.data) ? (await devicesResp.clone().json())?.data : [];
+      const devicesJson = await devicesResp.json();
+      const devicesData = Array.isArray(devicesJson?.data) ? devicesJson.data : Array.isArray(devicesJson?.payload) ? devicesJson.payload : Array.isArray(devicesJson) ? devicesJson : [];
 
       if (folders.length === 0) return ok(res, { message:"Nenhuma loja encontrada", stores_upserted:0, devices_upserted:0 });
 
@@ -533,8 +535,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const resp = await fetch(analyticsUrl, { method:"POST", headers, body:JSON.stringify({...baseBody, limit, offset}) });
       if (!resp.ok) { const txt = await resp.text(); return bad(res, resp.status, { error:"Erro na API externa", details:txt }); }
       const json = await resp.json();
-      const page = Array.isArray(json?.payload) ? json.payload : [];
-      if (apiReportedTotal === null) { const totalNum = Number(json?.pagination?.total); if (Number.isFinite(totalNum) && totalNum > 0) apiReportedTotal = totalNum; }
+      const page: any[] = Array.isArray(json?.payload) ? json.payload : Array.isArray(json?.data) ? json.data : Array.isArray(json?.results) ? json.results : Array.isArray(json) ? json : [];
+      if (apiReportedTotal === null) { const totalNum = Number(json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total); if (Number.isFinite(totalNum) && totalNum > 0) apiReportedTotal = totalNum; }
       if (page.length > 0) {
         const first:any = page[0]; const last:any = page[page.length-1];
         const sig = sha256(JSON.stringify([offset, page.length, first?.visitor_id??null, first?.start??first?.timestamp??null, last?.visitor_id??null, last?.start??last?.timestamp??null]));

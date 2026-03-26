@@ -25,3 +25,6 @@ dist-ssr
 *.sw?
 .vercel
 .env*.local
+
+# Claude Code worktrees (não subir para o repositório)
+.claude/worktrees/
