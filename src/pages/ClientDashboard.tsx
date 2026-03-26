@@ -77,8 +77,8 @@ export function ClientDashboard() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const autoTodayRef = useRef(true);
 
-  // ── Sync state — apenas indicador leve, não bloqueia UI ──────────────────
-  const [syncStatus, setSyncStatus]   = useState<'idle' | 'syncing' | 'done'>('idle');
+  // ── Sync state ──────────────────────────────────────────────────────────
+  const [syncStatus, setSyncStatus] = useState<'idle' | 'syncing' | 'done'>('idle');
   const [isSyncingStores, setIsSyncingStores] = useState(false);
   const syncingRef = useRef(false);
   const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
@@ -120,7 +120,8 @@ export function ClientDashboard() {
     tick();
     const t = setInterval(tick, 60 * 1000);
     return () => clearInterval(t);
-  }, [selectedStartDate, selectedEndDate]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Dashboard data
   const [totalVisitors, setTotalVisitors] = useState(0);
@@ -184,7 +185,7 @@ export function ClientDashboard() {
     return [];
   }, [view, selectedStore, selectedCamera]);
 
-  // ── applyRollup — popula todo o estado do dashboard ──────────────────────
+  // ── applyRollup ──────────────────────────────────────────────────────────
   function applyRollup(rollup: any) {
     if (!rollup) return false;
     setTotalVisitors(rollup.total_visitors ?? 0);
@@ -286,7 +287,24 @@ export function ClientDashboard() {
     return true;
   }
 
-  // ── loadData — lê do banco IMEDIATAMENTE, sem esperar sync ───────────────
+  // ── zeroAll — limpa todos os dados do dashboard ──────────────────────────
+  function zeroAll() {
+    setTotalVisitors(0);
+    setDailyStats([0,0,0,0,0,0,0]);
+    setHourlyStats(new Array(24).fill(0));
+    setAvgVisitorsPerDay(0);
+    setAvgVisitSeconds(0);
+    setAvgAttentionSeconds(0);
+    setGenderStats([]);
+    setAttributeStats([]);
+    setAgeStats([]);
+    setVisitorsPerDayMap({});
+    setHairTypeData([]);
+    setHairColorData([]);
+    setComparePrevVisitorsPerDay({});
+  }
+
+  // ── loadData — lê do banco; se não tiver rollup, reconstrói via API ────────
   const loadData = useCallback(async () => {
     if (!id) return;
     setIsLoadingData(true);
@@ -294,7 +312,7 @@ export function ClientDashboard() {
       const startIso = selectedStartDate.toISOString();
       const endIso   = selectedEndDate.toISOString();
 
-      // Filtro por dispositivo: usa rebuild direto do banco (rápido)
+      // Filtro por dispositivo
       if (deviceIds.length > 0) {
         const resp = await fetch('/api/sync-analytics', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -317,16 +335,12 @@ export function ClientDashboard() {
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
           });
         } else {
-          setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-          setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
-          setGenderStats([]); setAttributeStats([]); setAgeStats([]);
-          setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
-          setComparePrevVisitorsPerDay({});
+          zeroAll();
         }
         return;
       }
 
-      // Rede global: tenta rollup do banco primeiro (instantâneo)
+      // Rede global: tenta rollup do banco primeiro
       const { data: rollups } = await supabase
         .from('visitor_analytics_rollups')
         .select('*')
@@ -337,25 +351,25 @@ export function ClientDashboard() {
         .limit(1);
 
       const rollup = rollups?.[0] ?? null;
-      if (rollup) {
+      if (rollup && Number(rollup.total_visitors) > 0) {
         console.log(`[Dashboard] ✅ Rollup do banco (${rollup.total_visitors} visitantes)`);
         applyRollup(rollup);
         return;
       }
 
-      // Sem rollup no banco: calcula via SQL (mais lento, mas só acontece 1a vez)
-      console.log('[Dashboard] Sem rollup — calculando via SQL...');
+      // Sem rollup no banco ou zerado: reconstrói via backend
+      console.log('[Dashboard] Sem rollup válido — reconstruindo via backend...');
       const rebuildKey = `${id}:${startIso}:${endIso}:${deviceIds.join(',')}`;
 
       if (_rebuilding.has(rebuildKey)) {
         // Aguarda rebuild já em andamento
-        for (let i = 0; i < 8; i++) {
-          await new Promise(r => setTimeout(r, 900));
+        for (let i = 0; i < 10; i++) {
+          await new Promise(r => setTimeout(r, 1000));
           const { data: r2 } = await supabase
             .from('visitor_analytics_rollups')
             .select('*').eq('client_id', id).eq('start', startIso).eq('end', endIso)
             .order('updated_at', { ascending: false }).limit(1);
-          if (r2?.[0]) { applyRollup(r2[0]); return; }
+          if (r2?.[0] && Number(r2[0].total_visitors) > 0) { applyRollup(r2[0]); return; }
         }
         return;
       }
@@ -380,12 +394,10 @@ export function ClientDashboard() {
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
           });
         } else {
-          // Zera tudo se sem dados
-          setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
-          setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
-          setGenderStats([]); setAttributeStats([]); setAgeStats([]);
-          setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
-          setComparePrevVisitorsPerDay({});
+          // Sem dados no banco — provavelmente sync ainda não rodou, dispara sync completo
+          console.log('[Dashboard] Sem dados no banco — disparando sync completo...');
+          triggerBackgroundSync(true);
+          zeroAll();
         }
       } catch (e) {
         console.warn('[Dashboard] Rebuild falhou:', e);
@@ -398,31 +410,26 @@ export function ClientDashboard() {
       setIsLoadingData(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, view, selectedStore?.id, selectedCamera?.id, selectedStartDate, selectedEndDate, deviceIds]);
+  }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  // ── triggerBackgroundSync — dispara sync silencioso se necessário ─────────
-  // Não bloqueia a UI. Usa localStorage para controlar intervalo de 1h.
+  // ── triggerBackgroundSync — dispara sync via background_sync ─────────────
   const triggerBackgroundSync = useCallback(async (force = false) => {
     if (!id) return;
-    if (syncingRef.current) return;
+    if (syncingRef.current && !force) return;
     if (!force && !shouldSync(id)) {
-      console.log('[BgSync] Ignorado — sync recente');
+      console.log('[BgSync] Ignorado — sync recente (menos de 1h)');
       return;
     }
     if (document.visibilityState !== 'visible') return;
 
     syncingRef.current = true;
     setSyncStatus('syncing');
+    console.log(`[BgSync] Disparando sync (force=${force})...`);
 
     try {
-      const now        = new Date();
-      const rangeStart = selectedStartDate.toISOString();
-      const rangeEnd   = now.toISOString(); // sempre até agora para pegar dados de hoje
-
       const payload: any = {
         client_id: id,
-        start: rangeStart,
-        end: rangeEnd,
+        end: new Date().toISOString(),
         background_sync: true,
         force_full_sync: force,
       };
@@ -435,21 +442,28 @@ export function ClientDashboard() {
 
       if (resp.ok) {
         const json = await resp.json();
-        console.log('[BgSync] Iniciado:', json.message);
+        console.log('[BgSync] Resposta:', json.message, '| Iniciado:', json.started);
 
         if (json.started) {
           markSynced(id);
-          // Aguarda o banco processar e recarrega os dados silenciosamente
-          // O background sync no servidor pode levar alguns minutos
-          // Verificamos novamente após 90s para atualizar o dashboard
-          setTimeout(async () => {
-            console.log('[BgSync] Recarregando dados após sync...');
-            await loadData();
-            setSyncStatus('done');
-          }, 90_000);
+          // Recarrega os dados em intervalos crescentes enquanto o sync corre no backend
+          const delays = [30_000, 60_000, 90_000, 120_000, 150_000, 180_000];
+          delays.forEach((delay, idx) => {
+            setTimeout(async () => {
+              console.log(`[BgSync] Recarregando dados (tentativa ${idx + 1})...`);
+              await loadData();
+              if (idx === delays.length - 1) setSyncStatus('done');
+            }, delay);
+          });
         } else {
+          // Backend disse que não precisa de sync — dados já atualizados
           setSyncStatus('idle');
+          // Tenta carregar dados mesmo assim
+          await loadData();
         }
+      } else {
+        console.warn('[BgSync] Resposta não-ok do servidor:', resp.status);
+        setSyncStatus('idle');
       }
     } catch (e) {
       console.warn('[BgSync] Erro ao disparar sync:', e);
@@ -458,12 +472,12 @@ export function ClientDashboard() {
       syncingRef.current = false;
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, selectedStartDate, deviceIds]);
+  }, [id, deviceIds]);
 
-  // ── Sync periódico in-tab (verifica a cada 30min se passou 1h desde o último)
+  // ── Sync periódico in-tab (verifica a cada 30min)
   useEffect(() => {
     if (!id) return;
-    const CHECK_INTERVAL = 30 * 60 * 1000; // verifica a cada 30min
+    const CHECK_INTERVAL = 30 * 60 * 1000;
     const t = setInterval(() => {
       if (document.visibilityState === 'visible' && shouldSync(id)) {
         triggerBackgroundSync(false);
@@ -587,11 +601,14 @@ export function ClientDashboard() {
         }
       }
 
-      if (!rollupVisitorsPerDay && deviceIds.length === 0) {
+      if (!rollupVisitorsPerDay) {
         try {
           const resp = await fetch('/api/sync-analytics', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: id, start: quarterStart, end: quarterEnd, rebuild_rollup: true }),
+            body: JSON.stringify({
+              client_id: id, start: quarterStart, end: quarterEnd, rebuild_rollup: true,
+              ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
+            }),
           });
           const json = resp.ok ? await resp.json() : null;
           if (json?.dashboard?.visitors_per_day) {
@@ -604,29 +621,6 @@ export function ClientDashboard() {
         } catch (e) {
           console.warn('[Quarter] Rebuild falhou, usando contagem de linhas:', e);
         }
-      }
-
-      if (!rollupVisitorsPerDay && deviceIds.length === 0) {
-        const merged: Record<string, number> = {};
-        for (const month of months) {
-          try {
-            const resp = await fetch('/api/sync-analytics', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ client_id: id, start: month.startIso, end: month.endIso, rebuild_rollup: true }),
-            });
-            const json = resp.ok ? await resp.json() : null;
-            if (json?.dashboard?.visitors_per_day) {
-              const vpd = json.dashboard.visitors_per_day as Record<string, number>;
-              for (const [d, v] of Object.entries(vpd)) {
-                const ds = d.slice(0, 10);
-                if (ds >= qStartDay && ds <= qEndDay && !(ds in merged)) merged[ds] = Number(v) || 0;
-              }
-            }
-          } catch (e) {
-            console.warn(`[Quarter] Rebuild mês ${month.label} falhou:`, e);
-          }
-        }
-        if (Object.keys(merged).length > 0) rollupVisitorsPerDay = merged;
       }
 
       const rows: { label: string; visitors: number; sales: number }[] = [];
@@ -657,7 +651,7 @@ export function ClientDashboard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, deviceIds, lastQuarterMonths, fetchSalesFromDb, fetchVisitorsFromDb]);
 
-  // ── Carrega dados do banco imediatamente ao montar / mudar período ────────
+  // ── Carrega dados ao mudar período / store / câmera ────────────────────
   useEffect(() => { loadData(); }, [loadData]);
 
   const loadCompareData = useCallback(async () => {
@@ -730,7 +724,9 @@ export function ClientDashboard() {
         if (found?.visitors_per_day) { setDailyStats(toWeekDays(found.visitors_per_day || {})); return; }
         const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }) });
         const json = resp.ok ? await resp.json() : null;
-        setDailyStats(toWeekDays(json?.dashboard?.visitors_per_day || {}));
+        if (json?.dashboard?.visitors_per_day) {
+          setDailyStats(toWeekDays(json.dashboard.visitors_per_day));
+        }
         return;
       }
       const days = [0, 0, 0, 0, 0, 0, 0]; let from = 0; const page = 1000;
@@ -797,7 +793,9 @@ export function ClientDashboard() {
 
   useEffect(() => { refreshClientAndStores(); }, [refreshClientAndStores]);
 
-  // ── Inicialização: carrega banco imediatamente, depois sync silencioso ────
+  // ── Inicialização principal ───────────────────────────────────────────────
+  // CORREÇÃO: useEffect com array vazio [] — roda apenas 1x ao montar
+  // Não depende de loadData/triggerBackgroundSync para evitar re-execuções
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
@@ -805,33 +803,130 @@ export function ClientDashboard() {
     const run = async () => {
       if (cancelled) return;
 
-      // 1. Sincroniza estrutura de lojas/câmeras
+      // 1. Estrutura: lojas e câmeras
       await refreshClientAndStores();
       if (cancelled) return;
 
-      // 2. Sincroniza lojas do servidor (estrutural, não dados)
+      // 2. Sinc estrutural de lojas do servidor
       await syncStoresFromServer();
       if (cancelled) return;
 
-      // 3. Carrega dados do banco IMEDIATAMENTE (sem esperar API externa)
-      await loadData();
-      await loadWeekFlowData();
-      await loadQuarterData();
-      await loadCompareData();
+      // 3. Carrega dados do banco imediatamente
+      const startIso = new Date(new Date().setUTCHours(0,0,0,0)).toISOString();
+      const endIso   = new Date(new Date().setUTCHours(23,59,59,999)).toISOString();
+
+      // Tenta rollup do banco direto
+      const { data: rollups } = await supabase
+        .from('visitor_analytics_rollups')
+        .select('*')
+        .eq('client_id', id)
+        .eq('start', startIso)
+        .eq('end', endIso)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
       if (cancelled) return;
 
-      // 4. Dispara sync em background SE passou 1h (não bloqueia UI)
-      triggerBackgroundSync(false);
+      if (rollups?.[0] && Number(rollups[0].total_visitors) > 0) {
+        // Dados já existem no banco — mostra imediatamente
+        applyRollup(rollups[0]);
+        console.log('[Init] ✅ Dados carregados do banco:', rollups[0].total_visitors, 'visitantes');
+        // Verifica se precisa sync em background
+        if (shouldSync(id)) {
+          console.log('[Init] Disparando sync em background...');
+          triggerBackgroundSync(false);
+        }
+      } else {
+        // Sem dados no banco — PRECISA sincronizar da API externa
+        console.log('[Init] Sem dados no banco — forçando sync completo...');
+        setSyncStatus('syncing');
+
+        // Dispara sync completo e aguarda os primeiros dados
+        const payload: any = {
+          client_id: id,
+          end: endIso,
+          background_sync: true,
+          force_full_sync: true, // força sync mesmo que recente
+        };
+
+        try {
+          const resp = await fetch('/api/sync-analytics', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+          });
+
+          if (resp.ok) {
+            const json = await resp.json();
+            console.log('[Init] Sync iniciado:', json.message);
+
+            if (json.started) {
+              markSynced(id);
+              // Aguarda o sync processar e recarrega em intervalos
+              const delays = [15_000, 30_000, 60_000, 90_000, 120_000, 180_000, 240_000, 300_000];
+              delays.forEach((delay, idx) => {
+                setTimeout(async () => {
+                  if (cancelled) return;
+                  console.log(`[Init] Verificando dados (tentativa ${idx + 1} após ${delay/1000}s)...`);
+
+                  // Tenta rebuild do rollup (vai pegar o que já foi sincronizado até agora)
+                  try {
+                    const rebuildResp = await fetch('/api/sync-analytics', {
+                      method: 'POST', headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
+                    });
+                    const rebuildJson = rebuildResp.ok ? await rebuildResp.json() : null;
+                    if (rebuildJson?.dashboard && Number(rebuildJson.dashboard.total_visitors) > 0) {
+                      applyRollup({
+                        total_visitors:         rebuildJson.dashboard.total_visitors,
+                        avg_visitors_per_day:   rebuildJson.dashboard.avg_visitors_per_day,
+                        avg_visit_time_seconds: rebuildJson.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+                        avg_attention_seconds:  rebuildJson.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
+                        visitors_per_day:       rebuildJson.dashboard.visitors_per_day,
+                        visitors_per_hour_avg:  rebuildJson.dashboard.visitors_per_hour_avg,
+                        gender_percent:         rebuildJson.dashboard.gender_percent,
+                        attributes_percent:     rebuildJson.dashboard.attributes_percent,
+                        age_pyramid_percent:    rebuildJson.dashboard.age_pyramid_percent,
+                      });
+                      console.log(`[Init] ✅ Dados chegaram: ${rebuildJson.dashboard.total_visitors} visitantes`);
+                      if (idx === delays.length - 1) setSyncStatus('done');
+                    }
+                  } catch (e) {
+                    console.warn('[Init] Erro ao verificar dados:', e);
+                  }
+                }, delay);
+              });
+            }
+          }
+        } catch (e) {
+          console.error('[Init] Erro ao iniciar sync:', e);
+          setSyncStatus('idle');
+        }
+      }
     };
 
     void run();
 
-    // Recarrega dados do banco a cada 10min (dados já sincronizados pelo background)
+    // Recarrega a cada 10min
     const t = setInterval(async () => {
       if (cancelled || document.visibilityState !== 'visible') return;
-      await loadData();
-      await loadWeekFlowData();
-      // Verifica se precisa rodar background sync novamente
+      console.log('[Interval] Recarregando dados do banco...');
+
+      const startIso = new Date(new Date().setUTCHours(0,0,0,0)).toISOString();
+      const endIso   = new Date(new Date().setUTCHours(23,59,59,999)).toISOString();
+
+      const { data: rollups } = await supabase
+        .from('visitor_analytics_rollups')
+        .select('*')
+        .eq('client_id', id)
+        .eq('start', startIso)
+        .eq('end', endIso)
+        .order('updated_at', { ascending: false })
+        .limit(1);
+
+      if (rollups?.[0] && Number(rollups[0].total_visitors) > 0) {
+        applyRollup(rollups[0]);
+      }
+
       if (shouldSync(id)) {
         triggerBackgroundSync(false);
       }
@@ -839,7 +934,7 @@ export function ClientDashboard() {
 
     return () => { cancelled = true; clearInterval(t); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id]); // <-- APENAS id! Evita re-execuções desnecessárias
 
   useEffect(() => {
     let cancelled = false;
@@ -964,9 +1059,8 @@ export function ClientDashboard() {
   const clientName = clientData?.name || 'Carregando...';
   const clientLogo = clientData?.logo;
 
-  // Mensagem de status do sync (não bloqueia a UI)
   const syncMessage = syncStatus === 'syncing'
-    ? 'Atualizando dados em segundo plano...'
+    ? 'Sincronizando dados com a API...'
     : syncStatus === 'done'
     ? '✅ Dados atualizados.'
     : null;
@@ -1006,11 +1100,10 @@ export function ClientDashboard() {
               <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2"><Globe className="text-emerald-500" />Dashboard Geral</h1>
               <p className="text-sm sm:text-base text-gray-400 mt-1">Monitorando {stores.length} lojas nesta rede</p>
               {!apiConfig?.api_key && <p className="text-xs text-yellow-400 mt-1">API não configurada ⚠️</p>}
-              {/* Indicador de sync leve — não bloqueia UI */}
               {syncMessage && (
-                <p className={`text-xs mt-1 flex items-center gap-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : 'text-gray-500'}`}>
+                <p className={`text-xs mt-1 flex items-center gap-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : 'text-blue-400'}`}>
                   {syncStatus === 'syncing' && (
-                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-gray-500 animate-pulse" />
+                    <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
                   )}
                   {syncMessage}
                 </p>
@@ -1046,6 +1139,30 @@ export function ClientDashboard() {
                 {isFullscreen
                   ? <Minimize2 size={16} className="text-emerald-400" />
                   : <Maximize2 size={16} className="text-gray-400" />}
+              </button>
+
+              {/* Botão Sincronizar manualmente */}
+              <button
+                onClick={() => triggerBackgroundSync(true)}
+                disabled={syncStatus === 'syncing'}
+                title="Forçar sincronização agora"
+                className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[38px] w-[38px] disabled:opacity-50"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  width={16}
+                  height={16}
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  className={syncStatus === 'syncing' ? 'animate-spin' : ''}
+                >
+                  <path d="M23 4v6h-6" /><path d="M1 20v-6h6" />
+                  <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                </svg>
               </button>
 
               {/* Exportar */}

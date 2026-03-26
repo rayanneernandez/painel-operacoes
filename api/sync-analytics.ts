@@ -359,12 +359,19 @@ async function runBackgroundSync(
   rangeEnd: string,
   devices: any[]
 ) {
-  const syncKey = `${client_id}:${rangeStart}:${rangeEnd}`;
+  // Usa SEMPRE o collection_start da config como início do range histórico
+  // Ignora o rangeStart passado pelo frontend (que é apenas o filtro visual)
+  const historicStart = cfg.collection_start || rangeStart;
+  const historicEnd   = rangeEnd; // até agora
+
+  const syncKey = `${client_id}:${historicStart}:${historicEnd}`;
   if (_activeSyncs.has(syncKey)) {
     console.log(`[BgSync] Já em andamento para ${client_id}, pulando.`);
     return;
   }
   _activeSyncs.add(syncKey);
+
+  console.log(`[BgSync] Iniciando sync completo: ${historicStart} → ${historicEnd}`);
 
   try {
     const analyticsUrl = `${(cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "")}${
@@ -379,7 +386,8 @@ async function runBackgroundSync(
     else { console.error("[BgSync] api_key não configurada"); return; }
 
     const baseBody: any = {
-      start: rangeStart, end: rangeEnd,
+      start: historicStart,
+      end:   historicEnd,
       tracks:              cfg.collect_tracks       ?? true,
       face_quality:        cfg.collect_face_quality ?? true,
       glasses:             cfg.collect_glasses      ?? true,
@@ -395,7 +403,9 @@ async function runBackgroundSync(
     let   offset = 0;
     let   pageCount = 0;
     let   totalFetched = 0;
-    const MAX_PAGES = 500;
+    let   apiReportedTotal: number | null = null;
+    let   lastPageSig: string | null = null;
+    const MAX_PAGES = 2000; // suporta até 2M registros
 
     while (pageCount < MAX_PAGES) {
       pageCount++;
@@ -411,58 +421,109 @@ async function runBackgroundSync(
       }
 
       if (!resp.ok) {
-        console.error(`[BgSync] API retornou ${resp.status}`);
+        const errTxt = await resp.text().catch(() => "");
+        console.error(`[BgSync] API retornou ${resp.status}:`, errTxt);
         break;
       }
 
-      const json    = await resp.json();
-      const page    = Array.isArray(json?.payload) ? json.payload : [];
-      const apiTotal = Number(json?.pagination?.total);
+      const json = await resp.json();
+
+      // Log da primeira página para debug de estrutura da API
+      if (pageCount === 1) {
+        console.log(`[BgSync] Estrutura da 1ª página:`, {
+          keys:          Object.keys(json),
+          paginationKeys: json?.pagination ? Object.keys(json.pagination) : "sem pagination",
+          payloadLength: Array.isArray(json?.payload) ? json.payload.length : "payload não é array",
+          totalField:    json?.pagination?.total ?? json?.total ?? json?.count ?? "não encontrado",
+        });
+      }
+
+      // Suporte a múltiplos formatos de resposta da Displayforce
+      const page: any[] =
+        Array.isArray(json?.payload)  ? json.payload  :
+        Array.isArray(json?.data)     ? json.data      :
+        Array.isArray(json?.results)  ? json.results   :
+        Array.isArray(json?.visitors) ? json.visitors  :
+        Array.isArray(json)           ? json           : [];
+
+      // Captura total da paginação (vários campos possíveis)
+      if (apiReportedTotal === null) {
+        const t = json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total;
+        const n = Number(t);
+        if (Number.isFinite(n) && n > 0) {
+          apiReportedTotal = n;
+          console.log(`[BgSync] Total reportado pela API: ${apiReportedTotal}`);
+        }
+      }
 
       if (page.length > 0) {
+        // Detecta página duplicada (loop infinito)
+        const sig = `${offset}:${page.length}:${JSON.stringify(page[0]).slice(0, 80)}`;
+        if (sig === lastPageSig) {
+          console.warn(`[BgSync] Página duplicada detectada no offset ${offset}, encerrando.`);
+          break;
+        }
+        lastPageSig = sig;
+
         totalFetched += page.length;
         const rows = buildAndDeduplicateRows(page, client_id);
         for (let i = 0; i < rows.length; i += 500) {
           const { error } = await supabase
             .from("visitor_analytics")
             .upsert(rows.slice(i, i + 500), { onConflict: "visit_uid", ignoreDuplicates: true });
-          if (error) console.error(`[BgSync] Upsert erro:`, error);
+          if (error) console.error(`[BgSync] Upsert erro chunk ${i}:`, error);
         }
+        console.log(`[BgSync] Página ${pageCount}: +${page.length} registros (total: ${totalFetched}${apiReportedTotal ? `/${apiReportedTotal}` : ""})`);
       }
 
-      const done = page.length < limit
-        || (Number.isFinite(apiTotal) && apiTotal > 0 && offset + page.length >= apiTotal)
-        || page.length === 0;
+      // Condições de parada
+      const reachedApiTotal = apiReportedTotal !== null && offset + page.length >= apiReportedTotal;
+      const pageShort       = page.length < limit;
+      const pageEmpty       = page.length === 0;
 
-      if (done) break;
+      if (reachedApiTotal || pageShort || pageEmpty) {
+        console.log(`[BgSync] Paginação encerrada. Motivo: ${reachedApiTotal ? "total atingido" : pageEmpty ? "página vazia" : "página incompleta"}`);
+        break;
+      }
+
       offset += limit;
 
-      // Pausa leve para não sobrecarregar a API
+      // Pausa para não sobrecarregar a API (200ms entre páginas)
       await new Promise(r => setTimeout(r, 200));
     }
 
-    console.log(`[BgSync] ✅ Concluído: ${totalFetched} registros para ${client_id}`);
+    console.log(`[BgSync] ✅ Sync concluído: ${totalFetched} registros para ${client_id}`);
 
-    // Rebuild rollup após sync
+    // Rebuild rollup após sync usando o range HISTÓRICO completo
     const deviceNums = devices.map(Number).filter(Number.isFinite);
     if (deviceNums.length > 0) {
-      const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
+      const rows = await fetchAllDBRows(client_id, historicStart, historicEnd, deviceNums);
       if (rows.length > 0) {
-        const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        const rr = buildRollup(rows, client_id, historicStart, historicEnd);
         await supabase.from("visitor_analytics_rollups").upsert(
-          { ...rr, client_id, start: rangeStart, end: rangeEnd },
+          { ...rr, client_id, start: historicStart, end: historicEnd },
           { onConflict: "client_id,start,end" }
         );
       }
     } else {
-      const { data: rpcData } = await supabase.rpc("build_visitor_rollup", {
-        p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd,
-      });
-      if (rpcData && Number(rpcData.total_visitors) > 0) {
-        await supabase.from("visitor_analytics_rollups").upsert(
-          { client_id, start: rangeStart, end: rangeEnd, ...rpcData, updated_at: new Date().toISOString() },
-          { onConflict: "client_id,start,end" }
-        );
+      // Rebuild via SQL para cada período que o frontend possa consultar
+      // Inclui o período histórico completo E o período atual (hoje)
+      const periodsToRebuild = [
+        { start: historicStart, end: historicEnd },
+      ];
+
+      for (const period of periodsToRebuild) {
+        const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
+          p_client_id: client_id, p_start: period.start, p_end: period.end,
+        });
+        if (rpcErr) { console.error("[BgSync] Erro rebuild rollup:", rpcErr); continue; }
+        if (rpcData && Number((rpcData as any).total_visitors) > 0) {
+          await supabase.from("visitor_analytics_rollups").upsert(
+            { client_id, start: period.start, end: period.end, ...(rpcData as any), updated_at: new Date().toISOString() },
+            { onConflict: "client_id,start,end" }
+          );
+          console.log(`[BgSync] Rollup salvo: ${period.start} → ${period.end} (${(rpcData as any).total_visitors} visitantes)`);
+        }
       }
     }
 
