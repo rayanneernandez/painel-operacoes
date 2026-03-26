@@ -410,13 +410,15 @@ export function ClientDashboard() {
         const json = await resp.json();
         if (json.started) {
           markSynced(id);
-          console.log('[BgSync] Iniciado. Recarregará em 60s...');
-          // Recarrega dados silenciosamente após o sync processar
-          const delays = [60_000, 120_000, 180_000, 300_000];
+          console.log('[BgSync] Iniciado. Recarregará em 15s...');
+          // Recarrega dados após o sync processar — começa em 15s e tenta mais vezes
+          const delays = [15_000, 30_000, 60_000, 120_000, 240_000];
+          let loaded = false;
           delays.forEach((delay, idx) => {
             setTimeout(async () => {
-              if (document.visibilityState !== 'visible') return;
+              if (loaded || document.visibilityState !== 'visible') return;
               await loadData();
+              if (totalVisitors > 0) loaded = true;
               console.log(`[BgSync] Dados recarregados (tentativa ${idx + 1})`);
             }, delay);
           });

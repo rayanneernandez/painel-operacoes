@@ -414,12 +414,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const fetchFF = async (url: string, body: any) => { let r = await fetch(`${url}?recursive=true&limit=100&offset=0`, { method: "GET", headers }); if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) }); return r; };
 
       const foldersResp = await fetchFF(`${base}/public/v1/folder/list`, { id:[], name:[], parent_ids:[], recursive:true, limit:100, offset:0 });
-      if (!foldersResp.ok) { const txt = await foldersResp.text(); return bad(res, foldersResp.status, { error:"Erro ao buscar lojas", details:txt }); }
+      // Não propaga erros da API externa — retorna 200 com mensagem de aviso
+      if (!foldersResp.ok) {
+        const txt = await foldersResp.text();
+        console.warn(`[sync_stores] Folder list retornou ${foldersResp.status}:`, txt);
+        return ok(res, { message:`Erro ao buscar lojas da API (${foldersResp.status})`, stores_upserted:0, devices_upserted:0, api_error: txt });
+      }
       const foldersJson = await foldersResp.json();
       const folders = Array.isArray(foldersJson?.data) ? foldersJson.data : Array.isArray(foldersJson?.payload) ? foldersJson.payload : Array.isArray(foldersJson) ? foldersJson : [];
 
       const devicesResp = await fetchFF(`${base}/public/v1/device/list`, { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags"], limit:100, offset:0 });
-      if (!devicesResp.ok) { const txt = await devicesResp.text(); return bad(res, devicesResp.status, { error:"Erro ao buscar dispositivos", details:txt }); }
+      if (!devicesResp.ok) {
+        const txt = await devicesResp.text();
+        console.warn(`[sync_stores] Device list retornou ${devicesResp.status}:`, txt);
+        return ok(res, { message:`Erro ao buscar dispositivos da API (${devicesResp.status})`, stores_upserted:0, devices_upserted:0, api_error: txt });
+      }
       const devicesJson = await devicesResp.json();
       const devicesData = Array.isArray(devicesJson?.data) ? devicesJson.data : Array.isArray(devicesJson?.payload) ? devicesJson.payload : Array.isArray(devicesJson) ? devicesJson : [];
 
