@@ -642,10 +642,14 @@ export function ClientDashboard() {
 
   const loadWeekFlowData = useCallback(async () => {
     if (!id) return;
+    // Calcula seg→dom da semana atual
     const end = new Date(selectedEndDate); end.setUTCHours(23, 59, 59, 999);
     const dow = end.getUTCDay(); const offset = (dow + 6) % 7;
     const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() - offset, 0, 0, 0, 0));
-    const startIso = start.toISOString(); const endIso = end.toISOString();
+    const startIso = start.toISOString();
+    const endIso   = end.toISOString();
+    const startDay = start.toISOString().slice(0, 10);
+    const endDay   = end.toISOString().slice(0, 10);
 
     const toWeekDays = (vpd: Record<string, number>) => {
       const days = [0, 0, 0, 0, 0, 0, 0];
@@ -659,36 +663,40 @@ export function ClientDashboard() {
 
     try {
       if (deviceIds.length === 0) {
-        // Tenta rollup exato da semana
-        const { data: exact } = await supabase.from('visitor_analytics_rollups').select('visitors_per_day')
-          .eq('client_id', id).eq('start', startIso).eq('end', endIso)
-          .order('updated_at', { ascending: false }).limit(1);
-        if ((exact?.[0] as any)?.visitors_per_day) {
-          setDailyStats(toWeekDays((exact![0] as any).visitors_per_day));
-          return;
+        // Busca TODOS os rollups que se sobrepõem à semana atual
+        const { data: rollups } = await supabase
+          .from('visitor_analytics_rollups')
+          .select('visitors_per_day')
+          .eq('client_id', id)
+          .lte('start', endIso)
+          .gte('end', startIso)
+          .gt('total_visitors', 0)
+          .order('updated_at', { ascending: false })
+          .limit(10);
+
+        if (rollups && rollups.length > 0) {
+          // Mescla visitors_per_day filtrando apenas os dias da semana
+          const mergedVpd: Record<string, number> = {};
+          for (const r of rollups) {
+            const vpd: Record<string, number> = (r as any).visitors_per_day ?? {};
+            for (const [day, cnt] of Object.entries(vpd)) {
+              const d = day.slice(0, 10);
+              if (d >= startDay && d <= endDay && !(d in mergedVpd)) {
+                mergedVpd[d] = Number(cnt) || 0;
+              }
+            }
+          }
+          if (Object.keys(mergedVpd).length > 0) {
+            setDailyStats(toWeekDays(mergedVpd));
+            return;
+          }
         }
-        // Fallback: qualquer rollup que contenha a semana
-        const { data: containing } = await supabase.from('visitor_analytics_rollups').select('visitors_per_day')
-          .eq('client_id', id).lte('start', startIso).gte('end', endIso)
-          .order('updated_at', { ascending: false }).limit(1);
-        if ((containing?.[0] as any)?.visitors_per_day) {
-          setDailyStats(toWeekDays((containing![0] as any).visitors_per_day));
-          return;
-        }
-        // Fallback: rollup mais recente
-        const { data: latest } = await supabase.from('visitor_analytics_rollups').select('visitors_per_day')
-          .eq('client_id', id).order('updated_at', { ascending: false }).limit(1);
-        if ((latest?.[0] as any)?.visitors_per_day) {
-          setDailyStats(toWeekDays((latest![0] as any).visitors_per_day));
-          return;
-        }
-        // Último recurso: rebuild
-        const resp = await fetch('/api/sync-analytics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }) });
-        const json = resp.ok ? await resp.json() : null;
-        if (json?.dashboard?.visitors_per_day) setDailyStats(toWeekDays(json.dashboard.visitors_per_day));
+        // Sem dados na semana — zera o gráfico
+        setDailyStats([0, 0, 0, 0, 0, 0, 0]);
         return;
       }
-      // Filtro por dispositivo
+
+      // Filtro por dispositivo — lê direto do banco
       const days = [0, 0, 0, 0, 0, 0, 0]; let from = 0; const page = 1000;
       while (true) {
         const { data, error } = await supabase.from('visitor_analytics').select('timestamp')
@@ -703,7 +711,10 @@ export function ClientDashboard() {
         from += page; if (from > 20000) break;
       }
       setDailyStats(days);
-    } catch (e) { console.warn('[Dashboard] Erro semana:', e); setDailyStats([0,0,0,0,0,0,0]); }
+    } catch (e) {
+      console.warn('[Dashboard] Erro semana:', e);
+      setDailyStats([0, 0, 0, 0, 0, 0, 0]);
+    }
   }, [id, selectedEndDate, deviceIds]);
 
   useEffect(() => { loadWeekFlowData(); }, [loadWeekFlowData]);
