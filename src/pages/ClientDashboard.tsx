@@ -251,15 +251,17 @@ export function ClientDashboard() {
     setComparePrevVisitorsPerDay({});
   }
 
-  // ── loadData: busca rollup do banco com fallback flexível ─────────────────
+  // ── loadData: busca dados respeitando o período selecionado ──────────────
   const loadData = useCallback(async () => {
     if (!id) return;
     setIsLoadingData(true);
     try {
       const startIso = selectedStartDate.toISOString();
       const endIso   = selectedEndDate.toISOString();
+      const startDay = startIso.slice(0, 10);
+      const endDay   = endIso.slice(0, 10);
 
-      // Filtro por dispositivo — sempre vai via rebuild
+      // ── Filtro por dispositivo: sempre rebuild direto ──────────────────
       if (deviceIds.length > 0) {
         const resp = await fetch('/api/sync-analytics', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -282,102 +284,98 @@ export function ClientDashboard() {
         return;
       }
 
-      // 1. Tenta rollup exato do período selecionado
-      const { data: exactRollups } = await supabase
+      // ── Rede global ────────────────────────────────────────────────────
+      // Busca rollups que se sobrepõem ao período selecionado
+      // e extrai apenas os dias dentro do período
+      const { data: allRollups } = await supabase
         .from('visitor_analytics_rollups')
         .select('*')
         .eq('client_id', id)
-        .eq('start', startIso)
-        .eq('end', endIso)
+        .lte('start', endIso)
+        .gte('end', startIso)
+        .gt('total_visitors', 0)
         .order('updated_at', { ascending: false })
-        .limit(1);
+        .limit(20);
 
-      if (exactRollups?.[0] && Number(exactRollups[0].total_visitors) > 0) {
-        applyRollup(exactRollups[0]);
-        return;
-      }
+      if (allRollups && allRollups.length > 0) {
+        // Mescla visitors_per_day de todos os rollups, filtrando pelo período
+        const mergedVpd: Record<string, number> = {};
+        let mergedTotal = 0;
+        const metaRollup = allRollups[0];
 
-      // 2. Fallback: qualquer rollup que CONTENHA o período selecionado
-      const startDay = startIso.slice(0, 10);
-      const endDay   = endIso.slice(0, 10);
-
-      const { data: containingRollups } = await supabase
-        .from('visitor_analytics_rollups')
-        .select('*')
-        .eq('client_id', id)
-        .lte('start', startIso)  // rollup começa antes ou no mesmo dia
-        .gte('end', endIso)      // rollup termina depois ou no mesmo dia
-        .order('updated_at', { ascending: false })
-        .limit(1);
-
-      if (containingRollups?.[0] && Number(containingRollups[0].total_visitors) > 0) {
-        const r = containingRollups[0];
-        // Filtra visitors_per_day apenas para o período selecionado
-        const vpd: Record<string, number> = r.visitors_per_day ?? {};
-        const filteredVpd: Record<string, number> = {};
-        let filteredTotal = 0;
-        Object.entries(vpd).forEach(([day, cnt]) => {
-          if (day >= startDay && day <= endDay) {
-            filteredVpd[day] = Number(cnt);
-            filteredTotal += Number(cnt);
+        for (const r of allRollups) {
+          const vpd: Record<string, number> = r.visitors_per_day ?? {};
+          for (const [day, cnt] of Object.entries(vpd)) {
+            const d = day.slice(0, 10);
+            if (d >= startDay && d <= endDay && !(d in mergedVpd)) {
+              mergedVpd[d] = Number(cnt) || 0;
+              mergedTotal += Number(cnt) || 0;
+            }
           }
-        });
-        // Se temos dados filtrados, usa eles; senão usa o rollup completo
-        if (filteredTotal > 0) {
-          applyRollup({ ...r, total_visitors: filteredTotal, visitors_per_day: filteredVpd });
-        } else {
-          applyRollup(r);
         }
-        return;
-      }
 
-      // 3. Último recurso: rollup mais recente do cliente
-      const { data: anyRollup } = await supabase
-        .from('visitor_analytics_rollups')
-        .select('*')
-        .eq('client_id', id)
-        .order('updated_at', { ascending: false })
-        .limit(1);
-
-      if (anyRollup?.[0] && Number(anyRollup[0].total_visitors) > 0) {
-        applyRollup(anyRollup[0]);
-        return;
-      }
-
-      // 4. Nada no banco — tenta rebuild via backend
-      const rebuildKey = `${id}:${startDay}:${endDay}`;
-      if (!_rebuilding.has(rebuildKey)) {
-        _rebuilding.add(rebuildKey);
-        setSyncMessage('Calculando dados...');
-        try {
-          const resp = await fetch('/api/sync-analytics', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
+        if (mergedTotal > 0) {
+          const daysInPeriod = Math.max(1,
+            Math.ceil((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1
+          );
+          console.log(`[loadData] ✅ ${mergedTotal} visitantes (${startDay}→${endDay})`);
+          applyRollup({
+            ...metaRollup,
+            total_visitors:       mergedTotal,
+            avg_visitors_per_day: Math.round(mergedTotal / daysInPeriod),
+            visitors_per_day:     mergedVpd,
           });
-          const json = resp.ok ? await resp.json() : null;
-          if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
-            applyRollup({
-              total_visitors:         json.dashboard.total_visitors,
-              avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
-              avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-              avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
-              visitors_per_day:       json.dashboard.visitors_per_day,
-              visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
-              gender_percent:         json.dashboard.gender_percent,
-              attributes_percent:     json.dashboard.attributes_percent,
-              age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-            });
-            setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes carregados.`);
-          } else {
-            zeroAll();
-            setSyncMessage('');
-          }
-        } catch (e) {
-          console.warn('[loadData] rebuild falhou:', e);
-          setSyncMessage('');
-        } finally {
-          _rebuilding.delete(rebuildKey);
+          return;
         }
+
+        // Sem dados para o período — não mostra dados errados
+        console.log('[loadData] Sem dados para o período:', startDay, '→', endDay);
+        zeroAll();
+        setSyncMessage('');
+        setIsLoadingData(false);
+        return;
+      }
+
+      // ── Sem rollups úteis: tenta rebuild via backend ───────────────────
+      const rebuildKey = `${id}:${startDay}:${endDay}`;
+      if (_rebuilding.has(rebuildKey)) {
+        setIsLoadingData(false);
+        return;
+      }
+
+      _rebuilding.add(rebuildKey);
+      setSyncMessage('Calculando dados...');
+      try {
+        const resp = await fetch('/api/sync-analytics', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
+        });
+        const json = resp.ok ? await resp.json() : null;
+
+        if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
+          console.log('[loadData] ✅ Rebuild:', json.dashboard.total_visitors);
+          applyRollup({
+            total_visitors:         json.dashboard.total_visitors,
+            avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
+            avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+            avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
+            visitors_per_day:       json.dashboard.visitors_per_day,
+            visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
+            gender_percent:         json.dashboard.gender_percent,
+            attributes_percent:     json.dashboard.attributes_percent,
+            age_pyramid_percent:    json.dashboard.age_pyramid_percent,
+          });
+          setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes.`);
+        } else {
+          zeroAll();
+          setSyncMessage('');
+        }
+      } catch (e) {
+        console.warn('[loadData] rebuild falhou:', e);
+        zeroAll();
+        setSyncMessage('');
+      } finally {
+        _rebuilding.delete(rebuildKey);
       }
     } catch (err) {
       console.error('[loadData] erro:', err);
