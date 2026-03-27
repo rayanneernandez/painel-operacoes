@@ -136,7 +136,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
 }
 
 // ── Sync de um cliente ────────────────────────────────────────────────────────
-async function syncClient(client_id: string, cfg: any, clientDeadline: number): Promise<{ synced: number; error?: string }> {
+async function syncClient(client_id: string, cfg: any): Promise<{ synced: number; error?: string }> {
   try {
     const now = new Date();
     const syncEnd    = now.toISOString();
@@ -144,9 +144,9 @@ async function syncClient(client_id: string, cfg: any, clientDeadline: number): 
     const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
-    // Busca os últimos 3 dias para capturar dados com lag da API
-    // (DisplayForce pode levar 1-3 dias para finalizar o processamento)
-    const syncStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 2, 0, 0, 0, 0)).toISOString();
+    // Busca ontem + hoje (2 dias) — garante dados completos de ontem sem exceder timeout do Vercel.
+    // Panvel: ~26K rows = 6 páginas × 4s = ~24s. Seguro dentro dos 60s.
+    const syncStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
     const endpoint = cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`;
@@ -165,18 +165,13 @@ async function syncClient(client_id: string, cfg: any, clientDeadline: number): 
       additional_attributes: ["smile","pitch","yaw","x","y","height"],
     };
 
-    // Página maior (5000) reduz número de requests de ~39 para ~8 para Panvel (13K rows/3 dias)
+    // 5000 por página = ~6 páginas para 2 dias de Panvel (26K rows). ~24s total, dentro dos 60s do Vercel.
     const PAGE_LIMIT = 5000;
 
-    // Coleta todos os rows da API em memória para usar no rollup (evita re-query ao banco)
+    // Coleta todos os rows da API em memória (sem deadline por cliente — a janela de 2 dias já garante timing seguro)
     const allRows: any[] = [];
     let offset = 0, totalFetched = 0;
     for (let page = 0; page < 100; page++) {
-      // Abandona paginação se estiver perto do deadline do cliente
-      if (Date.now() > clientDeadline) {
-        console.warn(`[cron] Deadline por cliente atingido na página ${page}, client=${client_id}`);
-        break;
-      }
 
       // Timeout de 15s por request individual para não travar numa página lenta
       const controller = new AbortController();
@@ -239,8 +234,12 @@ async function syncClient(client_id: string, cfg: any, clientDeadline: number): 
 
       if (historicRollup) {
         const existingPerDay = (historicRollup.visitors_per_day as Record<string,number>) || {};
-        // Mescla: mantém histórico antigo, sobrescreve dias recentes com dados frescos da API
-        const mergedPerDay = { ...existingPerDay, ...rrSync.visitors_per_day };
+        // Mescla: mantém histórico antigo e usa sempre o MAIOR valor por dia.
+        // Isso evita que dados parciais de um sync incompleto sobrescrevam dados melhores de syncs anteriores.
+        const mergedPerDay: Record<string,number> = { ...existingPerDay };
+        for (const [date, count] of Object.entries(rrSync.visitors_per_day)) {
+          mergedPerDay[date] = Math.max(mergedPerDay[date] ?? 0, count as number);
+        }
         const mergedTotal  = Object.values(mergedPerDay).reduce((a, b) => (a as number) + (b as number), 0) as number;
 
         await supabase.from("visitor_analytics_rollups")
@@ -324,14 +323,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const results: any[] = [];
   for (const cfg of activeConfigs) {
-    // Para evitar timeout do Vercel (máx 60s), limita tempo total
-    if (Date.now() - startTime > 50_000) {
+    // Segurança global: se já passaram 55s desde o início, pula clientes restantes
+    if (Date.now() - startTime > 55_000) {
       console.warn("[cron] Limite de tempo global atingido, pulando clientes restantes");
       break;
     }
-    // Cada cliente tem no máximo 25s para buscar e processar
-    const clientDeadline = Date.now() + 25_000;
-    const result = await syncClient(cfg.client_id, cfg, clientDeadline);
+    const result = await syncClient(cfg.client_id, cfg);
     results.push({ client_id: cfg.client_id, ...result });
   }
 

@@ -71,7 +71,8 @@ export function ClientDashboard() {
   const autoTodayRef = useRef(true);
 
   const [syncMessage, setSyncMessage] = useState('');
-  const [isSyncingStores, setIsSyncingStores] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  const [_isSyncingStores, setIsSyncingStores] = useState(false);
   const syncingRef = useRef(false);
   const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
 
