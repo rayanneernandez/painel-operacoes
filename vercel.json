@@ -24,11 +24,7 @@
   "crons": [
     {
       "path": "/api/cron-sync",
-      "schedule": "0 * * * *"
-    },
-    {
-      "path": "/api/cron-sync",
-      "schedule": "30 * * * *"
+      "schedule": "0 3 * * *"
     }
   ]
 }
