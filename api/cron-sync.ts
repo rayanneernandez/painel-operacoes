@@ -180,11 +180,7 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       if (items.length === 0) break;
 
       const rows = buildRows(items, client_id);
-      allRows.push(...rows); // guarda para rollup em memória
-      for (let i = 0; i < rows.length; i += 500) {
-        const { error } = await supabase.from("visitor_analytics").upsert(rows.slice(i, i + 500), { onConflict: "visit_uid", ignoreDuplicates: true });
-        if (error) console.error(`[cron] Upsert error client ${client_id}:`, error);
-      }
+      allRows.push(...rows); // coleta em memória para rollup — sem upsert linha a linha
 
       totalFetched += items.length;
       const apiTotal = Number(json?.pagination?.total ?? json?.total ?? 0);
