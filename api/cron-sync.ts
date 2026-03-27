@@ -119,13 +119,13 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     if (typeof r.visit_time_seconds === "number" && Number.isFinite(r.visit_time_seconds)) { sumVisit += r.visit_time_seconds; cntVisit++; }
     if (typeof r.contact_time_seconds === "number" && Number.isFinite(r.contact_time_seconds) && r.contact_time_seconds > 0) { sumContact += r.contact_time_seconds; cntContact++; }
 
-    // Atributos físicos
+    // Atributos físicos — null conta como "none"/"unknown" para denominador correto
     const attrs = r.attributes ?? {};
-    if (attrs.glasses    != null) { const k = String(attrs.glasses).toLowerCase();    glassesCounts[k]    = (glassesCounts[k]    ?? 0) + 1; }
-    if (attrs.hair_color != null) { const k = String(attrs.hair_color).toLowerCase(); hairColorCounts[k]  = (hairColorCounts[k]  ?? 0) + 1; }
-    if (attrs.hair_type  != null) { const k = String(attrs.hair_type).toLowerCase();  hairTypeCounts[k]   = (hairTypeCounts[k]   ?? 0) + 1; }
-    if (attrs.headwear   != null) { const k = String(attrs.headwear).toLowerCase();   headwearCounts[k]   = (headwearCounts[k]   ?? 0) + 1; }
-    if (attrs.facial_hair!= null) { const k = String(attrs.facial_hair).toLowerCase();facialHairCounts[k] = (facialHairCounts[k] ?? 0) + 1; }
+    { const k = attrs.glasses    != null ? String(attrs.glasses).toLowerCase()    : "none";    glassesCounts[k]    = (glassesCounts[k]    ?? 0) + 1; }
+    { const k = attrs.hair_color != null ? String(attrs.hair_color).toLowerCase() : "unknown"; hairColorCounts[k]  = (hairColorCounts[k]  ?? 0) + 1; }
+    { const k = attrs.hair_type  != null ? String(attrs.hair_type).toLowerCase()  : "unknown"; hairTypeCounts[k]   = (hairTypeCounts[k]   ?? 0) + 1; }
+    { const k = attrs.headwear   != null ? String(attrs.headwear).toLowerCase()   : "none";    headwearCounts[k]   = (headwearCounts[k]   ?? 0) + 1; }
+    { const k = attrs.facial_hair!= null ? String(attrs.facial_hair).toLowerCase(): "none";    facialHairCounts[k] = (facialHairCounts[k] ?? 0) + 1; }
   }
 
   const total = rows.length;
@@ -156,17 +156,16 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
 }
 
 // ── Sync de um cliente ────────────────────────────────────────────────────────
-async function syncClient(client_id: string, cfg: any): Promise<{ synced: number; error?: string }> {
+async function syncClient(client_id: string, cfg: any, overrideSyncStart?: string, overrideSyncEnd?: string): Promise<{ synced: number; error?: string }> {
   try {
     const now = new Date();
-    const syncEnd    = now.toISOString();
+    const syncEnd    = overrideSyncEnd   ?? now.toISOString();
     const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).toISOString();
     const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
-    // Busca ontem + hoje (2 dias) — garante dados completos de ontem sem exceder timeout do Vercel.
-    // Panvel: ~26K rows = 6 páginas × 4s = ~24s. Seguro dentro dos 60s.
-    const syncStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
+    // Janela padrão: ontem + hoje. Pode ser sobrescrita via body (ex: backfill histórico).
+    const syncStart = overrideSyncStart ?? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
     const endpoint = cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`;
@@ -349,14 +348,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const activeConfigs = configs.filter((c: any) => c.api_key?.trim() || (c.custom_header_key?.trim() && c.custom_header_value?.trim()));
   console.log(`[cron] ${activeConfigs.length} clientes ativos para sync`);
 
+  // Suporte a backfill histórico: body pode conter syncStart/syncEnd e client_id específico
+  const body = req.body ?? {};
+  const overrideSyncStart: string | undefined = body.syncStart || undefined;
+  const overrideSyncEnd:   string | undefined = body.syncEnd   || undefined;
+  const onlyClientId:      string | undefined = body.client_id || undefined;
+
+  const configsToRun = onlyClientId
+    ? activeConfigs.filter((c: any) => c.client_id === onlyClientId)
+    : activeConfigs;
+
   const results: any[] = [];
-  for (const cfg of activeConfigs) {
+  for (const cfg of configsToRun) {
     // Segurança global: se já passaram 55s desde o início, pula clientes restantes
     if (Date.now() - startTime > 55_000) {
       console.warn("[cron] Limite de tempo global atingido, pulando clientes restantes");
       break;
     }
-    const result = await syncClient(cfg.client_id, cfg);
+    const result = await syncClient(cfg.client_id, cfg, overrideSyncStart, overrideSyncEnd);
     results.push({ client_id: cfg.client_id, ...result });
   }
 
