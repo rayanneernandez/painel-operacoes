@@ -139,15 +139,23 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
 async function syncClient(client_id: string, cfg: any): Promise<{ synced: number; error?: string }> {
   try {
     const now = new Date();
-    // Sincroniza últimos 2 dias da API (evita timeout em clientes com alto volume)
-    const syncStart    = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
-    const syncEnd      = now.toISOString();
-    const todayStart   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).toISOString();
-    const todayEnd     = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
-    // Janela de 7 dias para rollup em memória (busca do banco, não da API)
-    const sevenDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
-    // end fixo no futuro distante para o rollup histórico: sempre encontrado pelo dashboard
+    const syncEnd    = now.toISOString();
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).toISOString();
+    const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
+
+    // Sync incremental: usa last_synced_at como ponto de partida (máx 2 dias atrás)
+    // Garante que cada execução processa apenas os dados novos desde a última sync
+    const { data: prevState } = await supabase
+      .from("client_sync_state")
+      .select("last_synced_at")
+      .eq("client_id", client_id)
+      .maybeSingle();
+
+    const twoDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
+    const syncStart  = (prevState?.last_synced_at && prevState.last_synced_at > twoDaysAgo)
+      ? prevState.last_synced_at
+      : twoDaysAgo;
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
     const endpoint = cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`;
@@ -190,7 +198,7 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       const apiTotal = Number(json?.pagination?.total ?? json?.total ?? 0);
       if (items.length < 1000 || (apiTotal > 0 && offset + items.length >= apiTotal)) break;
       offset += 1000;
-      await new Promise(r => setTimeout(r, 150));
+      await new Promise(r => setTimeout(r, 100));
     }
 
     // ── Rollups em memória a partir dos dados da API (sem re-query ao banco) ─
