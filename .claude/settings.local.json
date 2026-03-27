@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vercel:*)",
+      "Bash(curl -s -X GET \"https://painel-operacoes.vercel.app/api/cron-sync?auth=painel@2026*\")"
+    ]
+  }
+}

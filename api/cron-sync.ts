@@ -136,7 +136,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
 }
 
 // ── Sync de um cliente ────────────────────────────────────────────────────────
-async function syncClient(client_id: string, cfg: any): Promise<{ synced: number; error?: string }> {
+async function syncClient(client_id: string, cfg: any, clientDeadline: number): Promise<{ synced: number; error?: string }> {
   try {
     const now = new Date();
     const syncEnd    = now.toISOString();
@@ -144,9 +144,8 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
     const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
-    // Sempre busca os últimos 3 dias para capturar dados com lag da API
+    // Busca os últimos 3 dias para capturar dados com lag da API
     // (DisplayForce pode levar 1-3 dias para finalizar o processamento)
-    // ignoreDuplicates=true garante eficiência: registros já existentes são ignorados rapidamente
     const syncStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 2, 0, 0, 0, 0)).toISOString();
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
@@ -166,13 +165,37 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       additional_attributes: ["smile","pitch","yaw","x","y","height"],
     };
 
+    // Página maior (5000) reduz número de requests de ~39 para ~8 para Panvel (13K rows/3 dias)
+    const PAGE_LIMIT = 5000;
+
     // Coleta todos os rows da API em memória para usar no rollup (evita re-query ao banco)
     const allRows: any[] = [];
     let offset = 0, totalFetched = 0;
     for (let page = 0; page < 100; page++) {
+      // Abandona paginação se estiver perto do deadline do cliente
+      if (Date.now() > clientDeadline) {
+        console.warn(`[cron] Deadline por cliente atingido na página ${page}, client=${client_id}`);
+        break;
+      }
+
+      // Timeout de 15s por request individual para não travar numa página lenta
+      const controller = new AbortController();
+      const fetchTimeout = setTimeout(() => controller.abort(), 15_000);
+
       let resp: Response;
-      try { resp = await fetch(analyticsUrl, { method: "POST", headers, body: JSON.stringify({ ...baseBody, limit: 1000, offset }) }); }
-      catch (e: any) { console.error(`[cron] Fetch error client ${client_id}:`, e); break; }
+      try {
+        resp = await fetch(analyticsUrl, {
+          method: "POST", headers,
+          body: JSON.stringify({ ...baseBody, limit: PAGE_LIMIT, offset }),
+          signal: controller.signal,
+        });
+      } catch (e: any) {
+        clearTimeout(fetchTimeout);
+        console.error(`[cron] Fetch error client ${client_id} página ${page}:`, e?.message ?? e);
+        break;
+      } finally {
+        clearTimeout(fetchTimeout);
+      }
       if (!resp.ok) { console.error(`[cron] API ${resp.status} client ${client_id}`); break; }
 
       const json = await resp.json();
@@ -184,9 +207,10 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
 
       totalFetched += items.length;
       const apiTotal = Number(json?.pagination?.total ?? json?.total ?? 0);
-      if (items.length < 1000 || (apiTotal > 0 && offset + items.length >= apiTotal)) break;
-      offset += 1000;
-      await new Promise(r => setTimeout(r, 100));
+      console.log(`[cron] client=${client_id} página ${page}: ${items.length} itens (total API: ${apiTotal}, offset: ${offset})`);
+      if (items.length < PAGE_LIMIT || (apiTotal > 0 && offset + items.length >= apiTotal)) break;
+      offset += PAGE_LIMIT;
+      await new Promise(r => setTimeout(r, 50));
     }
 
     // ── Rollups em memória a partir dos dados da API (sem re-query ao banco) ─
@@ -300,12 +324,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const results: any[] = [];
   for (const cfg of activeConfigs) {
-    // Para evitar timeout do Vercel (máx 10s Hobby / 60s Pro), limita tempo por cliente
+    // Para evitar timeout do Vercel (máx 60s), limita tempo total
     if (Date.now() - startTime > 50_000) {
-      console.warn("[cron] Limite de tempo atingido, pulando clientes restantes");
+      console.warn("[cron] Limite de tempo global atingido, pulando clientes restantes");
       break;
     }
-    const result = await syncClient(cfg.client_id, cfg);
+    // Cada cliente tem no máximo 25s para buscar e processar
+    const clientDeadline = Date.now() + 25_000;
+    const result = await syncClient(cfg.client_id, cfg, clientDeadline);
     results.push({ client_id: cfg.client_id, ...result });
   }
 
