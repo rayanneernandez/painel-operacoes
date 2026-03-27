@@ -97,6 +97,11 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   for (let h = 0; h < 24; h++) perHour[String(h)] = 0;
   const ageCounts: Record<string,number> = { "0-9":0,"10-17":0,"18-24":0,"25-34":0,"35-44":0,"45-54":0,"55-64":0,"65-74":0,"75+":0,unknown:0 };
   const genderCounts: Record<string,number> = { male:0, female:0, unknown:0 };
+  const glassesCounts:    Record<string,number> = {};
+  const hairColorCounts:  Record<string,number> = {};
+  const hairTypeCounts:   Record<string,number> = {};
+  const headwearCounts:   Record<string,number> = {};
+  const facialHairCounts: Record<string,number> = {};
   let sumVisit=0, cntVisit=0, sumContact=0, cntContact=0;
 
   for (const r of rows) {
@@ -113,12 +118,21 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     if (r.gender === 1) genderCounts.male++; else if (r.gender === 2) genderCounts.female++; else genderCounts.unknown++;
     if (typeof r.visit_time_seconds === "number" && Number.isFinite(r.visit_time_seconds)) { sumVisit += r.visit_time_seconds; cntVisit++; }
     if (typeof r.contact_time_seconds === "number" && Number.isFinite(r.contact_time_seconds) && r.contact_time_seconds > 0) { sumContact += r.contact_time_seconds; cntContact++; }
+
+    // Atributos físicos
+    const attrs = r.attributes ?? {};
+    if (attrs.glasses    != null) { const k = String(attrs.glasses).toLowerCase();    glassesCounts[k]    = (glassesCounts[k]    ?? 0) + 1; }
+    if (attrs.hair_color != null) { const k = String(attrs.hair_color).toLowerCase(); hairColorCounts[k]  = (hairColorCounts[k]  ?? 0) + 1; }
+    if (attrs.hair_type  != null) { const k = String(attrs.hair_type).toLowerCase();  hairTypeCounts[k]   = (hairTypeCounts[k]   ?? 0) + 1; }
+    if (attrs.headwear   != null) { const k = String(attrs.headwear).toLowerCase();   headwearCounts[k]   = (headwearCounts[k]   ?? 0) + 1; }
+    if (attrs.facial_hair!= null) { const k = String(attrs.facial_hair).toLowerCase();facialHairCounts[k] = (facialHairCounts[k] ?? 0) + 1; }
   }
 
   const total = rows.length;
   const perHourAvg: Record<string,number> = {};
   for (let h = 0; h < 24; h++) perHourAvg[String(h)] = Number(((perHour[String(h)] ?? 0) / daysInRange).toFixed(2));
   const n = Math.max(total, 1);
+  const nAttr = (k: Record<string,number>) => Object.values(k).reduce((a,b) => a+b, 0) || 1;
 
   return {
     client_id, start: rangeStart, end: rangeEnd,
@@ -128,7 +142,13 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     visitors_per_hour_avg: perHourAvg,
     age_pyramid_percent: percentMap(ageCounts, n),
     gender_percent: percentMap(genderCounts, n),
-    attributes_percent: {},
+    attributes_percent: {
+      glasses:     percentMap(glassesCounts,    nAttr(glassesCounts)),
+      hair_color:  percentMap(hairColorCounts,  nAttr(hairColorCounts)),
+      hair_type:   percentMap(hairTypeCounts,   nAttr(hairTypeCounts)),
+      headwear:    percentMap(headwearCounts,   nAttr(headwearCounts)),
+      facial_hair: percentMap(facialHairCounts, nAttr(facialHairCounts)),
+    },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_contact_time_seconds: cntContact > 0 ? Number((sumContact / cntContact).toFixed(2)) : null,
     updated_at: new Date().toISOString(),
