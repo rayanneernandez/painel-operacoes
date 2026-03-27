@@ -139,11 +139,13 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
 async function syncClient(client_id: string, cfg: any): Promise<{ synced: number; error?: string }> {
   try {
     const now = new Date();
-    // Sincroniza os últimos 7 dias para cobrir falhas anteriores
-    const syncStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
-    const syncEnd   = now.toISOString();
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).toISOString();
-    const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
+    // Sincroniza últimos 2 dias da API (evita timeout em clientes com alto volume)
+    const syncStart    = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
+    const syncEnd      = now.toISOString();
+    const todayStart   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).toISOString();
+    const todayEnd     = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
+    // Janela de 7 dias para rollup em memória (busca do banco, não da API)
+    const sevenDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
     // end fixo no futuro distante para o rollup histórico: sempre encontrado pelo dashboard
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
@@ -188,51 +190,70 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       await new Promise(r => setTimeout(r, 150));
     }
 
-    // ── Reconstrói rollups SEMPRE (independente de novos registros) ─────────
+    // ── Reconstrói rollups em memória (sem RPC para evitar timeout) ────────
     const collectionStart = cfg.collection_start || "2025-01-01T00:00:00.000Z";
 
-    // 1. Rollup do dia atual (start=hoje 00:00, end=hoje 23:59:59)
-    //    Permite encontrar dados de "hoje" durante todo o dia
-    const { data: rpcToday } = await supabase.rpc("build_visitor_rollup", {
-      p_client_id: client_id, p_start: todayStart, p_end: syncEnd,
-    });
-    if (rpcToday && Number((rpcToday as any).total_visitors) > 0) {
-      await supabase.from("visitor_analytics_rollups").upsert(
-        { client_id, start: todayStart, end: todayEnd, ...(rpcToday as any), updated_at: new Date().toISOString() },
-        { onConflict: "client_id,start,end" }
-      );
-      console.log(`[cron] Rollup hoje salvo: ${(rpcToday as any).total_visitors} visitantes`);
-    }
-
-    // 2. Rollup histórico completo (start=collection_start, end=FIXO 9999-12-31)
-    //    Usar end fixo no futuro GARANTE que o dashboard sempre encontre este rollup,
-    //    mesmo no dia seguinte ou qualquer data futura (upsert atualiza sempre o mesmo registro)
-    const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", {
-      p_client_id: client_id,
-      p_start: collectionStart,
-      p_end: syncEnd,
-    });
-    if (!rpcErr && rpcData && Number((rpcData as any).total_visitors) > 0) {
-      await supabase.from("visitor_analytics_rollups").upsert(
-        { client_id, start: collectionStart, end: HISTORIC_END, ...(rpcData as any), updated_at: new Date().toISOString() },
-        { onConflict: "client_id,start,end" }
-      );
-      console.log(`[cron] Rollup histórico salvo: ${(rpcData as any).total_visitors} visitantes`);
-    } else if (rpcErr) {
-      console.error(`[cron] RPC build_visitor_rollup erro cliente ${client_id}:`, rpcErr);
-    }
-
-    // 3. Rollup dos últimos 7 dias (em memória, a partir do banco)
+    // Busca últimos 7 dias do banco (indexado, rápido)
     const { data: rows7d } = await supabase
       .from("visitor_analytics")
       .select("visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds")
       .eq("client_id", client_id)
-      .gte("timestamp", syncStart)
+      .gte("timestamp", sevenDaysAgo)
       .lte("timestamp", syncEnd);
+
     if (rows7d && rows7d.length > 0) {
-      const rr = buildRollup(rows7d, client_id, syncStart, todayEnd);
-      await supabase.from("visitor_analytics_rollups").upsert(rr, { onConflict: "client_id,start,end" });
-      console.log(`[cron] Rollup 7 dias salvo: ${rr.total_visitors} visitantes`);
+      // 1. Rollup de hoje (subset em memória, sem RPC)
+      const rowsToday = rows7d.filter(r => r.timestamp >= todayStart);
+      if (rowsToday.length > 0) {
+        const rrToday = buildRollup(rowsToday, client_id, todayStart, todayEnd);
+        await supabase.from("visitor_analytics_rollups").upsert(rrToday, { onConflict: "client_id,start,end" });
+        console.log(`[cron] Rollup hoje: ${rrToday.total_visitors} visitantes`);
+      }
+
+      // 2. Rollup dos últimos 7 dias
+      const rr7d = buildRollup(rows7d, client_id, sevenDaysAgo, todayEnd);
+      await supabase.from("visitor_analytics_rollups").upsert(rr7d, { onConflict: "client_id,start,end" });
+      console.log(`[cron] Rollup 7 dias: ${rr7d.total_visitors} visitantes`);
+
+      // 3. Atualiza rollup histórico (end=9999) mesclando novos dias — sem RPC
+      //    Mantém contagens antigas, sobrescreve últimos 7 dias com dados frescos
+      const { data: historicRollup } = await supabase
+        .from("visitor_analytics_rollups")
+        .select("visitors_per_day, total_visitors")
+        .eq("client_id", client_id)
+        .gt("end", "2099-01-01T00:00:00Z")
+        .maybeSingle();
+
+      if (historicRollup) {
+        const existingPerDay = (historicRollup.visitors_per_day as Record<string,number>) || {};
+        // Mescla: histórico antigo + últimos 7 dias frescos (7 dias sobrescrevem)
+        const mergedPerDay = { ...existingPerDay, ...rr7d.visitors_per_day };
+        const mergedTotal  = Object.values(mergedPerDay).reduce((a, b) => (a as number) + (b as number), 0) as number;
+
+        await supabase.from("visitor_analytics_rollups")
+          .update({
+            visitors_per_day:         mergedPerDay,
+            total_visitors:           mergedTotal,
+            visitors_per_hour_avg:    rr7d.visitors_per_hour_avg,
+            age_pyramid_percent:      rr7d.age_pyramid_percent,
+            gender_percent:           rr7d.gender_percent,
+            attributes_percent:       rr7d.attributes_percent,
+            avg_visit_time_seconds:   rr7d.avg_visit_time_seconds,
+            avg_contact_time_seconds: rr7d.avg_contact_time_seconds,
+            updated_at:               new Date().toISOString(),
+          })
+          .eq("client_id", client_id)
+          .gt("end", "2099-01-01T00:00:00Z");
+
+        console.log(`[cron] Rollup histórico atualizado: ${mergedTotal} visitantes`);
+      } else {
+        // Se não existe rollup histórico ainda, cria com os dados dos últimos 7 dias
+        await supabase.from("visitor_analytics_rollups").upsert(
+          { ...rr7d, start: collectionStart, end: HISTORIC_END },
+          { onConflict: "client_id,start,end" }
+        );
+        console.log(`[cron] Rollup histórico criado: ${rr7d.total_visitors} visitantes`);
+      }
     }
 
     await supabase.from("client_sync_state").upsert(
