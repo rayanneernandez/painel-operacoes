@@ -328,12 +328,10 @@ export function ClientDashboard() {
           return;
         }
 
-        // Sem dados para o período — não mostra dados errados
-        console.log('[loadData] Sem dados para o período:', startDay, '→', endDay);
-        zeroAll();
-        setSyncMessage('');
-        setIsLoadingData(false);
-        return;
+        // Rollups encontrados mas sem dados para o período específico
+        // → NÃO retornar zero aqui: continua para tentar rebuild via backend
+        // (ex: rollup histórico existe mas ainda não tem dados de "hoje" → busca da API)
+        console.log('[loadData] Rollups sem dados para o período, tentando rebuild:', startDay, '→', endDay);
       }
 
       // ── Sem rollups úteis: tenta rebuild via backend ───────────────────

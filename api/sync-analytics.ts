@@ -311,41 +311,51 @@ async function runBackgroundSync(client_id: string, cfg: ClientApiConfig, syncSt
     console.log(`[BgSync] ✅ Concluído: ${totalFetched} registros`);
 
     // ── Após sync: rebuild rollups automaticamente ──────────────────────────
+    // end fixo no futuro: garante que o rollup histórico SEMPRE seja encontrado
+    // pelo dashboard, inclusive no dia seguinte e em qualquer data futura
+    const HISTORIC_END = "9999-12-31T23:59:59.999Z";
+    const now = new Date();
+    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+    const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+
     // 1. Rollup do período sincronizado
     const deviceNums = devices.map(Number).filter(Number.isFinite);
     if (deviceNums.length > 0) {
       const rows = await fetchAllDBRows(client_id, syncStart, syncEnd, deviceNums);
       if (rows.length > 0) await saveRollup(buildRollup(rows, client_id, syncStart, syncEnd));
     } else {
-      // Rollup via SQL RPC
-      const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", { p_client_id: client_id, p_start: syncStart, p_end: syncEnd });
-      if (!rpcErr && rpcData && Number((rpcData as any).total_visitors) > 0) {
+      // 2. Rollup histórico completo (end=FIXO no futuro: sempre encontrado pelo dashboard)
+      const historicStart = cfg.collection_start || syncStart;
+      const { data: rpcHist, error: rpcHistErr } = await supabase.rpc("build_visitor_rollup", {
+        p_client_id: client_id, p_start: historicStart, p_end: syncEnd,
+      });
+      if (!rpcHistErr && rpcHist && Number((rpcHist as any).total_visitors) > 0) {
         await supabase.from("visitor_analytics_rollups").upsert(
-          { client_id, start: syncStart, end: syncEnd, ...(rpcData as any), updated_at: new Date().toISOString() },
+          { client_id, start: historicStart, end: HISTORIC_END, ...(rpcHist as any), updated_at: new Date().toISOString() },
           { onConflict: "client_id,start,end" }
         );
-        console.log(`[BgSync] Rollup salvo: ${(rpcData as any).total_visitors} visitantes`);
+        console.log(`[BgSync] Rollup histórico salvo: ${(rpcHist as any).total_visitors} visitantes`);
       }
 
-      // 2. Também atualiza rollup histórico completo (collection_start → hoje)
-      const historicStart = cfg.collection_start || syncStart;
-      if (historicStart !== syncStart) {
-        const { data: rpcHist, error: rpcHistErr } = await supabase.rpc("build_visitor_rollup", { p_client_id: client_id, p_start: historicStart, p_end: syncEnd });
-        if (!rpcHistErr && rpcHist && Number((rpcHist as any).total_visitors) > 0) {
-          await supabase.from("visitor_analytics_rollups").upsert(
-            { client_id, start: historicStart, end: syncEnd, ...(rpcHist as any), updated_at: new Date().toISOString() },
-            { onConflict: "client_id,start,end" }
-          );
-          console.log(`[BgSync] Rollup histórico salvo: ${(rpcHist as any).total_visitors} visitantes`);
-        }
+      // 3. Rollup do dia atual (start=hoje 00:00, end=hoje 23:59:59)
+      const { data: rpcToday, error: rpcTodayErr } = await supabase.rpc("build_visitor_rollup", {
+        p_client_id: client_id, p_start: todayStart.toISOString(), p_end: syncEnd,
+      });
+      if (!rpcTodayErr && rpcToday && Number((rpcToday as any).total_visitors) > 0) {
+        await supabase.from("visitor_analytics_rollups").upsert(
+          { client_id, start: todayStart.toISOString(), end: todayEnd.toISOString(), ...(rpcToday as any), updated_at: new Date().toISOString() },
+          { onConflict: "client_id,start,end" }
+        );
+        console.log(`[BgSync] Rollup hoje salvo: ${(rpcToday as any).total_visitors} visitantes`);
       }
 
-      // 3. Atualiza rollup da semana atual
-      const now = new Date();
+      // 4. Rollup da semana atual (seg→dom)
       const dow = now.getUTCDay(); const offset2 = (dow + 6) % 7;
       const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - offset2, 0, 0, 0, 0));
       const weekEnd   = new Date(Date.UTC(weekStart.getUTCFullYear(), weekStart.getUTCMonth(), weekStart.getUTCDate() + 6, 23, 59, 59, 999));
-      const { data: rpcWeek, error: rpcWeekErr } = await supabase.rpc("build_visitor_rollup", { p_client_id: client_id, p_start: weekStart.toISOString(), p_end: weekEnd.toISOString() });
+      const { data: rpcWeek, error: rpcWeekErr } = await supabase.rpc("build_visitor_rollup", {
+        p_client_id: client_id, p_start: weekStart.toISOString(), p_end: weekEnd.toISOString(),
+      });
       if (!rpcWeekErr && rpcWeek && Number((rpcWeek as any).total_visitors) > 0) {
         await supabase.from("visitor_analytics_rollups").upsert(
           { client_id, start: weekStart.toISOString(), end: weekEnd.toISOString(), ...(rpcWeek as any), updated_at: new Date().toISOString() },
