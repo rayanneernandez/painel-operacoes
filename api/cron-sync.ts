@@ -144,18 +144,10 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
     const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
-    // Sync incremental: usa last_synced_at como ponto de partida (máx 2 dias atrás)
-    // Garante que cada execução processa apenas os dados novos desde a última sync
-    const { data: prevState } = await supabase
-      .from("client_sync_state")
-      .select("last_synced_at")
-      .eq("client_id", client_id)
-      .maybeSingle();
-
-    const twoDaysAgo = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
-    const syncStart  = (prevState?.last_synced_at && prevState.last_synced_at > twoDaysAgo)
-      ? prevState.last_synced_at
-      : twoDaysAgo;
+    // Sempre busca os últimos 3 dias para capturar dados com lag da API
+    // (DisplayForce pode levar 1-3 dias para finalizar o processamento)
+    // ignoreDuplicates=true garante eficiência: registros já existentes são ignorados rapidamente
+    const syncStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 2, 0, 0, 0, 0)).toISOString();
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
     const endpoint = cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`;
