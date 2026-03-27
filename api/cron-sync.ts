@@ -166,6 +166,8 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       additional_attributes: ["smile","pitch","yaw","x","y","height"],
     };
 
+    // Coleta todos os rows da API em memória para usar no rollup (evita re-query ao banco)
+    const allRows: any[] = [];
     let offset = 0, totalFetched = 0;
     for (let page = 0; page < 100; page++) {
       let resp: Response;
@@ -178,6 +180,7 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       if (items.length === 0) break;
 
       const rows = buildRows(items, client_id);
+      allRows.push(...rows); // guarda para rollup em memória
       for (let i = 0; i < rows.length; i += 500) {
         const { error } = await supabase.from("visitor_analytics").upsert(rows.slice(i, i + 500), { onConflict: "visit_uid", ignoreDuplicates: true });
         if (error) console.error(`[cron] Upsert error client ${client_id}:`, error);
@@ -190,33 +193,23 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       await new Promise(r => setTimeout(r, 150));
     }
 
-    // ── Reconstrói rollups em memória (sem RPC para evitar timeout) ────────
+    // ── Rollups em memória a partir dos dados da API (sem re-query ao banco) ─
     const collectionStart = cfg.collection_start || "2025-01-01T00:00:00.000Z";
 
-    // Busca últimos 7 dias do banco (indexado, rápido)
-    const { data: rows7d } = await supabase
-      .from("visitor_analytics")
-      .select("visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds")
-      .eq("client_id", client_id)
-      .gte("timestamp", sevenDaysAgo)
-      .lte("timestamp", syncEnd);
-
-    if (rows7d && rows7d.length > 0) {
-      // 1. Rollup de hoje (subset em memória, sem RPC)
-      const rowsToday = rows7d.filter(r => r.timestamp >= todayStart);
+    if (allRows.length > 0) {
+      // 1. Rollup de hoje (filtro em memória, sem RPC)
+      const rowsToday = allRows.filter(r => r.timestamp && r.timestamp >= todayStart);
       if (rowsToday.length > 0) {
         const rrToday = buildRollup(rowsToday, client_id, todayStart, todayEnd);
         await supabase.from("visitor_analytics_rollups").upsert(rrToday, { onConflict: "client_id,start,end" });
         console.log(`[cron] Rollup hoje: ${rrToday.total_visitors} visitantes`);
       }
 
-      // 2. Rollup dos últimos 7 dias
-      const rr7d = buildRollup(rows7d, client_id, sevenDaysAgo, todayEnd);
-      await supabase.from("visitor_analytics_rollups").upsert(rr7d, { onConflict: "client_id,start,end" });
-      console.log(`[cron] Rollup 7 dias: ${rr7d.total_visitors} visitantes`);
+      // 2. Rollup do período sincronizado (2 dias)
+      const rrSync = buildRollup(allRows, client_id, syncStart, todayEnd);
 
-      // 3. Atualiza rollup histórico (end=9999) mesclando novos dias — sem RPC
-      //    Mantém contagens antigas, sobrescreve últimos 7 dias com dados frescos
+      // 3. Atualiza rollup histórico (end=9999) mesclando os dias novos
+      //    Usa dados da API diretamente — sem query extra ao Supabase
       const { data: historicRollup } = await supabase
         .from("visitor_analytics_rollups")
         .select("visitors_per_day, total_visitors")
@@ -226,20 +219,20 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
 
       if (historicRollup) {
         const existingPerDay = (historicRollup.visitors_per_day as Record<string,number>) || {};
-        // Mescla: histórico antigo + últimos 7 dias frescos (7 dias sobrescrevem)
-        const mergedPerDay = { ...existingPerDay, ...rr7d.visitors_per_day };
+        // Mescla: mantém histórico antigo, sobrescreve dias recentes com dados frescos da API
+        const mergedPerDay = { ...existingPerDay, ...rrSync.visitors_per_day };
         const mergedTotal  = Object.values(mergedPerDay).reduce((a, b) => (a as number) + (b as number), 0) as number;
 
         await supabase.from("visitor_analytics_rollups")
           .update({
             visitors_per_day:         mergedPerDay,
             total_visitors:           mergedTotal,
-            visitors_per_hour_avg:    rr7d.visitors_per_hour_avg,
-            age_pyramid_percent:      rr7d.age_pyramid_percent,
-            gender_percent:           rr7d.gender_percent,
-            attributes_percent:       rr7d.attributes_percent,
-            avg_visit_time_seconds:   rr7d.avg_visit_time_seconds,
-            avg_contact_time_seconds: rr7d.avg_contact_time_seconds,
+            visitors_per_hour_avg:    rrSync.visitors_per_hour_avg,
+            age_pyramid_percent:      rrSync.age_pyramid_percent,
+            gender_percent:           rrSync.gender_percent,
+            attributes_percent:       rrSync.attributes_percent,
+            avg_visit_time_seconds:   rrSync.avg_visit_time_seconds,
+            avg_contact_time_seconds: rrSync.avg_contact_time_seconds,
             updated_at:               new Date().toISOString(),
           })
           .eq("client_id", client_id)
@@ -247,12 +240,12 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
 
         console.log(`[cron] Rollup histórico atualizado: ${mergedTotal} visitantes`);
       } else {
-        // Se não existe rollup histórico ainda, cria com os dados dos últimos 7 dias
+        // Nenhum rollup histórico ainda: cria com os dados disponíveis
         await supabase.from("visitor_analytics_rollups").upsert(
-          { ...rr7d, start: collectionStart, end: HISTORIC_END },
+          { ...rrSync, start: collectionStart, end: HISTORIC_END },
           { onConflict: "client_id,start,end" }
         );
-        console.log(`[cron] Rollup histórico criado: ${rr7d.total_visitors} visitantes`);
+        console.log(`[cron] Rollup histórico criado: ${rrSync.total_visitors} visitantes`);
       }
     }
 
