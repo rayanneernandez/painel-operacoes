@@ -165,13 +165,14 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       additional_attributes: ["smile","pitch","yaw","x","y","height"],
     };
 
-    // 5000 por página = ~6 páginas para 2 dias de Panvel (26K rows). ~24s total, dentro dos 60s do Vercel.
-    const PAGE_LIMIT = 5000;
+    // Limite por página — a API DisplayForce capeia em 1000 independente do valor pedido.
+    // Usamos 1000 explicitamente para controlar a paginação corretamente.
+    const PAGE_LIMIT = 1000;
 
-    // Coleta todos os rows da API em memória (sem deadline por cliente — a janela de 2 dias já garante timing seguro)
+    // Coleta todos os rows da API em memória (sem deadline por cliente)
     const allRows: any[] = [];
     let offset = 0, totalFetched = 0;
-    for (let page = 0; page < 100; page++) {
+    for (let page = 0; page < 200; page++) {
 
       // Timeout de 15s por request individual para não travar numa página lenta
       const controller = new AbortController();
@@ -198,14 +199,21 @@ async function syncClient(client_id: string, cfg: any): Promise<{ synced: number
       if (items.length === 0) break;
 
       const rows = buildRows(items, client_id);
-      allRows.push(...rows); // coleta em memória para rollup — sem upsert linha a linha
+      allRows.push(...rows);
 
       totalFetched += items.length;
       const apiTotal = Number(json?.pagination?.total ?? json?.total ?? 0);
-      console.log(`[cron] client=${client_id} página ${page}: ${items.length} itens (total API: ${apiTotal}, offset: ${offset})`);
-      if (items.length < PAGE_LIMIT || (apiTotal > 0 && offset + items.length >= apiTotal)) break;
-      offset += PAGE_LIMIT;
-      await new Promise(r => setTimeout(r, 50));
+      console.log(`[cron] client=${client_id} p${page}: ${items.length} itens | offset=${offset} | total API=${apiTotal} | coletados=${totalFetched}`);
+
+      // Avança offset pelo número real retornado (API pode retornar menos que PAGE_LIMIT na última página)
+      offset += items.length;
+
+      // Para quando chegou ao total declarado pela API
+      if (apiTotal > 0 && offset >= apiTotal) break;
+      // Se API não declara total: para quando retornou menos que o limite pedido (última página)
+      if (apiTotal <= 0 && items.length < PAGE_LIMIT) break;
+
+      await new Promise(r => setTimeout(r, 100));
     }
 
     // ── Rollups em memória a partir dos dados da API (sem re-query ao banco) ─
