@@ -368,14 +368,21 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
     Lê o arquivo 'Views of visitors' CSV do DisplayForce e agrega por
     Campaign + Device → salva como (name, tipo_midia, loja) na tabela campaigns.
 
-    Estrutura real do CSV (confirmada nos arquivos reais da DisplayForce):
-      - Primeira linha contém 'sep=,' → precisa skiprows=1
-      - Colunas: Campaign, Device, Visitor ID, Content View Start,
-                 Content View End, Content View Duration, ...
+    Estrutura confirmada do CSV DisplayForce:
+      - Primeira linha: 'sep=,' → skiprows=1
+      - Colunas relevantes:
+          Campaign            → name da campanha
+          Device              → "Brand: Location - MediaType"
+                                  loja      = Location (entre ': ' e ' - ')
+                                  tipo_midia= MediaType (após ' - ')
+          Visitor ID          → contagem de visitantes únicos
+          Contact ID          → para deduplicar atenção média
+          Contact Duration    → duração do contato (seg) → avg_attention_sec
+          Content View Start  → start_date (mínimo do grupo)
+          Content View End    → end_date (máximo do grupo)
     """
     log.info(f"  Processando Views CSV: {caminho_arquivo}")
     try:
-        # O CSV exportado pela DisplayForce começa com "sep=," — pular essa linha
         try:
             df = pd.read_csv(caminho_arquivo, skiprows=1, encoding="utf-8")
         except Exception:
@@ -388,136 +395,110 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
     log.info(f"  Colunas Views CSV ({len(df.columns)}): {list(df.columns)}")
     log.info(f"  Total de linhas brutas: {len(df)}")
 
-    def _norm(s: str) -> str:
-        s = str(s).strip().lower()
-        s = re.sub(r"\.\d+$", "", s)
-        s = s.replace("_", " ")
-        s = re.sub(r"\s+", " ", s)
-        return s
-
-    def _cols_por_nome(*nomes: str) -> list[str]:
-        alvo = {_norm(n) for n in nomes}
-        out: list[str] = []
+    # ── Encontrar colunas por nome (case-insensitive) ──────────
+    def _find_col(*names: str) -> str | None:
+        norm = {n.lower().strip(): n for n in names}
         for c in df.columns:
-            if _norm(c) in alvo:
-                out.append(c)
-        return out
+            if c.lower().strip() in norm:
+                return c
+        # fallback: contém
+        for c in df.columns:
+            for n in names:
+                if n.lower() in c.lower():
+                    return c
+        return None
 
-    def _pick_best(cols: list[str], prefer_contains: str | None = None, avoid_contains: str | None = None) -> str | None:
-        if not cols:
-            return None
-        if len(cols) == 1:
-            return cols[0]
-
-        sample = df[cols].head(1000).astype(str)
-
-        def score(col: str) -> float:
-            s = sample[col].fillna("").str.strip()
-            s = s[(s != "") & (s.str.lower() != "nan")]
-            if s.empty:
-                return -1.0
-
-            sl = s.str.lower()
-            sc = 0.0
-            if prefer_contains and sl.str.contains(prefer_contains, regex=False).mean() > 0:
-                sc += 2.0
-            if avoid_contains and sl.str.contains(avoid_contains, regex=False).mean() > 0:
-                sc -= 1.0
-
-            numeric_ratio = sl.str.fullmatch(r"\d+").mean()
-            sc -= float(numeric_ratio)
-
-            sc += float(min(1.0, sl.nunique() / 50.0))
-            sc += float(min(1.0, sl.str.len().mean() / 20.0))
-            return sc
-
-        return max(cols, key=score)
-
-    # Views of visitors geralmente tem:
-    # - Campaign (loja/filial)
-    # - Content (mídia/campanha exibida)
-    # - Device (tipo de ponto/tela)
-    col_device   = _pick_best(_cols_por_nome("Device", "Dispositivo"))
-    col_visitor  = _pick_best(_cols_por_nome("Visitor ID", "Visitor_ID"))
-    col_start    = _pick_best(_cols_por_nome("Content View Start", "Contact Start", "View Start"))
-    col_end      = _pick_best(_cols_por_nome("Content View End", "Contact End", "View End"))
-    col_duration = _pick_best(_cols_por_nome("Content View Duration", "Contact Duration", "View Duration"))
-
-    col_loja     = _pick_best(_cols_por_nome("Campaign", "Campanha"), prefer_contains="filial")
-    col_content  = _pick_best(_cols_por_nome("Content", "Conteúdo", "Conteudo"), avoid_contains="filial")
+    col_campaign   = _find_col("Campaign", "Campanha")
+    col_device     = _find_col("Device", "Dispositivo")
+    col_visitor    = _find_col("Visitor ID", "Visitor_ID", "VisitorID")
+    col_contact_id = _find_col("Contact ID", "Contact_ID", "ContactID")
+    col_contact_dur= _find_col("Contact Duration", "Contact_Duration")
+    col_start      = _find_col("Content View Start", "Contact Start", "View Start")
+    col_end        = _find_col("Content View End",   "Contact End",   "View End")
 
     log.info(
-        f"  Mapeamento: loja={col_loja}, content={col_content}, device={col_device}, "
-        f"visitor={col_visitor}, start={col_start}, end={col_end}, dur={col_duration}"
+        f"  Mapeamento: campaign={col_campaign}, device={col_device}, "
+        f"visitor={col_visitor}, contact_id={col_contact_id}, "
+        f"contact_dur={col_contact_dur}, start={col_start}, end={col_end}"
     )
 
-    if not col_loja and not col_content:
-        log.warning("  Nenhuma coluna de loja/conteúdo encontrada no Views CSV")
+    if not col_campaign or not col_device:
+        log.warning(f"  Colunas 'Campaign' ou 'Device' não encontradas — abortando Views CSV")
         return []
 
-    # Remove linhas sem loja e sem conteúdo
-    filtro = pd.Series([False] * len(df))
-    if col_loja:
-        filtro = filtro | (df[col_loja].notna() & (df[col_loja].astype(str).str.strip() != ""))
-    if col_content:
-        filtro = filtro | (df[col_content].notna() & (df[col_content].astype(str).str.strip() != ""))
-    df = df[filtro].copy()
+    # Remove linhas sem Campaign ou Device
+    df = df[
+        df[col_campaign].notna() & (df[col_campaign].astype(str).str.strip() != "") &
+        df[col_device].notna()   & (df[col_device].astype(str).str.strip()   != "")
+    ].copy()
     if df.empty:
-        log.warning("  Nenhuma linha útil no Views CSV (sem loja/conteúdo)")
+        log.warning("  Nenhuma linha útil no Views CSV")
         return []
 
+    # ── Parser de Device: "Brand: Location - MediaType" ────────
+    def _parse_device(device_str: str) -> tuple[str, str]:
+        """Retorna (loja, tipo_midia) a partir do nome do Device."""
+        s = str(device_str).strip()
+        loja = tipo_midia = ""
+        # Extrai a parte após ": " (ignora o nome da rede/brand)
+        if ": " in s:
+            s = s.split(": ", 1)[1].strip()
+        # Divide em Location e MediaType pelo último " - "
+        if " - " in s:
+            parts = s.rsplit(" - ", 1)
+            loja       = parts[0].strip()
+            tipo_midia = parts[1].strip()
+        else:
+            loja = s
+        return loja, tipo_midia
+
+    # ── Agregar por Campaign + Device ──────────────────────────
     agora     = datetime.now(timezone.utc).isoformat()
     registros = []
 
-    group_cols: list[str] = []
-    if col_loja:
-        group_cols.append(col_loja)
-    if col_content:
-        group_cols.append(col_content)
-    if col_device:
-        group_cols.append(col_device)
-
-    for chave, grupo in df.groupby(group_cols):
-        if isinstance(chave, tuple):
-            key_map = {group_cols[i]: chave[i] for i in range(len(group_cols))}
-        else:
-            key_map = {group_cols[0]: chave}
-
-        loja_raw    = str(key_map.get(col_loja, "") if col_loja else "").strip()
-        content_raw = str(key_map.get(col_content, "") if col_content else "").strip()
-        device_val  = str(key_map.get(col_device, "") if col_device else "").strip()
-
-        loja_raw    = "" if loja_raw.lower() in ("", "nan") else loja_raw
-        content_raw = "" if content_raw.lower() in ("", "nan") else content_raw
-
-        if not loja_raw and not content_raw:
+    for (campaign_val, device_val), grupo in df.groupby([col_campaign, col_device]):
+        campaign_val = str(campaign_val).strip()
+        device_val   = str(device_val).strip()
+        if not campaign_val or campaign_val.lower() == "nan":
             continue
 
-        # name = mídia/conteúdo (campanha exibida)
-        name = content_raw if content_raw else loja_raw
+        loja, tipo_midia = _parse_device(device_val)
 
-        # loja = filial/unidade
-        loja = loja_raw
-        if loja.lower().startswith("filial "):
-            loja = loja[7:].strip()
+        # Visitantes únicos
+        visitantes = (
+            grupo[col_visitor].nunique()
+            if col_visitor and col_visitor in grupo.columns
+            else len(grupo)
+        )
 
-        # tipo_midia: parte do device após " - " (quando vier "Filial X - Totem")
-        if device_val and " - " in device_val:
-            tipo_midia = device_val.split(" - ", 1)[1].strip()
-        else:
-            tipo_midia = device_val
+        # Atenção média: Contact Duration médio por contato único (sem duplicatas)
+        avg_attention = 0
+        if col_contact_id and col_contact_dur and col_contact_id in grupo.columns and col_contact_dur in grupo.columns:
+            try:
+                contatos_unicos = grupo.drop_duplicates(subset=[col_contact_id])[[col_contact_dur]]
+                avg_attention = int(
+                    pd.to_numeric(contatos_unicos[col_contact_dur], errors="coerce").mean() or 0
+                )
+            except Exception:
+                pass
+        elif col_contact_dur and col_contact_dur in grupo.columns:
+            try:
+                avg_attention = int(
+                    pd.to_numeric(grupo[col_contact_dur], errors="coerce").mean() or 0
+                )
+            except Exception:
+                pass
 
-        visitantes = grupo[col_visitor].nunique() if col_visitor else len(grupo)
-
+        # Datas
         start_date = end_date = None
-        if col_start:
+        if col_start and col_start in grupo.columns:
             try:
                 datas = pd.to_datetime(grupo[col_start], errors="coerce").dropna()
                 if not datas.empty:
                     start_date = datas.min().isoformat()
             except Exception:
                 pass
-        if col_end:
+        if col_end and col_end in grupo.columns:
             try:
                 datas_fim = pd.to_datetime(grupo[col_end], errors="coerce").dropna()
                 if not datas_fim.empty:
@@ -525,30 +506,24 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
             except Exception:
                 pass
 
+        # Duração (período da campanha no Device)
         duration_days = None
         duration_hms  = None
         if start_date and end_date:
             try:
-                delta = pd.to_datetime(end_date) - pd.to_datetime(start_date)
-                total_sec     = int(delta.total_seconds())
+                delta     = pd.to_datetime(end_date) - pd.to_datetime(start_date)
+                total_sec = int(delta.total_seconds())
                 duration_days = round(total_sec / 86400, 2)
                 hh = total_sec // 3600
                 mm = (total_sec % 3600) // 60
                 ss = total_sec % 60
-                duration_hms = f"{hh:02d}:{mm:02d}:{ss:02d}"
-            except Exception:
-                pass
-
-        avg_attention = 0
-        if col_duration:
-            try:
-                avg_attention = int(pd.to_numeric(grupo[col_duration], errors="coerce").mean() or 0)
+                duration_hms = f"{hh}:{mm:02d}:{ss:02d}"
             except Exception:
                 pass
 
         reg = {
             "client_id":         client_id,
-            "name":              name,
+            "name":              campaign_val,
             "tipo_midia":        tipo_midia,
             "loja":              loja,
             "start_date":        start_date,
@@ -560,6 +535,10 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
             "uploaded_at":       agora,
         }
         registros.append(reg)
+        log.info(
+            f"    → '{campaign_val}' | loja='{loja}' | tipo='{tipo_midia}' "
+            f"| visitantes={visitantes} | atenção={avg_attention}s"
+        )
 
     log.info(f"  {len(registros)} registros extraídos do Views CSV")
     return registros

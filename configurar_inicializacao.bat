@@ -1,8 +1,7 @@
 @echo off
 :: ============================================================
 ::  Configura o Bot DisplayForce para iniciar automaticamente
-::  com o Windows (via Agendador de Tarefas)
-::  Execute UMA VEZ como Administrador
+::  Metodo: pasta Startup do Windows (nao precisa de admin)
 :: ============================================================
 
 echo.
@@ -11,41 +10,38 @@ echo   Configurando inicio automatico do Bot
 echo  ================================================
 echo.
 
-:: Caminho absoluto do iniciar_bot.bat (mesma pasta deste script)
+:: Caminho do iniciar_bot.bat
 set "BOT_PATH=%~dp0iniciar_bot.bat"
-set "TASK_NAME=BotDisplayForce_PainelOperacoes"
 
-:: Remove tarefa anterior se existir
-schtasks /delete /tn "%TASK_NAME%" /f >nul 2>&1
+:: Pasta de inicializacao do Windows para o usuario atual
+set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 
-:: Cria a tarefa para iniciar no login do usuario atual
-schtasks /create ^
-  /tn "%TASK_NAME%" ^
-  /tr "cmd.exe /c start \"Bot DisplayForce\" \"%BOT_PATH%\"" ^
-  /sc ONLOGON ^
-  /ru "%USERNAME%" ^
-  /rl HIGHEST ^
-  /delay 0001:00 ^
-  /f
+:: Nome do atalho
+set "ATALHO=%STARTUP%\BotDisplayForce.bat"
+
+:: Copia o bat para a pasta de startup
+copy /Y "%BOT_PATH%" "%ATALHO%" >nul
 
 if %ERRORLEVEL% EQU 0 (
+    echo  [OK] Bot configurado para iniciar automaticamente!
     echo.
-    echo  [OK] Tarefa criada com sucesso!
+    echo  O bot vai iniciar sozinho toda vez que
+    echo  o Windows ligar.
     echo.
-    echo  O bot vai iniciar automaticamente toda vez que
-    echo  o Windows ligar, 1 minuto apos o login.
+    echo  Arquivo copiado para:
+    echo  %ATALHO%
     echo.
-    echo  Para verificar: abra o Agendador de Tarefas
-    echo  e procure por "%TASK_NAME%"
+    echo  Para REMOVER o inicio automatico, delete o arquivo:
+    echo  BotDisplayForce.bat  dentro da pasta:
+    echo  %STARTUP%
     echo.
-    echo  Para remover o inicio automatico, execute:
-    echo  schtasks /delete /tn "%TASK_NAME%" /f
+    echo  Iniciando o bot agora pela primeira vez...
     echo.
+    start "Bot DisplayForce" "%BOT_PATH%"
 ) else (
-    echo.
-    echo  [ERRO] Falha ao criar tarefa.
-    echo  Execute este arquivo como Administrador:
-    echo  clique direito ^> "Executar como administrador"
+    echo  [ERRO] Nao foi possivel copiar o arquivo.
+    echo  Tente manualmente: copie iniciar_bot.bat para:
+    echo  %STARTUP%
     echo.
 )
 
