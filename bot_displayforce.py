@@ -154,9 +154,34 @@ def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
+def _clientes_fallback() -> list[dict]:
+    """
+    Retorna clientes a partir da variável CLIENTES_FALLBACK no .env.
+    Formato: nome1|uuid1,nome2|uuid2
+    Exemplo: assai|c6999bd9-14c0-4e26-abb1-d4b8xxxx,panvel|b1c05e4d-0417-4853-9af9-8c0725df1880
+    """
+    raw = _env("CLIENTES_FALLBACK", "").strip()
+    if not raw:
+        return []
+    clientes = []
+    for item in raw.split(","):
+        item = item.strip()
+        if "|" not in item:
+            continue
+        nome, uid = item.split("|", 1)
+        nome = nome.strip()
+        uid  = uid.strip()
+        if nome and uid:
+            clientes.append({"id": uid, "name": nome, "status": "active"})
+    if clientes:
+        log.info(f"  📋 Clientes do fallback (.env): {[c['name'] for c in clientes]}")
+    return clientes
+
+
 def buscar_clientes() -> list[dict]:
-    sb = get_supabase()
+    # ── Tenta Supabase primeiro ────────────────────────────────
     try:
+        sb = get_supabase()
         for status in ("active", "ativo"):
             res = sb.table("clients").select("id, name, status").eq("status", status).execute()
             clientes = res.data or []
@@ -172,10 +197,16 @@ def buscar_clientes() -> list[dict]:
             return clientes
 
         log.warning("Nenhum cliente encontrado no Supabase.")
-        return []
     except Exception as e:
-        log.exception(f"Erro ao buscar clientes no Supabase: {e}")
-        return []
+        log.error(f"Erro ao buscar clientes no Supabase: {e}")
+
+    # ── Fallback: usa clientes hardcoded do .env ───────────────
+    fallback = _clientes_fallback()
+    if fallback:
+        return fallback
+
+    log.warning("Nenhum cliente ativo encontrado no Supabase.")
+    return []
 
 
 def upsert_campanhas(registros: list[dict]) -> int:
@@ -219,8 +250,31 @@ def upsert_campanhas(registros: list[dict]) -> int:
         log.info(f"  ✅ {count2} campanhas inseridas via fallback INSERT")
         return count2
     except Exception as e2:
-        log.exception(f"  ❌ Fallback INSERT também falhou: {e2}")
+        log.error(f"  ❌ Supabase indisponível — salvando dados localmente para reenvio posterior")
+        # Salva em arquivo JSON local para retentar quando Supabase voltar
+        import json as _json
+        pendente = DOWNLOAD_DIR / f"pendente_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+        pendente.write_text(_json.dumps(registros, ensure_ascii=False, default=str), encoding="utf-8")
+        log.warning(f"  💾 Dados salvos em: {pendente} — serão reenviados na próxima execução")
         return 0
+
+
+def _reenviar_pendentes() -> None:
+    """Tenta reenviar arquivos JSON pendentes para o Supabase."""
+    pendentes = list(DOWNLOAD_DIR.glob("pendente_*.json"))
+    if not pendentes:
+        return
+    log.info(f"  🔄 {len(pendentes)} arquivo(s) pendente(s) para reenvio...")
+    import json as _json
+    for arq in pendentes:
+        try:
+            registros = _json.loads(arq.read_text(encoding="utf-8"))
+            count = upsert_campanhas(registros)
+            if count > 0:
+                arq.unlink()
+                log.info(f"  ✅ Pendente reenviado e removido: {arq.name}")
+        except Exception as e:
+            log.warning(f"  ⚠️  Falha ao reenviar {arq.name}: {e}")
 
 
 # ──────────────────────────────────────────────────────────────
@@ -1450,9 +1504,12 @@ def executar_bot():
         log.info(f"🤖 Iniciando bot — {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
         log.info("=" * 60)
 
+        # Tenta reenviar dados que ficaram pendentes de execuções anteriores
+        _reenviar_pendentes()
+
         clientes = buscar_clientes()
         if not clientes:
-            log.warning("Nenhum cliente ativo encontrado no Supabase.")
+            log.warning("Nenhum cliente ativo encontrado. Configure CLIENTES_FALLBACK no .env")
             return
 
         data_inicio, data_fim = obter_periodo_atual()
