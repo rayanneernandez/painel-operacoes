@@ -100,7 +100,7 @@ if not SUPABASE_KEY:
 HORARIO_EXECUCAO  = _env("HORARIO_EXECUCAO", "07:00")
 DOWNLOAD_DIR      = Path("./downloads_displayforce")
 LOG_FILE          = "bot_displayforce.log"
-TIMEOUT_EMAIL_SEG = int(_env("TIMEOUT_EMAIL_SEG", "600"))
+TIMEOUT_EMAIL_SEG = int(_env("TIMEOUT_EMAIL_SEG", "1200"))  # 20 minutos
 HEADLESS          = _env("HEADLESS", "true").lower() == "true"
 
 try:
@@ -856,10 +856,13 @@ def _buscar_em_pasta(imap, pasta: str, apos_uid: int, nome_cliente: str = "") ->
                 log.info(f"    ⏭️  UID {uid} ignorado — de: '{remetente}' | assunto: '{assunto}'")
                 continue
 
-            # Filtro por cliente: se nome_cliente informado, remetente deve contê-lo
-            if nome_cliente and nome_cliente.lower() not in remetente:
-                log.info(f"    ⏭️  UID {uid} ignorado — remetente '{remetente}' não é do cliente '{nome_cliente}'")
-                continue
+            # Filtro por cliente: verifica remetente OU assunto
+            # (DisplayForce envia de noreply@displ.com mas menciona o cliente no assunto)
+            if nome_cliente:
+                nm = nome_cliente.strip().lower()
+                if nm not in remetente and nm not in assunto:
+                    log.info(f"    ⏭️  UID {uid} ignorado — '{nm}' não está em remetente='{remetente}' nem assunto='{assunto}'")
+                    continue
 
             log.info(f"  ✉️  DisplayForce detectado em '{pasta}' (UID {uid}) | assunto: '{assunto}'")
             resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
@@ -934,10 +937,12 @@ def _verificar_email_displayforce(apos_uid: int, nome_cliente: str = "") -> list
                         log.info(f"  ⏭️  UID {uid} ignorado (não é DisplayForce, sem anexo relevante)")
                         continue
 
-                    # Filtro por cliente: ignora e-mail de outro cliente
-                    if nome_cliente and nome_cliente.lower() not in remetente:
-                        log.info(f"  ⏭️  UID {uid} ignorado — remetente '{remetente}' não é do cliente '{nome_cliente}'")
-                        continue
+                    # Filtro por cliente: verifica remetente OU assunto
+                    if nome_cliente:
+                        nm = nome_cliente.strip().lower()
+                        if nm not in remetente and nm not in assunto:
+                            log.info(f"  ⏭️  UID {uid} ignorado — '{nm}' não está em remetente='{remetente}' nem assunto='{assunto}'")
+                            continue
 
                     if tem_anexo and not eh_displayforce:
                         log.info(f"  🔎 UID {uid}: tem anexo Excel/ZIP — tentando processar")
@@ -966,9 +971,12 @@ def _verificar_email_displayforce(apos_uid: int, nome_cliente: str = "") -> list
                             continue
                         msg2      = email.message_from_bytes(raw2)
                         remetente2 = str(msg2.get("From", "")).lower()
-                        if nome_cliente and nome_cliente.lower() not in remetente2:
-                            log.info(f"  ⏭️  UID {uid} (est.2) ignorado — remetente '{remetente2}' não é do cliente '{nome_cliente}'")
-                            continue
+                        assunto2   = str(msg2.get("Subject", "")).lower()
+                        if nome_cliente:
+                            nm2 = nome_cliente.strip().lower()
+                            if nm2 not in remetente2 and nm2 not in assunto2:
+                                log.info(f"  ⏭️  UID {uid} (est.2) ignorado — '{nm2}' não está em remetente='{remetente2}' nem assunto='{assunto2}'")
+                                continue
                     except Exception:
                         pass
                     resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
@@ -1003,9 +1011,11 @@ def _verificar_email_displayforce(apos_uid: int, nome_cliente: str = "") -> list
                         )
 
                         if tem_anexo or tem_link_relatorio:
-                            if nome_cliente and nome_cliente.lower() not in remetente:
-                                log.info(f"  ⏭️  UID {uid} (est.3) ignorado — remetente '{remetente}' não é do cliente '{nome_cliente}'")
-                                continue
+                            if nome_cliente:
+                                nm3 = nome_cliente.strip().lower()
+                                if nm3 not in remetente and nm3 not in assunto:
+                                    log.info(f"  ⏭️  UID {uid} (est.3) ignorado — '{nm3}' não está em remetente='{remetente}' nem assunto='{assunto}'")
+                                    continue
                             log.info(f"  🔎 Estratégia 3: UID {uid} | de: '{remetente}' | assunto: '{assunto}'")
                             resultado = _processar_msg_displayforce(imap, uid, use_uid=True)
                             if resultado:
@@ -1044,7 +1054,7 @@ def baixar_relatorio_email(timeout_seg: int = TIMEOUT_EMAIL_SEG, nome_cliente: s
                 return caminhos
         except Exception as e:
             log.warning(f"  Erro ao verificar e-mail: {e}")
-        time.sleep(15)
+        time.sleep(10)  # checa a cada 10s (era 15s)
 
     log.error(f"  ⏱️  Timeout: nenhum e-mail da DisplayForce recebido em {timeout_seg}s")
     return []
