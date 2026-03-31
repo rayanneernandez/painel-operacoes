@@ -32,7 +32,7 @@ from pathlib import Path
 
 import pandas as pd
 import requests
-from supabase import create_client, Client
+import requests as _requests
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
 # ──────────────────────────────────────────────────────────────
@@ -96,16 +96,6 @@ SUPABASE_KEY = _env("SUPABASE_KEY", "")
 if not SUPABASE_KEY:
     SUPABASE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY", "")
 
-# Bypass de proxy corporativo para o domínio do Supabase
-# Evita o erro "getaddrinfo failed" em redes com proxy
-import urllib.parse as _urlparse, os as _os
-_sb_host = _urlparse.urlparse(SUPABASE_URL).hostname or ""
-if _sb_host:
-    _no_proxy = _os.environ.get("NO_PROXY", _os.environ.get("no_proxy", ""))
-    if _sb_host not in _no_proxy:
-        _no_proxy_new = f"{_no_proxy},{_sb_host}" if _no_proxy else _sb_host
-        _os.environ["NO_PROXY"] = _no_proxy_new
-        _os.environ["no_proxy"] = _no_proxy_new
 
 # Configurações gerais
 HORARIO_EXECUCAO  = _env("HORARIO_EXECUCAO", "07:00")
@@ -115,11 +105,46 @@ TIMEOUT_EMAIL_SEG = int(_env("TIMEOUT_EMAIL_SEG", "1200"))  # 20 minutos
 HEADLESS          = _env("HEADLESS", "true").lower() == "true"
 
 
+def _sb_headers() -> dict:
+    """Headers padrão para chamadas REST ao Supabase."""
+    return {
+        "apikey":        SUPABASE_KEY,
+        "Authorization": f"Bearer {SUPABASE_KEY}",
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
+    }
+
+def _sb_get(table: str, params: dict | None = None) -> list:
+    """
+    GET na REST API do Supabase usando requests (lê proxy do Windows automaticamente).
+    Retorna lista de registros ou lança exceção.
+    """
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    r = _requests.get(url, headers=_sb_headers(), params=params, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+def _sb_post(table: str, payload: list | dict, on_conflict: str | None = None) -> list:
+    """
+    POST (upsert) na REST API do Supabase usando requests.
+    """
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    params = {}
+    prefer = "return=representation"
+    if on_conflict:
+        params["on_conflict"] = on_conflict
+        prefer = f"resolution=merge-duplicates,{prefer}"
+    headers = {**_sb_headers(), "Prefer": prefer}
+    r = _requests.post(url, headers=headers, params=params, json=payload, timeout=15)
+    r.raise_for_status()
+    return r.json() if r.text else []
+
+
 def carregar_config_supabase() -> None:
     """
     Lê o agendamento da tabela `bot_configs` no Supabase e aplica nos
-    valores globais. Credenciais de acesso ficam no .env e não são
-    alteradas por esta função.
+    valores globais. Credenciais de acesso ficam no .env.
+    Usa requests (lê proxy do Windows automaticamente).
     """
     global HORARIO_EXECUCAO, TIMEOUT_EMAIL_SEG
 
@@ -127,10 +152,8 @@ def carregar_config_supabase() -> None:
         log.info("  Supabase não configurado — usando agendamento do .env")
         return
     try:
-        from supabase import create_client
-        sb  = create_client(SUPABASE_URL, SUPABASE_KEY)
-        res = sb.table("bot_configs").select("horario_execucao, timeout_email_seg").limit(1).execute()
-        cfg = (res.data or [None])[0]
+        dados = _sb_get("bot_configs", {"select": "horario_execucao,timeout_email_seg", "limit": "1"})
+        cfg = dados[0] if dados else None
         if not cfg:
             log.info("  Nenhuma config de agendamento salva no Supabase — usando .env")
             return
@@ -194,23 +217,6 @@ def validar_config() -> bool:
 # SUPABASE — helpers
 # ──────────────────────────────────────────────────────────────
 
-def get_supabase() -> Client:
-    """
-    Cria cliente Supabase contornando proxy corporativo.
-    Define NO_PROXY para o domínio do Supabase antes de criar a conexão.
-    """
-    import os, urllib.parse
-    # Extrai o hostname do SUPABASE_URL para adicionar ao NO_PROXY
-    try:
-        host = urllib.parse.urlparse(SUPABASE_URL).hostname or ""
-        no_proxy_atual = os.environ.get("NO_PROXY", os.environ.get("no_proxy", ""))
-        if host and host not in no_proxy_atual:
-            novo_no_proxy = f"{no_proxy_atual},{host}" if no_proxy_atual else host
-            os.environ["NO_PROXY"] = novo_no_proxy
-            os.environ["no_proxy"] = novo_no_proxy
-    except Exception:
-        pass
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 def _clientes_fallback() -> list[dict]:
@@ -238,52 +244,42 @@ def _clientes_fallback() -> list[dict]:
 
 
 def buscar_clientes() -> list[dict]:
-    # ── Tenta Supabase primeiro ────────────────────────────────
+    """Busca clientes ativos no Supabase via REST (usa proxy do Windows automaticamente)."""
     try:
-        sb = get_supabase()
         for status in ("active", "ativo"):
-            res = sb.table("clients").select("id, name, status").eq("status", status).execute()
-            clientes = res.data or []
-            if clientes:
-                log.info(f"Clientes encontrados no Supabase (status={status}): {[c['name'] for c in clientes]}")
-                return clientes
+            dados = _sb_get("clients", {"select": "id,name,status", "status": f"eq.{status}"})
+            if dados:
+                log.info(f"Clientes encontrados no Supabase (status={status}): {[c['name'] for c in dados]}")
+                return dados
 
-        res = sb.table("clients").select("id, name, status").execute()
-        clientes = res.data or []
-        if clientes:
-            log.warning("Nenhum cliente com status 'active/ativo'. Usando todos os clientes.")
-            log.info(f"Clientes encontrados no Supabase: {[c['name'] for c in clientes]}")
-            return clientes
+        dados = _sb_get("clients", {"select": "id,name,status"})
+        if dados:
+            log.warning("Nenhum cliente com status 'active/ativo'. Usando todos.")
+            return dados
 
         log.warning("Nenhum cliente encontrado no Supabase.")
     except Exception as e:
         log.error(f"Erro ao buscar clientes no Supabase: {e}")
 
-    # ── Fallback: usa clientes hardcoded do .env ───────────────
     fallback = _clientes_fallback()
     if fallback:
         return fallback
 
-    log.warning("Nenhum cliente ativo encontrado no Supabase.")
+    log.warning("Nenhum cliente ativo encontrado.")
     return []
 
 
 def upsert_campanhas(registros: list[dict]) -> int:
+    """Salva campanhas no Supabase via REST. Em caso de falha, salva localmente."""
     if not registros:
         return 0
 
-    sb = get_supabase()
+    import json as _json
 
-    def _drop_keys(rows: list[dict], keys: set[str]) -> list[dict]:
+    def _drop_keys(rows: list[dict], keys: set) -> list[dict]:
         if not keys:
             return rows
-        out = []
-        for r in rows:
-            rr = dict(r)
-            for k in keys:
-                rr.pop(k, None)
-            out.append(rr)
-        return out
+        return [{k: v for k, v in r.items() if k not in keys} for r in rows]
 
     tentativas = [
         ("client_id,name,tipo_midia,loja", set()),
@@ -296,22 +292,21 @@ def upsert_campanhas(registros: list[dict]) -> int:
     for on_conflict, drop_keys in tentativas:
         try:
             payload = _drop_keys(registros, drop_keys)
-            res = sb.table("campaigns").upsert(payload, on_conflict=on_conflict).execute()
-            count = len(res.data) if res.data else len(payload)
+            resultado = _sb_post("campaigns", payload, on_conflict=on_conflict)
+            count = len(resultado) if resultado else len(payload)
             log.info(f"  ✅ {count} campanhas salvas no Supabase (on_conflict={on_conflict})")
             return count
         except Exception as e:
             log.warning(f"  Falha no upsert (on_conflict={on_conflict}): {e}")
 
+    # Fallback INSERT simples sem on_conflict
     try:
-        res2 = sb.table("campaigns").insert(registros, upsert=False).execute()
-        count2 = len(res2.data) if res2.data else len(registros)
+        resultado2 = _sb_post("campaigns", registros)
+        count2 = len(resultado2) if resultado2 else len(registros)
         log.info(f"  ✅ {count2} campanhas inseridas via fallback INSERT")
         return count2
     except Exception as e2:
         log.error(f"  ❌ Supabase indisponível — salvando dados localmente para reenvio posterior")
-        # Salva em arquivo JSON local para retentar quando Supabase voltar
-        import json as _json
         pendente = DOWNLOAD_DIR / f"pendente_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
         pendente.write_text(_json.dumps(registros, ensure_ascii=False, default=str), encoding="utf-8")
         log.warning(f"  💾 Dados salvos em: {pendente} — serão reenviados na próxima execução")

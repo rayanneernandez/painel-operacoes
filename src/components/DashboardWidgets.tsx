@@ -745,7 +745,7 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
 };
 
 // ── WidgetCampaigns ──────────────────────────────────────────────────────────
-export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string }) => {
+export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clientId?: string; lojaFilter?: string | null }) => {
   const [rows, setRows]         = React.useState<any[]>([]);
   const [loading, setLoading]   = React.useState(false);
   const [lastSync, setLastSync] = React.useState<string | null>(null);
@@ -754,21 +754,22 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
     if (!clientId) return;
     setLoading(true);
     import('../lib/supabase').then(({ default: supabase }) => {
-      supabase
+      let q = supabase
         .from('campaigns')
         .select('name,tipo_midia,loja,start_date,end_date,duration_days,duration_hms,visitors,avg_attention_sec,uploaded_at')
         .eq('client_id', clientId)
-        .order('visitors', { ascending: false })
-        .limit(500)
-        .then(({ data }) => {
-          setRows(data || []);
-          if (data && data.length > 0 && data[0].uploaded_at) {
-            setLastSync(new Date(data[0].uploaded_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }));
-          }
-          setLoading(false);
-        });
+        .order('start_date', { ascending: false })
+        .limit(500);
+      if (lojaFilter) q = (q as any).ilike('loja', `%${lojaFilter}%`);
+      q.then(({ data }: { data: any[] | null }) => {
+        setRows(data || []);
+        if (data && data.length > 0 && data[0].uploaded_at) {
+          setLastSync(new Date(data[0].uploaded_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }));
+        }
+        setLoading(false);
+      });
     });
-  }, [clientId]);
+  }, [clientId, lojaFilter]);
 
   React.useEffect(() => { fetchData(); }, [fetchData]);
 
@@ -824,8 +825,8 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
         </div>
       ) : rows.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
-          <p>Nenhuma campanha disponível.</p>
-          <p className="text-xs text-gray-600">Aguardando sincronização automática pelo bot.</p>
+          <p>{lojaFilter ? `Nenhuma campanha para a loja "${lojaFilter}".` : 'Nenhuma campanha disponível.'}</p>
+          {!lojaFilter && <p className="text-xs text-gray-600">Aguardando sincronização automática pelo bot.</p>}
         </div>
       ) : (
         <div className="flex-1 overflow-auto" style={{ minHeight: 0 }}>
