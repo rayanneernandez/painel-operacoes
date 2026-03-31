@@ -262,27 +262,33 @@ export function ClientDashboard() {
       const startDay = startIso.slice(0, 10);
       const endDay   = endIso.slice(0, 10);
 
-      // ── Filtro por dispositivo: sempre rebuild direto ──────────────────
+      // ── Filtro por dispositivo: tenta rebuild direto ──────────────────
       if (deviceIds.length > 0) {
-        const resp = await fetch('/api/sync-analytics', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
-        });
-        const json = resp.ok ? await resp.json() : null;
-        if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
-          applyRollup({
-            total_visitors:         json.dashboard.total_visitors,
-            avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
-            avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-            avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
-            visitors_per_day:       json.dashboard.visitors_per_day,
-            visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
-            gender_percent:         json.dashboard.gender_percent,
-            attributes_percent:     json.dashboard.attributes_percent,
-            age_pyramid_percent:    json.dashboard.age_pyramid_percent,
+        try {
+          const resp = await fetch('/api/sync-analytics', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
           });
-        } else { zeroAll(); }
-        return;
+          const json = resp.ok ? await resp.json() : null;
+          if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
+            applyRollup({
+              total_visitors:         json.dashboard.total_visitors,
+              avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
+              avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+              avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
+              visitors_per_day:       json.dashboard.visitors_per_day,
+              visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
+              gender_percent:         json.dashboard.gender_percent,
+              attributes_percent:     json.dashboard.attributes_percent,
+              age_pyramid_percent:    json.dashboard.age_pyramid_percent,
+            });
+            return;
+          }
+          // Dispositivos sem dados → não zeramos; continua para mostrar dados da rede
+          console.log('[loadData] Filtro por dispositivo retornou 0 — exibindo dados consolidados da rede');
+        } catch (e) {
+          console.warn('[loadData] Erro no filtro por dispositivo:', e);
+        }
       }
 
       // ── Rede global ────────────────────────────────────────────────────
