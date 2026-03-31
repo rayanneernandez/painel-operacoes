@@ -96,6 +96,17 @@ SUPABASE_KEY = _env("SUPABASE_KEY", "")
 if not SUPABASE_KEY:
     SUPABASE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY", "")
 
+# Bypass de proxy corporativo para o domínio do Supabase
+# Evita o erro "getaddrinfo failed" em redes com proxy
+import urllib.parse as _urlparse, os as _os
+_sb_host = _urlparse.urlparse(SUPABASE_URL).hostname or ""
+if _sb_host:
+    _no_proxy = _os.environ.get("NO_PROXY", _os.environ.get("no_proxy", ""))
+    if _sb_host not in _no_proxy:
+        _no_proxy_new = f"{_no_proxy},{_sb_host}" if _no_proxy else _sb_host
+        _os.environ["NO_PROXY"] = _no_proxy_new
+        _os.environ["no_proxy"] = _no_proxy_new
+
 # Configurações gerais
 HORARIO_EXECUCAO  = _env("HORARIO_EXECUCAO", "07:00")
 DOWNLOAD_DIR      = Path("./downloads_displayforce")
@@ -184,6 +195,21 @@ def validar_config() -> bool:
 # ──────────────────────────────────────────────────────────────
 
 def get_supabase() -> Client:
+    """
+    Cria cliente Supabase contornando proxy corporativo.
+    Define NO_PROXY para o domínio do Supabase antes de criar a conexão.
+    """
+    import os, urllib.parse
+    # Extrai o hostname do SUPABASE_URL para adicionar ao NO_PROXY
+    try:
+        host = urllib.parse.urlparse(SUPABASE_URL).hostname or ""
+        no_proxy_atual = os.environ.get("NO_PROXY", os.environ.get("no_proxy", ""))
+        if host and host not in no_proxy_atual:
+            novo_no_proxy = f"{no_proxy_atual},{host}" if no_proxy_atual else host
+            os.environ["NO_PROXY"] = novo_no_proxy
+            os.environ["no_proxy"] = novo_no_proxy
+    except Exception:
+        pass
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
 
@@ -1157,6 +1183,11 @@ def fazer_login_displayforce(page) -> bool:
         return True
 
     try:
+        # ── Aguarda página de login carregar completamente ────────────────
+        page.wait_for_load_state("networkidle", timeout=20000)
+        page.wait_for_timeout(2000)
+        _screenshot(page, "login_01_inicial", "login")
+
         # ── Campo de e-mail ───────────────────────────────────────────────
         inputs_visiveis = page.locator("input:visible").all()
         if not inputs_visiveis:
@@ -1164,10 +1195,11 @@ def fazer_login_displayforce(page) -> bool:
             return False
 
         log.info("  Usando primeiro input visível como campo de e-mail")
+        inputs_visiveis[0].click()
         inputs_visiveis[0].fill(DISPLAYFORCE_EMAIL)
-        page.wait_for_timeout(300)
+        page.wait_for_timeout(500)
 
-        # ── Login em 1 etapa (e-mail + senha na mesma tela) ───────────────
+        # ── Verifica se já tem campo de senha na mesma tela ───────────────
         senha_fields = page.locator("input[type='password']:visible").all()
         if senha_fields:
             log.info("  Login em 1 etapa: preenchendo senha diretamente")
@@ -1176,20 +1208,42 @@ def fazer_login_displayforce(page) -> bool:
         else:
             # ── Login em 2 etapas: clicar em "Próximo" primeiro ───────────
             log.info("  Login em 2 etapas: procurando botão Próximo/Continuar...")
-            btn_proximo = page.locator(
-                "button:visible"
-            ).filter(has_text=re.compile(r"próximo|proximo|next|continuar|continue|avançar", re.I)).first
+            btn_proximo = page.locator("button:visible").filter(
+                has_text=re.compile(r"próximo|proximo|next|continuar|continue|avançar", re.I)
+            ).first
             btn_proximo.click(timeout=5000)
             log.info("  Botão 'próximo' clicado")
-            page.wait_for_timeout(2000)
 
+            # Aguarda transição da página (networkidle ou campo de senha)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            page.wait_for_timeout(3000)
+            _screenshot(page, "login_02_apos_proximo", "login")
+
+            # Tenta localizar o campo de senha com timeout generoso
             senha_field = page.locator("input[type='password']:visible").first
-            senha_field.wait_for(state="visible", timeout=8000)
-            log.info("  Campo de senha apareceu (step 2)")
-            senha_field.fill(DISPLAYFORCE_PASS)
-            page.wait_for_timeout(300)
+            try:
+                senha_field.wait_for(state="visible", timeout=20000)
+                log.info("  Campo de senha apareceu (step 2)")
+                senha_field.fill(DISPLAYFORCE_PASS)
+                page.wait_for_timeout(500)
+            except Exception:
+                # Fallback: tenta preencher qualquer input vazio que não seja e-mail
+                log.warning("  Campo senha não encontrado pelo tipo — tentando fallback")
+                _screenshot(page, "login_03_sem_senha", "login")
+                todos_inputs = page.locator("input:visible").all()
+                for inp in todos_inputs:
+                    tp = (inp.get_attribute("type") or "text").lower()
+                    val = (inp.input_value() or "").strip()
+                    if tp in ("password", "text") and val == "":
+                        inp.fill(DISPLAYFORCE_PASS)
+                        log.info(f"  Senha preenchida via fallback (type={tp})")
+                        break
 
         # ── Botão de entrar ───────────────────────────────────────────────
+        _screenshot(page, "login_04_pre_submit", "login")
         btn_login = page.locator("button:visible").filter(
             has_text=re.compile(r"entrar|login|sign.?in|acessar|confirmar", re.I)
         ).first
