@@ -830,17 +830,26 @@ export function ClientDashboard() {
     }
   }, [id]);
 
-  const syncStoresFromServer = useCallback(async () => {
+  const syncStoresFromServer = useCallback(async (force = false) => {
     if (!id) return;
+    // Verifica se deve sincronizar: sempre na primeira vez, ou se forçado,
+    // ou se a última sync foi há mais de 30 minutos
+    const SYNC_TTL_MS = 30 * 60 * 1000;
+    const lastSync = Number(localStorage.getItem(`stores_synced_${id}`) || '0');
+    if (!force && Date.now() - lastSync < SYNC_TTL_MS) return;
+
     setIsSyncingStores(true);
     try {
       const resp = await fetch('/api/sync-analytics', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ client_id: id, sync_stores: true }),
       });
-      if (!resp.ok) return;
-      await resp.json();
-      await refreshClientAndStores();
+      const json = resp.ok ? await resp.json() : null;
+      if (json) {
+        console.log(`[Stores Sync] ${json.stores_upserted ?? 0} lojas, ${json.devices_upserted ?? 0} dispositivos sincronizados`);
+        localStorage.setItem(`stores_synced_${id}`, String(Date.now()));
+        await refreshClientAndStores(); // recarrega do banco após sync
+      }
     } catch (e) { console.warn('[Stores Sync] Erro:', e); }
     finally { setIsSyncingStores(false); }
   }, [id, refreshClientAndStores]);

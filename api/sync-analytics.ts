@@ -421,28 +421,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const ck = cfg.custom_header_key?.trim(); const cv = cfg.custom_header_value?.trim();
       if (ck && cv) headers[ck] = cv; else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
 
-      const fetchFF = async (url: string, body: any) => { let r = await fetch(`${url}?recursive=true&limit=100&offset=0`, { method: "GET", headers }); if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) }); return r; };
+      // Extrai array de qualquer estrutura de resposta da DisplayForce
+      // Suporta: { data:[] }, { payload:[] }, { results:[] }, { items:[] },
+      //          { data: { items:[] } }, { response:[] }, array direto
+      const extractArray = (json: any): any[] => {
+        if (Array.isArray(json)) return json;
+        if (Array.isArray(json?.data))    return json.data;
+        if (Array.isArray(json?.payload)) return json.payload;
+        if (Array.isArray(json?.results)) return json.results;
+        if (Array.isArray(json?.items))   return json.items;
+        if (Array.isArray(json?.response)) return json.response;
+        if (Array.isArray(json?.list))    return json.list;
+        if (Array.isArray(json?.data?.items))   return json.data.items;
+        if (Array.isArray(json?.data?.results)) return json.data.results;
+        return [];
+      };
 
-      const foldersResp = await fetchFF(`${base}/public/v1/folder/list`, { id:[], name:[], parent_ids:[], recursive:true, limit:100, offset:0 });
-      // Não propaga erros da API externa — retorna 200 com mensagem de aviso
-      if (!foldersResp.ok) {
-        const txt = await foldersResp.text();
-        console.warn(`[sync_stores] Folder list retornou ${foldersResp.status}:`, txt);
-        return ok(res, { message:`Erro ao buscar lojas da API (${foldersResp.status})`, stores_upserted:0, devices_upserted:0, api_error: txt });
-      }
-      const foldersJson = await foldersResp.json();
-      const folders = Array.isArray(foldersJson?.data) ? foldersJson.data : Array.isArray(foldersJson?.payload) ? foldersJson.payload : Array.isArray(foldersJson) ? foldersJson : [];
+      // Busca paginada de uma URL com suporte a GET e POST
+      const fetchAllPages = async (url: string, bodyBase: any): Promise<any[]> => {
+        const all: any[] = [];
+        let offset = 0; const limit = 500;
+        while (true) {
+          const body = { ...bodyBase, limit, offset };
+          let r = await fetch(`${url}?recursive=true&limit=${limit}&offset=${offset}`, { method: "GET", headers });
+          if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+          if (!r.ok) { console.warn(`[sync_stores] ${url} retornou ${r.status}`); break; }
+          const json = await r.json();
+          const page = extractArray(json);
+          if (page.length === 0) break;
+          all.push(...page);
+          const total = Number(json?.pagination?.total ?? json?.total ?? json?.count ?? 0);
+          if (page.length < limit || (total > 0 && all.length >= total)) break;
+          offset += limit;
+          if (offset > 10000) break; // segurança
+        }
+        return all;
+      };
 
-      const devicesResp = await fetchFF(`${base}/public/v1/device/list`, { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags"], limit:100, offset:0 });
-      if (!devicesResp.ok) {
-        const txt = await devicesResp.text();
-        console.warn(`[sync_stores] Device list retornou ${devicesResp.status}:`, txt);
-        return ok(res, { message:`Erro ao buscar dispositivos da API (${devicesResp.status})`, stores_upserted:0, devices_upserted:0, api_error: txt });
-      }
-      const devicesJson = await devicesResp.json();
-      const devicesData = Array.isArray(devicesJson?.data) ? devicesJson.data : Array.isArray(devicesJson?.payload) ? devicesJson.payload : Array.isArray(devicesJson) ? devicesJson : [];
+      const folders = await fetchAllPages(`${base}/public/v1/folder/list`,
+        { id:[], name:[], parent_ids:[], recursive:true });
+      console.log(`[sync_stores] Lojas encontradas: ${folders.length}`);
 
-      if (folders.length === 0) return ok(res, { message:"Nenhuma loja encontrada", stores_upserted:0, devices_upserted:0 });
+      const devicesData = await fetchAllPages(`${base}/public/v1/device/list`,
+        { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags","connection_state"] });
+      console.log(`[sync_stores] Dispositivos encontrados: ${devicesData.length}`);
+
+      if (folders.length === 0) return ok(res, { message:"Nenhuma loja encontrada na API DisplayForce", stores_upserted:0, devices_upserted:0 });
 
       const { data: dbStores } = await supabase.from("stores").select("id,name,city").eq("client_id", client_id);
       const nameToStore = new Map<string, { id:string; city?:string|null }>();
