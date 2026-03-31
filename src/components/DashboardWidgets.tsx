@@ -595,11 +595,11 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
 function DonutLikeGender({
   items,
   totalCount,
-  size = 180,
+  maxSize = 220,
 }: {
   items: { label: string; value: number; color: string; count?: number | null }[];
   totalCount?: number | null;
-  size?: number;
+  maxSize?: number;
 }) {
   const safe = (items || []).filter((x) => Number(x.value) > 0);
   const sum = safe.reduce((a, x) => a + (Number(x.value) || 0), 0) || 1;
@@ -626,8 +626,8 @@ function DonutLikeGender({
 
   return (
     <div className="flex flex-col items-center gap-3">
-      <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
-        <svg viewBox="0 0 100 100" width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+      <div className="relative w-full mx-auto" style={{ width: `min(100%, ${maxSize}px)`, aspectRatio: '1 / 1' }}>
+        <svg viewBox="0 0 100 100" width="100%" height="100%" style={{ transform: 'rotate(-90deg)' }}>
           {arcs.map((arc, i) => (
             <circle
               key={i}
