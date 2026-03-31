@@ -595,14 +595,14 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
 function DonutLikeGender({
   items,
   totalCount,
-  maxSize = 260,
+  maxSize = 200,
 }: {
   items: { label: string; value: number; color: string; count?: number | null }[];
   totalCount?: number | null;
   maxSize?: number;
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
-  const [hover, setHover] = React.useState<null | { label: string; pct: number; color: string; count: number | null; x: number; y: number }>(null);
+  const [hover, setHover] = React.useState<null | { label: string; pct: number; color: string; count: number | null; x: number; y: number; cx: number; cy: number }>(null);
 
   const safe = (items || []).filter((x) => Number(x.value) > 0);
   const sum = safe.reduce((a, x) => a + (Number(x.value) || 0), 0) || 1;
@@ -665,7 +665,7 @@ function DonutLikeGender({
       setHover(null);
       return;
     }
-    setHover(seg);
+    setHover({ ...seg, cx: e.clientX, cy: e.clientY });
   };
 
   const onLeave = () => setHover(null);
@@ -675,7 +675,7 @@ function DonutLikeGender({
       <div
         ref={wrapRef}
         className="relative w-full mx-auto"
-        style={{ width: `min(100%, ${maxSize}px)`, aspectRatio: '1 / 1' }}
+        style={{ width: `min(100%, ${maxSize}px)`, height: `min(100%, ${maxSize}px)` }}
         onMouseMove={onMove}
         onMouseLeave={onLeave}
       >
@@ -706,8 +706,8 @@ function DonutLikeGender({
 
         {hover && (
           <div
-            className="absolute z-20 bg-gray-950 border border-gray-700 text-white text-[11px] px-2 py-1 rounded-md whitespace-nowrap pointer-events-none"
-            style={{ left: hover.x, top: hover.y, transform: 'translate(12px, 12px)' }}
+            className="fixed z-50 bg-gray-950 border border-gray-700 text-white text-[11px] px-2 py-1 rounded-md whitespace-nowrap pointer-events-none"
+            style={{ left: hover.cx, top: hover.cy, transform: 'translate(12px, 12px)' }}
           >
             <div className="font-semibold" style={{ color: hover.color }}>{hover.label}</div>
             <div className="text-gray-300">
