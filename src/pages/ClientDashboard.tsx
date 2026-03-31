@@ -262,7 +262,9 @@ export function ClientDashboard() {
       const startDay = startIso.slice(0, 10);
       const endDay   = endIso.slice(0, 10);
 
-      // ── Filtro por dispositivo: tenta rebuild direto ──────────────────
+      // ── Filtro por dispositivo (loja selecionada com dispositivos) ───────
+      // Se há IDs de dispositivo, filtra exclusivamente por eles.
+      // Mostra zeros se não houver dados — NÃO cai nos dados da rede global.
       if (deviceIds.length > 0) {
         try {
           const resp = await fetch('/api/sync-analytics', {
@@ -282,13 +284,16 @@ export function ClientDashboard() {
               attributes_percent:     json.dashboard.attributes_percent,
               age_pyramid_percent:    json.dashboard.age_pyramid_percent,
             });
-            return;
+          } else {
+            // Sem dados para esses dispositivos no período → exibe zeros
+            console.log('[loadData] Sem dados para os dispositivos da loja:', deviceIds);
+            zeroAll();
           }
-          // Dispositivos sem dados → não zeramos; continua para mostrar dados da rede
-          console.log('[loadData] Filtro por dispositivo retornou 0 — exibindo dados consolidados da rede');
         } catch (e) {
           console.warn('[loadData] Erro no filtro por dispositivo:', e);
+          zeroAll();
         }
+        return;
       }
 
       // ── Rede global ────────────────────────────────────────────────────
@@ -649,28 +654,53 @@ export function ClientDashboard() {
 
   const loadWeekFlowData = useCallback(async () => {
     if (!id) return;
-    // Calcula seg→dom da semana atual
-    const end = new Date(selectedEndDate); end.setUTCHours(23, 59, 59, 999);
-    const dow = end.getUTCDay(); const offset = (dow + 6) % 7;
-    const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() - offset, 0, 0, 0, 0));
-    const startIso = start.toISOString();
-    const endIso   = end.toISOString();
-    const startDay = start.toISOString().slice(0, 10);
-    const endDay   = end.toISOString().slice(0, 10);
 
+    // ── Determina o intervalo de datas ────────────────────────────────────
+    // Se um período de mais de 1 dia foi selecionado → usa o período completo.
+    // Se apenas um dia → mostra a semana inteira daquele dia (Seg→Dom).
+    const isMultiDay = selectedStartDate.toDateString() !== selectedEndDate.toDateString();
+
+    let startIso: string, endIso: string, startDay: string, endDay: string;
+    if (isMultiDay) {
+      const s = new Date(selectedStartDate); s.setUTCHours(0, 0, 0, 0);
+      const e = new Date(selectedEndDate);   e.setUTCHours(23, 59, 59, 999);
+      startIso = s.toISOString();
+      endIso   = e.toISOString();
+      startDay = s.toISOString().slice(0, 10);
+      endDay   = e.toISOString().slice(0, 10);
+    } else {
+      // Dia único: calcula a semana (Seg→Dom) do dia selecionado
+      const end = new Date(selectedEndDate); end.setUTCHours(23, 59, 59, 999);
+      const dow = end.getUTCDay(); const offset = (dow + 6) % 7;
+      const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() - offset, 0, 0, 0, 0));
+      startIso = start.toISOString();
+      endIso   = end.toISOString();
+      startDay = start.toISOString().slice(0, 10);
+      endDay   = end.toISOString().slice(0, 10);
+    }
+
+    // ── Agrega visitors_per_day por dia da semana ─────────────────────────
+    // Período = 1 semana → totais por dia.
+    // Período > 1 semana → MÉDIA por ocorrência de cada dia da semana.
     const toWeekDays = (vpd: Record<string, number>) => {
-      const days = [0, 0, 0, 0, 0, 0, 0];
+      const totals = [0, 0, 0, 0, 0, 0, 0];
+      const counts = [0, 0, 0, 0, 0, 0, 0];
       Object.entries(vpd || {}).forEach(([dateStr, count]) => {
-        const d = new Date(dateStr); if (isNaN(d.getTime())) return;
-        const ud = d.getUTCDay(); const idx = ud === 0 ? 6 : ud - 1;
-        days[idx] += Number(count) || 0;
+        const d = new Date(dateStr + 'T00:00:00Z');
+        if (isNaN(d.getTime())) return;
+        const ud = d.getUTCDay();
+        const idx = ud === 0 ? 6 : ud - 1;
+        totals[idx] += Number(count) || 0;
+        counts[idx] += 1;
       });
-      return days;
+      if (!isMultiDay) return totals;
+      // Período com múltiplos dias: retorna média por dia da semana
+      return totals.map((total, i) => counts[i] > 0 ? Math.round(total / counts[i]) : 0);
     };
 
     try {
       if (deviceIds.length === 0) {
-        // Busca TODOS os rollups que se sobrepõem à semana atual
+        // ── Rede global (sem filtro de dispositivo) ───────────────────────
         const { data: rollups } = await supabase
           .from('visitor_analytics_rollups')
           .select('visitors_per_day')
@@ -679,10 +709,9 @@ export function ClientDashboard() {
           .gte('end', startIso)
           .gt('total_visitors', 0)
           .order('updated_at', { ascending: false })
-          .limit(10);
+          .limit(isMultiDay ? 30 : 10);  // mais rollups para períodos longos
 
         if (rollups && rollups.length > 0) {
-          // Mescla visitors_per_day filtrando apenas os dias da semana
           const mergedVpd: Record<string, number> = {};
           for (const r of rollups) {
             const vpd: Record<string, number> = (r as any).visitors_per_day ?? {};
@@ -698,13 +727,14 @@ export function ClientDashboard() {
             return;
           }
         }
-        // Sem dados na semana — zera o gráfico
         setDailyStats([0, 0, 0, 0, 0, 0, 0]);
         return;
       }
 
-      // Filtro por dispositivo — lê direto do banco
-      const days = [0, 0, 0, 0, 0, 0, 0]; let from = 0; const page = 1000;
+      // ── Filtro por dispositivo (loja selecionada) ─────────────────────
+      const days = [0, 0, 0, 0, 0, 0, 0];
+      const occurrences = [0, 0, 0, 0, 0, 0, 0]; // para calcular média quando multi-dia
+      let from = 0; const page = 1000;
       while (true) {
         const { data, error } = await supabase.from('visitor_analytics').select('timestamp')
           .eq('client_id', id).gte('timestamp', startIso).lte('timestamp', endIso)
@@ -712,17 +742,31 @@ export function ClientDashboard() {
         if (error || !data || data.length === 0) break;
         (data as any[]).forEach((r: any) => {
           const t = new Date(r.timestamp); if (isNaN(t.getTime())) return;
-          const ud = t.getUTCDay(); days[ud === 0 ? 6 : ud - 1] += 1;
+          const ud = t.getUTCDay(); const idx = ud === 0 ? 6 : ud - 1;
+          days[idx] += 1;
         });
         if (data.length < page) break;
         from += page; if (from > 20000) break;
       }
-      setDailyStats(days);
+
+      if (isMultiDay) {
+        // Conta quantas vezes cada dia da semana aparece no período
+        let cur = new Date(startDay + 'T00:00:00Z');
+        const endD = new Date(endDay + 'T00:00:00Z');
+        while (cur <= endD) {
+          const ud = cur.getUTCDay(); const idx = ud === 0 ? 6 : ud - 1;
+          occurrences[idx] += 1;
+          cur = new Date(cur.getTime() + 86400000);
+        }
+        setDailyStats(days.map((total, i) => occurrences[i] > 0 ? Math.round(total / occurrences[i]) : 0));
+      } else {
+        setDailyStats(days);
+      }
     } catch (e) {
       console.warn('[Dashboard] Erro semana:', e);
       setDailyStats([0, 0, 0, 0, 0, 0, 0]);
     }
-  }, [id, selectedEndDate, deviceIds]);
+  }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
   useEffect(() => { loadWeekFlowData(); }, [loadWeekFlowData]);
   useEffect(() => { loadQuarterData(); }, [loadQuarterData]);
