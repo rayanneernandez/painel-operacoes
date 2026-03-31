@@ -572,62 +572,99 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
   const maleCount = totalCount ? Math.round((malePct / 100) * totalCount) : null;
   const femCount  = totalCount ? Math.round((femPct  / 100) * totalCount) : null;
   const indCount  = totalCount ? Math.round((indPct  / 100) * totalCount) : null;
-  const segments = [
-    { label: 'Masculino', pct: malePct, color: CJ.male,    count: maleCount },
-    { label: 'Feminino',  pct: femPct,  color: CJ.female,  count: femCount  },
-    ...(indPct > 0 ? [{ label: 'Indefinido', pct: indPct, color: '#10b981', count: indCount }] : []),
-  ].filter(s => s.pct > 0);
 
-  const hasData = segments.length > 0;
-  const radius = 40; const circ = 2 * Math.PI * radius;
-  let arcOffset = 0;
-  const arcs = segments.map(s => {
-    const dash = (s.pct / 100) * circ;
-    const arc = { ...s, dash, offset: arcOffset };
-    arcOffset += dash; return arc;
-  });
+  const items = [
+    { label: 'Masculino', value: malePct, color: CJ.male,   count: maleCount },
+    { label: 'Feminino',  value: femPct,  color: CJ.female, count: femCount  },
+    ...(indPct > 0 ? [{ label: 'Indefinido', value: indPct, color: '#10b981', count: indCount }] : []),
+  ].filter(s => Number(s.value) > 0);
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 flex items-center gap-2 uppercase text-xs tracking-wider">
         <Users size={14} className="text-pink-500" />Gênero
       </h3>
-      {!hasData
+      {items.length === 0
         ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : <div className="flex flex-col items-center gap-3">
-            {/* Donut maior — mesmo porte do AgePyramid */}
-            <div className="relative flex-shrink-0" style={{ width: 180, height: 180 }}>
-              <svg viewBox="0 0 100 100" width="180" height="180" style={{ transform: 'rotate(-90deg)' }}>
-                {arcs.map((arc, i) => (
-                  <circle key={i} cx="50" cy="50" r={radius} fill="none" stroke={arc.color}
-                    strokeWidth="15" strokeDasharray={`${arc.dash} ${circ}`} strokeDashoffset={-arc.offset} />
-                ))}
-              </svg>
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                <span className="text-2xl font-bold text-white leading-none">{segments[0]?.pct ?? 0}%</span>
-                <span className="text-[11px] text-gray-400 mt-1">{segments[0]?.label ?? ''}</span>
-              </div>
-            </div>
-            {/* Legenda sutil */}
-            <div className="flex justify-center gap-5">
-              {segments.map((s, i) => (
-                <div key={i} className="group relative flex items-center gap-1.5 cursor-default">
-                  <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.color }} />
-                  <span className="text-[11px] text-gray-400">{s.label}</span>
-                  <span className="text-[11px] font-semibold" style={{ color: s.color }}>{s.pct}%</span>
-                  {s.count != null && (
-                    <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-950 border border-gray-700 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                      {s.count.toLocaleString()} visitantes
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-          </div>
+        : <DonutLikeGender items={items} totalCount={totalCount} />
       }
     </div>
   );
 };
+
+function DonutLikeGender({
+  items,
+  totalCount,
+  size = 180,
+}: {
+  items: { label: string; value: number; color: string; count?: number | null }[];
+  totalCount?: number | null;
+  size?: number;
+}) {
+  const safe = (items || []).filter((x) => Number(x.value) > 0);
+  const sum = safe.reduce((a, x) => a + (Number(x.value) || 0), 0) || 1;
+  const isPct = sum <= 101;
+  const segments = safe
+    .map((x) => ({
+      label: x.label,
+      color: x.color,
+      pct: isPct ? Math.round(Number(x.value) || 0) : Math.round(((Number(x.value) || 0) / sum) * 100),
+      count: x.count ?? (totalCount ? Math.round(((isPct ? (Number(x.value) || 0) : ((Number(x.value) || 0) / sum) * 100) / 100) * totalCount) : null),
+    }))
+    .filter((x) => x.pct > 0)
+    .sort((a, b) => b.pct - a.pct);
+
+  const radius = 40;
+  const circ = 2 * Math.PI * radius;
+  let arcOffset = 0;
+  const arcs = segments.map((s) => {
+    const dash = (s.pct / 100) * circ;
+    const arc = { ...s, dash, offset: arcOffset };
+    arcOffset += dash;
+    return arc;
+  });
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+        <svg viewBox="0 0 100 100" width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+          {arcs.map((arc, i) => (
+            <circle
+              key={i}
+              cx="50"
+              cy="50"
+              r={radius}
+              fill="none"
+              stroke={arc.color}
+              strokeWidth="15"
+              strokeDasharray={`${arc.dash} ${circ}`}
+              strokeDashoffset={-arc.offset}
+            />
+          ))}
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+          <span className="text-2xl font-bold text-white leading-none">{segments[0]?.pct ?? 0}%</span>
+          <span className="text-[11px] text-gray-400 mt-1">{segments[0]?.label ?? ''}</span>
+        </div>
+      </div>
+
+      <div className="flex justify-center gap-5 flex-wrap">
+        {segments.map((s, i) => (
+          <div key={i} className="group relative flex items-center gap-1.5 cursor-default">
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.color }} />
+            <span className="text-[11px] text-gray-400">{s.label}</span>
+            <span className="text-[11px] font-semibold" style={{ color: s.color }}>{s.pct}%</span>
+            {s.count != null && (
+              <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-950 border border-gray-700 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                {s.count.toLocaleString()} visitantes
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 // ── WidgetAttributes ─────────────────────────────────────────────────────────
 export const WidgetAttributes = ({ attrData }: { view?: string; attrData?: { label: string; value: number }[] }) => {
@@ -660,19 +697,9 @@ export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Visão</h3>
-      {items.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : items.length === 1 ? <AttrBarList items={items} />
-        : <ChartDonut
-            labels={items.map(x=>x.label)}
-            values={items.map(x=>x.value)}
-            colors={items.map(x=>x.color)}
-            height={140}
-            cutout="72%"
-            rotation={-90}
-            circumference={180}
-            showCenter
-            legendVariant="dot"
-          />}
+      {items.length === 0
+        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <DonutLikeGender items={items} />}
     </div>
   );
 };
@@ -692,18 +719,9 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Pelos Faciais</h3>
-      {items.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : items.length === 1 ? <AttrBarList items={items} />
-        : <ChartDonut
-            labels={items.map(x=>x.label)}
-            values={items.map(x=>x.value)}
-            colors={items.map(x=>x.color)}
-            cutout="78%"
-            borderWidth={1}
-            hoverOffset={10}
-            showCenter
-            legendVariant="square"
-          />}
+      {items.length === 0
+        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <DonutLikeGender items={items} />}
     </div>
   );
 };
@@ -711,12 +729,13 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
 // ── WidgetHairType ───────────────────────────────────────────────────────────
 export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: string; value: number }[] }) => {
   const { labels, values, colors } = mapHairData(hairTypeData, HAIR_TYPE_MAP);
+  const items = labels.map((l, i) => ({ label: l, value: values[i], color: colors[i] }));
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Tipo de Cabelo</h3>
-      {labels.length === 0 ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : labels.length === 1 ? <AttrBarList items={labels.map((l,i)=>({ label:l, value:values[i], color:colors[i] }))} />
-        : <ChartDonut labels={labels} values={values} colors={colors} cutout="58%" borderWidth={3} hoverOffset={12} legendVariant="dot" />}
+      {items.length === 0
+        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <DonutLikeGender items={items} />}
     </div>
   );
 };
@@ -736,10 +755,8 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Cor de Cabelo</h3>
       {finalItems.length === 0
-        ? <div style={{ height: 120 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : finalItems.length === 1
-          ? <AttrBarList items={finalItems} />
-          : <ChartPie labels={finalItems.map(x=>x.label)} values={finalItems.map(x=>x.value)} colors={finalItems.map(x=>x.color)} height={180} />}
+        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <DonutLikeGender items={finalItems} />}
     </div>
   );
 };
