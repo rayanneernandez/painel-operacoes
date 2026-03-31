@@ -595,26 +595,29 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
 function DonutLikeGender({
   items,
   totalCount,
-  maxSize = 220,
+  maxSize = 260,
 }: {
   items: { label: string; value: number; color: string; count?: number | null }[];
   totalCount?: number | null;
   maxSize?: number;
 }) {
+  const wrapRef = React.useRef<HTMLDivElement>(null);
+  const [hover, setHover] = React.useState<null | { label: string; pct: number; color: string; count: number | null; x: number; y: number }>(null);
+
   const safe = (items || []).filter((x) => Number(x.value) > 0);
   const sum = safe.reduce((a, x) => a + (Number(x.value) || 0), 0) || 1;
   const isPct = sum <= 101;
   const segments = safe
-    .map((x) => ({
-      label: x.label,
-      color: x.color,
-      pct: isPct ? Math.round(Number(x.value) || 0) : Math.round(((Number(x.value) || 0) / sum) * 100),
-      count: x.count ?? (totalCount ? Math.round(((isPct ? (Number(x.value) || 0) : ((Number(x.value) || 0) / sum) * 100) / 100) * totalCount) : null),
-    }))
+    .map((x) => {
+      const pct = isPct ? Math.round(Number(x.value) || 0) : Math.round(((Number(x.value) || 0) / sum) * 100);
+      const count = x.count ?? (totalCount ? Math.round((pct / 100) * totalCount) : null);
+      return { label: x.label, color: x.color, pct, count };
+    })
     .filter((x) => x.pct > 0)
     .sort((a, b) => b.pct - a.pct);
 
   const radius = 40;
+  const stroke = 15;
   const circ = 2 * Math.PI * radius;
   let arcOffset = 0;
   const arcs = segments.map((s) => {
@@ -624,28 +627,94 @@ function DonutLikeGender({
     return arc;
   });
 
+  const pickSegmentAt = (clientX: number, clientY: number) => {
+    const el = wrapRef.current;
+    if (!el) return null;
+    const rect = el.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+
+    const nx = (x / rect.width) * 100;
+    const ny = (y / rect.height) * 100;
+    const dx = nx - 50;
+    const dy = ny - 50;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    const inner = radius - stroke / 2;
+    const outer = radius + stroke / 2;
+    if (dist < inner || dist > outer) return null;
+
+    const deg = (Math.atan2(dy, dx) * 180) / Math.PI;
+    const angle = (deg + 450) % 360;
+
+    let acc = 0;
+    for (const s of segments) {
+      const span = (s.pct / 100) * 360;
+      if (angle >= acc && angle < acc + span) return { ...s, x, y };
+      acc += span;
+    }
+    return segments.length > 0 ? { ...segments[segments.length - 1], x, y } : null;
+  };
+
+  const onMove = (e: React.MouseEvent) => {
+    if (segments.length === 0) return;
+    const seg = pickSegmentAt(e.clientX, e.clientY);
+    if (!seg) {
+      setHover(null);
+      return;
+    }
+    setHover(seg);
+  };
+
+  const onLeave = () => setHover(null);
+
   return (
     <div className="flex flex-col items-center gap-3">
-      <div className="relative w-full mx-auto" style={{ width: `min(100%, ${maxSize}px)`, aspectRatio: '1 / 1' }}>
+      <div
+        ref={wrapRef}
+        className="relative w-full mx-auto"
+        style={{ width: `min(100%, ${maxSize}px)`, aspectRatio: '1 / 1' }}
+        onMouseMove={onMove}
+        onMouseLeave={onLeave}
+      >
         <svg viewBox="0 0 100 100" width="100%" height="100%" style={{ transform: 'rotate(-90deg)' }}>
-          {arcs.map((arc, i) => (
-            <circle
-              key={i}
-              cx="50"
-              cy="50"
-              r={radius}
-              fill="none"
-              stroke={arc.color}
-              strokeWidth="15"
-              strokeDasharray={`${arc.dash} ${circ}`}
-              strokeDashoffset={-arc.offset}
-            />
-          ))}
+          {arcs.map((arc, i) => {
+            const active = hover?.label === arc.label;
+            return (
+              <circle
+                key={i}
+                cx="50"
+                cy="50"
+                r={radius}
+                fill="none"
+                stroke={arc.color}
+                strokeWidth={active ? 17 : 15}
+                strokeOpacity={hover ? (active ? 1 : 0.65) : 1}
+                strokeDasharray={`${arc.dash} ${circ}`}
+                strokeDashoffset={-arc.offset}
+              />
+            );
+          })}
         </svg>
+
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
           <span className="text-2xl font-bold text-white leading-none">{segments[0]?.pct ?? 0}%</span>
           <span className="text-[11px] text-gray-400 mt-1">{segments[0]?.label ?? ''}</span>
         </div>
+
+        {hover && (
+          <div
+            className="absolute z-20 bg-gray-950 border border-gray-700 text-white text-[11px] px-2 py-1 rounded-md whitespace-nowrap pointer-events-none"
+            style={{ left: hover.x, top: hover.y, transform: 'translate(12px, 12px)' }}
+          >
+            <div className="font-semibold" style={{ color: hover.color }}>{hover.label}</div>
+            <div className="text-gray-300">
+              {hover.pct}%{hover.count != null ? ` • ${hover.count.toLocaleString()} visitantes` : ''}
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex justify-center gap-5 flex-wrap">
