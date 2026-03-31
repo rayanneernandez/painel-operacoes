@@ -1239,11 +1239,38 @@ def fazer_login_displayforce(page) -> bool:
 
         # ── Botão de entrar ───────────────────────────────────────────────
         _screenshot(page, "login_04_pre_submit", "login")
-        btn_login = page.locator("button:visible").filter(
-            has_text=re.compile(r"entrar|login|sign.?in|acessar|confirmar", re.I)
-        ).first
-        btn_login.click(timeout=5000)
-        log.info(f"  Botão de login clicado")
+        clicou_login = False
+        # Tenta vários padrões de texto para o botão de login
+        padroes_login = [
+            r"entrar|login|sign.?in|acessar|confirmar",
+            r"continuar|continue|next|próximo",
+            r"submit|enviar",
+        ]
+        for padrao in padroes_login:
+            try:
+                btn_login = page.locator("button:visible").filter(
+                    has_text=re.compile(padrao, re.I)
+                ).first
+                if btn_login.is_visible(timeout=2000):
+                    btn_login.click(timeout=3000)
+                    clicou_login = True
+                    log.info(f"  ✔ Botão de login clicado (padrão: '{padrao}')")
+                    break
+            except Exception:
+                continue
+        if not clicou_login:
+            # Fallback: tenta qualquer button:visible ou pressiona Enter
+            try:
+                btns = page.locator("button:visible").all()
+                if btns:
+                    btns[-1].click(timeout=2000)
+                    clicou_login = True
+                    log.info("  ✔ Botão de login clicado (último botão visível)")
+            except Exception:
+                pass
+        if not clicou_login:
+            page.keyboard.press("Enter")
+            log.info("  ✔ Enter pressionado como fallback de login")
 
         page.wait_for_load_state("networkidle", timeout=20000)
         page.wait_for_timeout(3000)
@@ -1379,8 +1406,9 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
         _screenshot(page, "10_modal_email", nome_cliente)
 
         # ── 6. Inserir e-mail manualmente ─────────────────────────────────
-        # O modal do DisplayForce tem uma lista de e-mails pré-configurados
-        # e uma opção para inserir manualmente. Tentamos múltiplas variações de texto.
+        # O modal exibe um DROPDOWN com e-mails pré-configurados.
+        # Para usar outro e-mail, é preciso marcar o CHECKBOX "Inserir email manualmente".
+        # O checkbox pode ser um <input type='checkbox'> ou um <label> clicável.
         _screenshot(page, "10_modal_aberto", nome_cliente)
 
         # Loga tudo que está visível no modal para diagnóstico
@@ -1390,40 +1418,61 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
         log.info(f"  📋 Modal aberto — inputs visíveis: {inputs_antes}")
 
         clicou_manual = False
-        textos_manual = [
-            r"inserir.?e?-?mail.?manualmente",
-            r"inserir.?manualmente",
+
+        # Estratégia 1: clica no LABEL "Inserir email manualmente" (mais comum no DisplayForce)
+        textos_label = [
+            r"inserir.{0,10}e?-?mail.{0,10}manualmente",
+            r"inserir.{0,10}manualmente",
             r"manual",
-            r"add.?e?-?mail",
-            r"adicionar.?e?-?mail",
-            r"novo.?e?-?mail",
-            r"digitar.?e?-?mail",
-            r"outro.?e?-?mail",
+            r"add.{0,10}e?-?mail",
+            r"digitar.{0,10}e?-?mail",
         ]
-        for texto in textos_manual:
+        seletores_clicaveis = (
+            "label:visible, "
+            "button:visible, "
+            "a:visible, "
+            "span:visible, "
+            "div[role='checkbox']:visible, "
+            "div[role='button']:visible, "
+            "p:visible"
+        )
+        for texto in textos_label:
+            if clicou_manual:
+                break
             try:
-                btn = page.locator("button:visible, a:visible, span:visible, div:visible").filter(
+                el = page.locator(seletores_clicaveis).filter(
                     has_text=re.compile(texto, re.I)
                 ).first
-                if btn.is_visible(timeout=2000):
-                    btn.click()
+                if el.is_visible(timeout=1500):
+                    el.click()
                     clicou_manual = True
-                    log.info(f"  ✔ Clicado botão manual com padrão: '{texto}'")
-                    page.wait_for_timeout(1000)
-                    break
+                    log.info(f"  ✔ Clicado elemento 'Inserir manualmente' com padrão: '{texto}'")
+                    page.wait_for_timeout(2000)  # aguarda campo de e-mail aparecer
             except Exception:
                 continue
 
+        # Estratégia 2: procura input[type='checkbox'] próximo ao texto
         if not clicou_manual:
-            log.info("  ℹ️  Botão 'Inserir email manualmente' não encontrado — tentando encontrar input direto")
+            try:
+                chk = page.locator("input[type='checkbox']:visible").first
+                if chk.is_visible(timeout=1500):
+                    chk.click()
+                    clicou_manual = True
+                    log.info("  ✔ Checkbox clicado (estratégia 2)")
+                    page.wait_for_timeout(2000)
+            except Exception:
+                pass
+
+        if not clicou_manual:
+            log.info("  ℹ️  Checkbox 'Inserir email manualmente' não encontrado — tentando encontrar input direto")
 
         _screenshot(page, "10b_apos_inserir_manual", nome_cliente)
 
-        # Loga estado do modal após tentar clicar em manual
+        # Loga estado do modal após tentar clicar no checkbox
         btns_apos = [el.inner_text().strip() for el in page.locator("button:visible, a:visible").all() if el.inner_text().strip()]
         inputs_apos = [(el.get_attribute("type") or "text", el.get_attribute("placeholder") or "", el.get_attribute("value") or "") for el in page.locator("input:visible").all()]
-        log.info(f"  📋 Após manual — botões: {btns_apos}")
-        log.info(f"  📋 Após manual — inputs: {inputs_apos}")
+        log.info(f"  📋 Após checkbox — botões: {btns_apos}")
+        log.info(f"  📋 Após checkbox — inputs: {inputs_apos}")
 
         # Preenche campo de e-mail — tenta seletores específicos antes do fallback
         def _preencher_input_react(locator, valor: str) -> bool:
