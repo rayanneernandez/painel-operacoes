@@ -701,6 +701,7 @@ export function ClientDashboard() {
     try {
       if (deviceIds.length === 0) {
         // ── Rede global (sem filtro de dispositivo) ───────────────────────
+        // 1ª tentativa: usa rollups já salvos (rápido)
         const { data: rollups } = await supabase
           .from('visitor_analytics_rollups')
           .select('visitors_per_day')
@@ -709,7 +710,7 @@ export function ClientDashboard() {
           .gte('end', startIso)
           .gt('total_visitors', 0)
           .order('updated_at', { ascending: false })
-          .limit(isMultiDay ? 30 : 10);  // mais rollups para períodos longos
+          .limit(isMultiDay ? 30 : 10);
 
         if (rollups && rollups.length > 0) {
           const mergedVpd: Record<string, number> = {};
@@ -727,6 +728,35 @@ export function ClientDashboard() {
             return;
           }
         }
+
+        // 2ª tentativa: busca direto na visitor_analytics para o período
+        // (cobertura de períodos não incluídos em rollups existentes)
+        try {
+          const visPerDay: Record<string, number> = {};
+          let from2 = 0; const page2 = 1000;
+          while (true) {
+            const { data: rows, error: rowErr } = await supabase
+              .from('visitor_analytics')
+              .select('timestamp')
+              .eq('client_id', id)
+              .gte('timestamp', startIso)
+              .lte('timestamp', endIso)
+              .order('timestamp', { ascending: true })
+              .range(from2, from2 + page2 - 1);
+            if (rowErr || !rows || rows.length === 0) break;
+            (rows as any[]).forEach((r: any) => {
+              const dk = (r.timestamp || '').slice(0, 10);
+              if (dk) visPerDay[dk] = (visPerDay[dk] ?? 0) + 1;
+            });
+            if (rows.length < page2) break;
+            from2 += page2; if (from2 > 50000) break;
+          }
+          if (Object.keys(visPerDay).length > 0) {
+            setDailyStats(toWeekDays(visPerDay));
+            return;
+          }
+        } catch (_) { /* ignora e cai no zero */ }
+
         setDailyStats([0, 0, 0, 0, 0, 0, 0]);
         return;
       }
