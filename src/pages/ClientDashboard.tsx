@@ -807,7 +807,11 @@ export function ClientDashboard() {
     const { data: client } = await supabase.from('clients').select('name, logo_url').eq('id', id).single();
     if (client) setClientData({ name: client.name, logo: client.logo_url });
     const { data: storesData }  = await supabase.from('stores').select('id, name, city').eq('client_id', id);
-    const { data: devicesData } = await supabase.from('devices').select('id, name, type, mac_address, status, store_id');
+    // Busca apenas dispositivos das lojas deste cliente (via store_id IN)
+    const storeIds = (storesData || []).map((s: any) => s.id).filter(Boolean);
+    const { data: devicesData } = storeIds.length > 0
+      ? await supabase.from('devices').select('id, name, type, mac_address, status, store_id').in('store_id', storeIds)
+      : { data: [] };
     const { data: apiCfg }      = await supabase.from('client_api_configs')
       .select('api_endpoint, analytics_endpoint, api_key, custom_header_key, custom_header_value, collection_start, collection_end, collect_tracks, collect_face_quality, collect_glasses, collect_beard, collect_hair_color, collect_hair_type, collect_headwear')
       .eq('client_id', id).single();
