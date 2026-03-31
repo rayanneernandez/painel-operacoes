@@ -71,8 +71,7 @@ export function ClientDashboard() {
   const autoTodayRef = useRef(true);
 
   const [syncMessage, setSyncMessage] = useState('');
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [_isSyncingStores, setIsSyncingStores] = useState(false);
+  const [isSyncingStores, setIsSyncingStores] = useState(false);
   const syncingRef = useRef(false);
   const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
 
@@ -1059,6 +1058,19 @@ export function ClientDashboard() {
               <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
             </div>
+
+            {/* Botão para forçar atualização das lojas do DisplayForce */}
+            <button
+              onClick={() => syncStoresFromServer(true)}
+              disabled={isSyncingStores}
+              title="Atualizar lista de lojas do DisplayForce"
+              className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[38px] w-[38px] disabled:opacity-50"
+            >
+              {isSyncingStores
+                ? <span className="inline-block w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                : <Building2 size={16} className="text-gray-400" />
+              }
+            </button>
 
             <div className="flex flex-row items-start gap-2 w-full sm:w-auto">
               {/* Fullscreen */}

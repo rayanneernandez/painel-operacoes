@@ -102,6 +102,29 @@ function headwearToBool(val: any): boolean | null {
   return null;
 }
 
+// Extrai array de visitantes de qualquer estrutura de resposta da DisplayForce.
+// Suporta 3 formatos principais + variações:
+//   1. { payload: [] }  — formato padrão DisplayForce
+//   2. { data: [] } ou { data: { items:[], results:[] } }
+//   3. { results: [] } | { items: [] } | { list: [] } | { response: [] }
+//   4. Array direto
+function extractVisitorArray(json: any): any[] {
+  if (Array.isArray(json))                    return json;
+  if (Array.isArray(json?.payload))           return json.payload;
+  if (Array.isArray(json?.data))              return json.data;
+  if (Array.isArray(json?.results))           return json.results;
+  if (Array.isArray(json?.items))             return json.items;
+  if (Array.isArray(json?.visitors))          return json.visitors;
+  if (Array.isArray(json?.records))           return json.records;
+  if (Array.isArray(json?.response))          return json.response;
+  if (Array.isArray(json?.list))              return json.list;
+  if (Array.isArray(json?.data?.items))       return json.data.items;
+  if (Array.isArray(json?.data?.results))     return json.data.results;
+  if (Array.isArray(json?.data?.visitors))    return json.data.visitors;
+  if (Array.isArray(json?.data?.records))     return json.data.records;
+  return [];
+}
+
 function buildAndDeduplicateRows(combined: any[], client_id: string) {
   const dedupMap = new Map<string, any>();
   for (const visit of combined) {
@@ -282,7 +305,7 @@ async function runBackgroundSync(client_id: string, cfg: ClientApiConfig, syncSt
       if (!resp.ok) { console.error(`[BgSync] API ${resp.status}`); break; }
 
       const json = await resp.json();
-      const page: any[] = Array.isArray(json?.payload) ? json.payload : Array.isArray(json?.data) ? json.data : Array.isArray(json?.results) ? json.results : Array.isArray(json) ? json : [];
+      const page: any[] = extractVisitorArray(json);
 
       if (apiReportedTotal === null) {
         const t = json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total;
@@ -421,21 +444,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const ck = cfg.custom_header_key?.trim(); const cv = cfg.custom_header_value?.trim();
       if (ck && cv) headers[ck] = cv; else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
 
-      // Extrai array de qualquer estrutura de resposta da DisplayForce
-      // Suporta: { data:[] }, { payload:[] }, { results:[] }, { items:[] },
-      //          { data: { items:[] } }, { response:[] }, array direto
-      const extractArray = (json: any): any[] => {
-        if (Array.isArray(json)) return json;
-        if (Array.isArray(json?.data))    return json.data;
-        if (Array.isArray(json?.payload)) return json.payload;
-        if (Array.isArray(json?.results)) return json.results;
-        if (Array.isArray(json?.items))   return json.items;
-        if (Array.isArray(json?.response)) return json.response;
-        if (Array.isArray(json?.list))    return json.list;
-        if (Array.isArray(json?.data?.items))   return json.data.items;
-        if (Array.isArray(json?.data?.results)) return json.data.results;
-        return [];
-      };
+      // Usa extractVisitorArray definida globalmente para extrair array de qualquer formato
 
       // Busca paginada de uma URL com suporte a GET e POST
       const fetchAllPages = async (url: string, bodyBase: any): Promise<any[]> => {
@@ -447,7 +456,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
           if (!r.ok) { console.warn(`[sync_stores] ${url} retornou ${r.status}`); break; }
           const json = await r.json();
-          const page = extractArray(json);
+          const page = extractVisitorArray(json);
           if (page.length === 0) break;
           all.push(...page);
           const total = Number(json?.pagination?.total ?? json?.total ?? json?.count ?? 0);
@@ -578,7 +587,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const resp = await fetch(analyticsUrl, { method:"POST", headers, body:JSON.stringify({...baseBody, limit, offset}) });
       if (!resp.ok) { const txt = await resp.text(); return bad(res, resp.status, { error:"Erro na API externa", details:txt }); }
       const json = await resp.json();
-      const page: any[] = Array.isArray(json?.payload) ? json.payload : Array.isArray(json?.data) ? json.data : Array.isArray(json?.results) ? json.results : Array.isArray(json) ? json : [];
+      const page: any[] = extractVisitorArray(json);
       if (apiReportedTotal === null) { const totalNum = Number(json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total); if (Number.isFinite(totalNum) && totalNum > 0) apiReportedTotal = totalNum; }
       if (page.length > 0) {
         const first:any = page[0]; const last:any = page[page.length-1];
