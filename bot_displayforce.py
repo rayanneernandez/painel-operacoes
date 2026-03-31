@@ -1541,13 +1541,13 @@ def executar_bot():
                 total_registros = 0
                 for caminho_arquivo in caminhos:
                     nome_arq = Path(caminho_arquivo).name.lower()
-                    # Prioriza o CSV de Views (engagement por campanha)
-                    if "views" in nome_arq:
+                    # Somente o CSV 'Views of visitors' alimenta o gráfico de engajamento.
+                    # Os demais arquivos (Visitors, Passerby, Contacts, XLSX) são ignorados
+                    # neste fluxo pois não contêm dados de visualização por campanha.
+                    if "views" in nome_arq and nome_arq.endswith(".csv"):
                         registros = processar_views_csv(caminho_arquivo, client_id)
-                    elif nome_arq.endswith(".xlsx") or nome_arq.endswith(".xls"):
-                        registros = processar_excel(caminho_arquivo, client_id)
                     else:
-                        log.info(f"  Arquivo ignorado na extração: {nome_arq}")
+                        log.info(f"  Arquivo ignorado na extração de engajamento: {nome_arq}")
                         registros = []
 
                     if registros:
