@@ -1,14 +1,34 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2 } from 'lucide-react';
+import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2, Bot, Clock, RefreshCw, AlertCircle } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 import supabase from '../lib/supabase';
 
+// ── Bot Config Types ──────────────────────────────────────────
+interface BotConfig {
+  id?: string;
+  horario_execucao: string;
+  timeout_email_seg: number;
+}
+
+const emptyBotConfig = (): BotConfig => ({
+  horario_execucao: '07:00',
+  timeout_email_seg: 1200,
+});
+
 export function Settings() {
   const navigate = useNavigate();
   const { user } = useAuth();
+
+  // ── Section Tabs ─────────────────────────────────────────────
+  const [activeSection, setActiveSection] = useState<'dashboard' | 'bot'>('dashboard');
+
+  // ── Bot Config State ─────────────────────────────────────────
+  const [botConfig, setBotConfig]           = useState<BotConfig>(emptyBotConfig());
+  const [botSaveStatus, setBotSaveStatus]   = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
+  const [botLoading, setBotLoading]         = useState(false);
 
   useEffect(() => {
     if (!user) return;
@@ -48,6 +68,47 @@ export function Settings() {
     };
     fetchClients();
   }, []);
+
+  // ── Bot Config: Carregar ──────────────────────────────────────
+  useEffect(() => {
+    if (activeSection !== 'bot') return;
+    setBotLoading(true);
+    supabase.from('bot_configs').select('id, horario_execucao, timeout_email_seg').limit(1).maybeSingle()
+      .then(({ data }) => {
+        if (data) setBotConfig({
+          id:               data.id,
+          horario_execucao: data.horario_execucao  || '07:00',
+          timeout_email_seg: data.timeout_email_seg || 1200,
+        });
+        setBotLoading(false);
+      });
+  }, [activeSection]);
+
+  // ── Bot Config: Salvar ────────────────────────────────────────
+  const handleBotSave = async () => {
+    setBotSaveStatus('saving');
+    try {
+      const payload = {
+        horario_execucao:  botConfig.horario_execucao,
+        timeout_email_seg: botConfig.timeout_email_seg,
+        updated_at:        new Date().toISOString(),
+      };
+      if (botConfig.id) {
+        const { error } = await supabase.from('bot_configs').update(payload).eq('id', botConfig.id);
+        if (error) throw error;
+      } else {
+        const { data, error } = await supabase.from('bot_configs').insert(payload).select().single();
+        if (error) throw error;
+        if (data) setBotConfig(prev => ({ ...prev, id: data.id }));
+      }
+      setBotSaveStatus('saved');
+      setTimeout(() => setBotSaveStatus('idle'), 3000);
+    } catch (e) {
+      console.error('Erro ao salvar configuração do bot:', e);
+      setBotSaveStatus('error');
+      setTimeout(() => setBotSaveStatus('idle'), 4000);
+    }
+  };
 
   const normalizeSpan = (v: any) => {
     const n = Number(v);
@@ -366,47 +427,75 @@ export function Settings() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
-      
+
       {/* Top Header */}
       <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 shadow-xl backdrop-blur-sm">
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <SettingsIcon className="text-indigo-500" size={28} /> 
+            <SettingsIcon className="text-indigo-500" size={28} />
             Configurações do Sistema
           </h1>
           <p className="text-gray-400 mt-1 text-sm">Gerencie preferências globais e personalizações por rede</p>
         </div>
-        
-        <div className="flex items-center gap-3">
-           <div className="flex items-center gap-2 bg-gray-950 px-4 py-2 rounded-xl border border-gray-800">
-                <Building2 size={16} className="text-emerald-500" />
-                <span className="text-sm text-gray-400">Editando:</span>
-                <select 
-                  value={selectedScope}
-                  onChange={(e) => setSelectedScope(e.target.value)}
-                  className="bg-gray-950 text-white font-medium focus:outline-none min-w-[150px] rounded-md px-2 py-1 border border-gray-800"
-                >
-                  <option value="global" style={{ backgroundColor: '#0b1220', color: 'white' }}>Padrão Global</option>
-                  {clients.map(client => (
-                    <option key={client.id} value={client.id} style={{ backgroundColor: '#0b1220', color: 'white' }}>{client.name}</option>
-                  ))}
-                </select>
-             </div>
-           
-           <button 
-            onClick={handleSave}
-            className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+
+        {/* Section Tab Switcher */}
+        <div className="flex gap-2 bg-gray-950 p-1 rounded-xl border border-gray-800">
+          <button
+            onClick={() => setActiveSection('dashboard')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${activeSection === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
           >
-            {saveStatus === 'saved' ? <CheckCircle2 size={18} /> : <Save size={18} />}
-            {saveStatus === 'saving' ? 'Salvando...' : saveStatus === 'saved' ? 'Salvo!' : 'Salvar'}
+            <LayoutDashboard size={15} /> Dashboard
+          </button>
+          <button
+            onClick={() => setActiveSection('bot')}
+            className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${activeSection === 'bot' ? 'bg-emerald-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+          >
+            <Bot size={15} /> Bot DisplayForce
           </button>
         </div>
+        
+        {activeSection === 'dashboard' && (
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 bg-gray-950 px-4 py-2 rounded-xl border border-gray-800">
+              <Building2 size={16} className="text-emerald-500" />
+              <span className="text-sm text-gray-400">Editando:</span>
+              <select
+                value={selectedScope}
+                onChange={(e) => setSelectedScope(e.target.value)}
+                className="bg-gray-950 text-white font-medium focus:outline-none min-w-[150px] rounded-md px-2 py-1 border border-gray-800"
+              >
+                <option value="global" style={{ backgroundColor: '#0b1220', color: 'white' }}>Padrão Global</option>
+                {clients.map(client => (
+                  <option key={client.id} value={client.id} style={{ backgroundColor: '#0b1220', color: 'white' }}>{client.name}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={handleSave}
+              className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+            >
+              {saveStatus === 'saved' ? <CheckCircle2 size={18} /> : <Save size={18} />}
+              {saveStatus === 'saving' ? 'Salvando...' : saveStatus === 'saved' ? 'Salvo!' : 'Salvar'}
+            </button>
+          </div>
+        )}
+        {activeSection === 'bot' && (
+          <button
+            onClick={handleBotSave}
+            disabled={botSaveStatus === 'saving'}
+            className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium px-6 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-lg active:scale-95"
+          >
+            {botSaveStatus === 'saving' ? <RefreshCw size={16} className="animate-spin" /> : botSaveStatus === 'saved' ? <CheckCircle2 size={16} /> : botSaveStatus === 'error' ? <AlertCircle size={16} /> : <Save size={16} />}
+            {botSaveStatus === 'saving' ? 'Salvando...' : botSaveStatus === 'saved' ? 'Salvo!' : botSaveStatus === 'error' ? 'Erro ao salvar' : 'Salvar Configurações'}
+          </button>
+        )}
       </div>
 
       {/* Content Area */}
       <div className="min-h-[500px]">
-          
+
         {/* DASHBOARD CONFIGURATION */}
+        {activeSection === 'dashboard' && (
         <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
             
             {/* Dashboard Sub-Tabs */}
@@ -577,6 +666,69 @@ export function Settings() {
               </div>
             )}
         </div>
+        )}
+
+        {/* BOT DISPLAYFORCE CONFIGURATION */}
+        {activeSection === 'bot' && (
+          <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
+
+            {botLoading ? (
+              <div className="flex items-center justify-center py-20 text-gray-500">
+                <RefreshCw size={20} className="animate-spin mr-3" /> Carregando configurações...
+              </div>
+            ) : (
+              <>
+                {/* Info */}
+                <div className="bg-emerald-900/20 border border-emerald-800/50 rounded-xl p-4 flex gap-3 items-start">
+                  <Bot size={18} className="text-emerald-400 mt-0.5 flex-shrink-0" />
+                  <div>
+                    <p className="text-emerald-300 font-medium text-sm">Bot DisplayForce</p>
+                    <p className="text-gray-400 text-xs mt-1">
+                      O bot acessa o DisplayForce automaticamente, exporta os relatórios <strong className="text-gray-300">"Views of visitors"</strong> de cada cliente cadastrado e atualiza o painel.
+                      Novos clientes adicionados ao sistema são detectados automaticamente na próxima execução.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Agendamento */}
+                <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 space-y-4">
+                  <h3 className="text-white font-semibold flex items-center gap-2 text-sm uppercase tracking-wider">
+                    <Clock size={15} className="text-yellow-400" /> Agendamento
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1.5">Horário de execução diária</label>
+                      <div className="flex items-center bg-gray-950 border border-gray-700 rounded-lg px-3 gap-2">
+                        <Clock size={14} className="text-gray-500" />
+                        <input
+                          type="time"
+                          value={botConfig.horario_execucao}
+                          onChange={e => setBotConfig(p => ({ ...p, horario_execucao: e.target.value }))}
+                          className="flex-1 bg-transparent py-2.5 text-sm text-white focus:outline-none"
+                        />
+                      </div>
+                      <p className="text-xs text-gray-600 mt-1">O bot será executado todos os dias nesse horário.</p>
+                    </div>
+                    <div>
+                      <label className="text-xs text-gray-400 block mb-1.5">Timeout aguardando e-mail (segundos)</label>
+                      <div className="flex items-center bg-gray-950 border border-gray-700 rounded-lg px-3 gap-2">
+                        <Clock size={14} className="text-gray-500" />
+                        <input
+                          type="number"
+                          value={botConfig.timeout_email_seg}
+                          onChange={e => setBotConfig(p => ({ ...p, timeout_email_seg: Number(e.target.value) }))}
+                          className="flex-1 bg-transparent py-2.5 text-sm text-white focus:outline-none"
+                        />
+                      </div>
+                      <p className="text-xs text-gray-600 mt-1">Padrão: 1200s (20 min). Tempo máximo aguardando o e-mail do DisplayForce chegar.</p>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
       </div>
     </div>
   );

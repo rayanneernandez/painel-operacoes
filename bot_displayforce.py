@@ -103,6 +103,39 @@ LOG_FILE          = "bot_displayforce.log"
 TIMEOUT_EMAIL_SEG = int(_env("TIMEOUT_EMAIL_SEG", "1200"))  # 20 minutos
 HEADLESS          = _env("HEADLESS", "true").lower() == "true"
 
+
+def carregar_config_supabase() -> None:
+    """
+    Lê o agendamento da tabela `bot_configs` no Supabase e aplica nos
+    valores globais. Credenciais de acesso ficam no .env e não são
+    alteradas por esta função.
+    """
+    global HORARIO_EXECUCAO, TIMEOUT_EMAIL_SEG
+
+    if not SUPABASE_URL or not SUPABASE_KEY:
+        log.info("  Supabase não configurado — usando agendamento do .env")
+        return
+    try:
+        from supabase import create_client
+        sb  = create_client(SUPABASE_URL, SUPABASE_KEY)
+        res = sb.table("bot_configs").select("horario_execucao, timeout_email_seg").limit(1).execute()
+        cfg = (res.data or [None])[0]
+        if not cfg:
+            log.info("  Nenhuma config de agendamento salva no Supabase — usando .env")
+            return
+
+        horario = str(cfg.get("horario_execucao") or "").strip()
+        if horario:
+            HORARIO_EXECUCAO = horario
+
+        timeout = cfg.get("timeout_email_seg")
+        if timeout and int(timeout) > 0:
+            TIMEOUT_EMAIL_SEG = int(timeout)
+
+        log.info(f"  ✅ Agendamento carregado do Supabase: {HORARIO_EXECUCAO} / timeout={TIMEOUT_EMAIL_SEG}s")
+    except Exception as e:
+        log.warning(f"  Não foi possível carregar agendamento do Supabase: {e} — usando .env")
+
 try:
     SYNC_INTERVAL_MIN = int(_env("SYNC_INTERVAL_MIN", "10"))
 except Exception:
@@ -1364,60 +1397,90 @@ def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_f
             except Exception:
                 return False
 
+        # ── Aguarda que o campo de e-mail apareça após "inserir manualmente" ──
+        page.wait_for_timeout(1500)
+
         preencheu = False
-        for sel_email in [
+
+        # Seletores em ordem de especificidade (mais específico primeiro)
+        seletores_email = [
             "input[type='email']:visible",
-            "input[placeholder*='mail']:visible",
-            "input[placeholder*='Mail']:visible",
-            "input[placeholder*='e-mail']:visible",
-            "input[placeholder*='E-mail']:visible",
-            "input[placeholder*='Email']:visible",
-            "input[placeholder*='Digite']:visible",
-            "input[placeholder*='Insira']:visible",
-            "input[placeholder*='Adicionar']:visible",
-            "input[type='text']:visible",
-        ]:
+            "input[placeholder*='mail' i]:visible",
+            "input[placeholder*='e-mail' i]:visible",
+            "input[placeholder*='Digite' i]:visible",
+            "input[placeholder*='Insira' i]:visible",
+            "input[placeholder*='Adicionar' i]:visible",
+        ]
+
+        for sel in seletores_email:
             try:
-                campos = page.locator(sel_email).all()
+                campos = page.locator(sel).all()
                 for campo in campos:
-                    if campo.is_visible(timeout=500):
-                        # Verifica se o campo parece ser para email (não filtro/busca)
-                        placeholder = (campo.get_attribute("placeholder") or "").lower()
-                        val_atual   = (campo.get_attribute("value") or "").lower()
-                        # Pula campos de busca/filtro genéricos da página principal
-                        if any(x in placeholder for x in ("buscar", "search", "filter", "filtrar")):
-                            continue
-                        if _preencher_input_react(campo, RELATORIO_EMAIL):
-                            val_verificado = campo.input_value() or ""
-                            if RELATORIO_EMAIL.lower() in val_verificado.lower():
-                                preencheu = True
-                                log.info(f"  ✔ E-mail preenchido e verificado via '{sel_email}' — valor: '{val_verificado}'")
-                                break
-                            else:
-                                log.info(f"  ⚠️  Preencheu '{sel_email}' mas valor não confirmou: '{val_verificado}'")
+                    if not campo.is_visible(timeout=500):
+                        continue
+                    placeholder = (campo.get_attribute("placeholder") or "").lower()
+                    if any(x in placeholder for x in ("buscar", "search", "filter", "filtrar")):
+                        continue
+                    if _preencher_input_react(campo, RELATORIO_EMAIL):
+                        val = campo.input_value() or ""
+                        if RELATORIO_EMAIL.lower() in val.lower():
+                            preencheu = True
+                            log.info(f"  ✔ E-mail preenchido via '{sel}' — valor: '{val}'")
+                            break
                 if preencheu:
                     break
             except Exception:
                 continue
 
         if not preencheu:
-            log.warning("  ⚠️  Não conseguiu preencher campo de email — tentando fallback geral")
+            # Fallback: todos os inputs text/email visíveis, pulando campos hh/mm/ss
+            log.warning("  ⚠️  Tentando fallback: percorrendo todos inputs visíveis")
             inputs = page.locator(
                 "input:visible:not([type='checkbox']):not([type='radio'])"
                 ":not([type='hidden']):not([type='file']):not([type='submit'])"
-                ":not([type='button'])"
+                ":not([type='button']):not([type='number'])"
             ).all()
             for inp in inputs:
                 try:
                     placeholder = (inp.get_attribute("placeholder") or "").lower()
+                    val_atual   = (inp.input_value() or "").strip()
+                    # Pula campos de filtro/busca
                     if any(x in placeholder for x in ("buscar", "search", "filter", "filtrar")):
                         continue
+                    # Pula campos de tempo (hh, mm, ss — valor numérico curto)
+                    if placeholder in ("hh", "mm", "ss") or (val_atual.isdigit() and len(val_atual) <= 2):
+                        continue
                     if _preencher_input_react(inp, RELATORIO_EMAIL):
-                        preencheu = True
-                        log.warning("  Preencheu input disponível como e-mail (fallback)")
-                        break
+                        val = inp.input_value() or ""
+                        if RELATORIO_EMAIL.lower() in val.lower():
+                            preencheu = True
+                            log.info(f"  ✔ E-mail preenchido via fallback geral — valor: '{val}'")
+                            break
                 except Exception:
                     continue
+
+        if not preencheu:
+            # Último recurso: preenche o ÚLTIMO input de texto vazio no modal
+            log.warning("  ⚠️  Último recurso: preenchendo último input vazio disponível")
+            try:
+                inputs = page.locator("input[type='text']:visible, input:not([type]):visible").all()
+                candidatos = []
+                for inp in inputs:
+                    try:
+                        val = (inp.input_value() or "").strip()
+                        ph  = (inp.get_attribute("placeholder") or "").lower()
+                        if ph not in ("hh", "mm", "ss") and val == "":
+                            candidatos.append(inp)
+                    except Exception:
+                        continue
+                if candidatos:
+                    alvo = candidatos[-1]  # último input vazio
+                    if _preencher_input_react(alvo, RELATORIO_EMAIL):
+                        val = alvo.input_value() or ""
+                        preencheu = True
+                        log.info(f"  ✔ E-mail preenchido no último input vazio — valor: '{val}'")
+            except Exception as e:
+                log.warning(f"  Último recurso falhou: {e}")
 
         if not preencheu:
             log.error("  ❌ CRÍTICO: Não foi possível preencher o e-mail no modal!")
@@ -1503,6 +1566,9 @@ def executar_bot():
         log.info("=" * 60)
         log.info(f"🤖 Iniciando bot — {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
         log.info("=" * 60)
+
+        # Carrega credenciais do Supabase (sobrepõe .env se existir configuração salva)
+        carregar_config_supabase()
 
         # Tenta reenviar dados que ficaram pendentes de execuções anteriores
         _reenviar_pendentes()

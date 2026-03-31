@@ -1099,7 +1099,7 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
                 const heightPx = Number(widgetLayout[widget.id]?.heightPx);
-                const defaultHeightPx = widget.id === 'campaigns' ? 420 : NaN;
+                const defaultHeightPx = widget.id === 'campaigns' ? 560 : NaN;
                 const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : defaultHeightPx;
                 const widgetStyle = Number.isFinite(resolvedHeightPx) ? { height: Math.round(resolvedHeightPx) } : undefined;
                 return (

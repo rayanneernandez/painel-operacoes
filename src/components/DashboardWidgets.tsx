@@ -383,7 +383,7 @@ export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'chart_facial_hair',   title: 'Atributo: Pelos Faciais',        type: 'chart', size: 'third', description: 'Barba e pelos faciais' },
   { id: 'chart_hair_type',     title: 'Atributo: Tipo de Cabelo',       type: 'chart', size: 'third', description: 'Normal, Entradas, Careca' },
   { id: 'chart_hair_color',    title: 'Atributo: Cor de Cabelo',        type: 'chart', size: 'third', description: 'Preto, Castanho, Loiro, etc.' },
-  { id: 'campaigns',           title: 'Engajamento em Campanhas',       type: 'table', size: '2/3',   description: 'Tabela de performance de campanhas' },
+  { id: 'campaigns',           title: 'Engajamento em Campanhas',       type: 'table', size: 'full',  description: 'Tabela de performance de campanhas' },
   { id: 'heatmap',             title: 'Mapa de Calor (Loja)',           type: 'chart', size: 'full',  description: 'Visualização térmica da planta baixa' },
 ];
 
@@ -746,21 +746,31 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
 
 // ── WidgetCampaigns ──────────────────────────────────────────────────────────
 export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string }) => {
-  const [rows, setRows]       = React.useState<any[]>([]);
-  const [loading, setLoading] = React.useState(false);
-  React.useEffect(() => {
+  const [rows, setRows]         = React.useState<any[]>([]);
+  const [loading, setLoading]   = React.useState(false);
+  const [lastSync, setLastSync] = React.useState<string | null>(null);
+
+  const fetchData = React.useCallback(() => {
     if (!clientId) return;
     setLoading(true);
     import('../lib/supabase').then(({ default: supabase }) => {
       supabase
         .from('campaigns')
-        .select('name,tipo_midia,loja,start_date,end_date,duration_days,duration_hms,visitors,avg_attention_sec')
+        .select('name,tipo_midia,loja,start_date,end_date,duration_days,duration_hms,visitors,avg_attention_sec,uploaded_at')
         .eq('client_id', clientId)
-        .order('start_date', { ascending: false })
-        .limit(100)
-        .then(({ data }) => { setRows(data || []); setLoading(false); });
+        .order('visitors', { ascending: false })
+        .limit(500)
+        .then(({ data }) => {
+          setRows(data || []);
+          if (data && data.length > 0 && data[0].uploaded_at) {
+            setLastSync(new Date(data[0].uploaded_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }));
+          }
+          setLoading(false);
+        });
     });
   }, [clientId]);
+
+  React.useEffect(() => { fetchData(); }, [fetchData]);
 
   const fmtDate = (d: string | null) =>
     d ? new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
@@ -775,53 +785,89 @@ export const WidgetCampaigns = ({ clientId }: { view?: string; clientId?: string
     return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   };
 
+  const totalVisitantes = rows.reduce((acc, r) => acc + (Number(r.visitors) || 0), 0);
+
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col overflow-hidden" style={{ minHeight: '200px' }}>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col" style={{ minHeight: '320px' }}>
+
+      {/* Header */}
       <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
-          <Activity size={14} className="text-emerald-500" />Engajamento em Campanhas
+          <Activity size={14} className="text-emerald-500" />
+          Engajamento em Campanhas
+          {rows.length > 0 && (
+            <span className="text-[10px] font-normal text-gray-500 normal-case tracking-normal">
+              ({rows.length} {rows.length === 1 ? 'registro' : 'registros'})
+            </span>
+          )}
         </h3>
-        <span className="text-[10px] text-gray-400 border border-gray-800 px-2 py-1 rounded-md">Automático</span>
+        <div className="flex items-center gap-2">
+          {lastSync && <span className="text-[10px] text-gray-600 hidden sm:block">Sync: {lastSync}</span>}
+          <button
+            onClick={fetchData}
+            className="text-gray-500 hover:text-emerald-400 transition-colors p-1 rounded"
+            title="Atualizar dados"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
+              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
+            </svg>
+          </button>
+        </div>
       </div>
 
+      {/* Body */}
       {loading ? (
-        <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
+        <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
+          <svg className="animate-spin mr-2" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          Carregando...
+        </div>
       ) : rows.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
           <p>Nenhuma campanha disponível.</p>
-          <p className="text-xs text-gray-600">Aguardando sincronização automática.</p>
+          <p className="text-xs text-gray-600">Aguardando sincronização automática pelo bot.</p>
         </div>
       ) : (
-        <div className="flex-1 overflow-y-auto overflow-x-auto" style={{ minHeight: 0, maxHeight: '100%' }}>
-          <table className="w-full text-left text-xs">
-            <thead className="sticky top-0 bg-gray-900 text-gray-500 uppercase border-b border-gray-800 z-10">
-              <tr>
-                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Campanha</th>
-                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Tipo Mídia</th>
-                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Loja</th>
-                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Início Exibição</th>
-                <th className="pb-2 pr-3 font-medium whitespace-nowrap">Fim Exibição</th>
-                <th className="pb-2 pr-3 font-medium whitespace-nowrap text-right">Dias</th>
-                <th className="pb-2 pr-3 font-medium whitespace-nowrap text-right">Tempo</th>
-                <th className="pb-2 pr-3 font-medium whitespace-nowrap text-right">Visitantes</th>
-                <th className="pb-2 font-medium whitespace-nowrap text-right">Atenção</th>
+        <div className="flex-1 overflow-auto" style={{ minHeight: 0 }}>
+          <table className="min-w-full text-left text-xs border-separate border-spacing-0">
+            <thead>
+              <tr className="sticky top-0 z-10">
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Tipo Mídia</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Loja</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Início Exibição</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Fim Exibição</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Tempo (Dias)</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Tempo (hh:mm:ss)</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Visitantes</th>
+                <th className="bg-gray-900 pb-2 pt-1 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Atenção Média</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-800/60">
+            <tbody>
               {rows.map((r, i) => (
-                <tr key={i} className="hover:bg-gray-800/40 transition-colors">
-                  <td className="py-1.5 pr-3 text-white font-medium max-w-[120px] truncate">{r.name || '—'}</td>
-                  <td className="py-1.5 pr-3 text-purple-400 whitespace-nowrap">{r.tipo_midia || '—'}</td>
-                  <td className="py-1.5 pr-3 text-gray-300 max-w-[160px] truncate">{r.loja || '—'}</td>
-                  <td className="py-1.5 pr-3 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td>
-                  <td className="py-1.5 pr-3 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td>
-                  <td className="py-1.5 pr-3 text-yellow-400 text-right">{r.duration_days != null ? Number(r.duration_days).toFixed(0) : '—'}</td>
-                  <td className="py-1.5 pr-3 text-gray-400 text-right font-mono">{r.duration_hms && r.duration_hms !== 'None' ? r.duration_hms : '—'}</td>
-                  <td className="py-1.5 pr-3 text-emerald-400 text-right font-medium">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
-                  <td className="py-1.5 text-blue-400 text-right font-medium">{fmtAtencao(r.avg_attention_sec)}</td>
+                <tr
+                  key={i}
+                  className={`transition-colors hover:bg-gray-800/50 ${i % 2 === 0 ? 'bg-transparent' : 'bg-gray-800/20'}`}
+                >
+                  <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap">{r.tipo_midia || '—'}</td>
+                  <td className="py-2 pr-4 text-gray-200 whitespace-nowrap">{r.loja || '—'}</td>
+                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td>
+                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td>
+                  <td className="py-2 pr-4 text-yellow-400 text-right font-mono">{r.duration_days != null ? Number(r.duration_days).toFixed(2) : '—'}</td>
+                  <td className="py-2 pr-4 text-gray-400 text-right font-mono">{r.duration_hms && r.duration_hms !== 'None' ? r.duration_hms : '—'}</td>
+                  <td className="py-2 pr-4 text-emerald-400 text-right font-bold">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
+                  <td className="py-2 text-blue-400 text-right font-bold">{fmtAtencao(r.avg_attention_sec)}</td>
                 </tr>
               ))}
             </tbody>
+            {rows.length > 1 && (
+              <tfoot>
+                <tr className="border-t border-gray-700">
+                  <td colSpan={6} className="pt-2 pr-4 text-gray-500 text-xs font-medium uppercase tracking-wider">Total</td>
+                  <td className="pt-2 pr-4 text-emerald-300 text-right font-bold text-xs">{totalVisitantes.toLocaleString('pt-BR')}</td>
+                  <td className="pt-2 text-gray-600 text-right text-xs">—</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       )}

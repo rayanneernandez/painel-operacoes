@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<title>Engajamento Campanha – Assaí</title>
+<style>
+  body { font-family: Arial, sans-serif; background: #f4f4f4; display: flex; justify-content: center; padding: 30px; }
+  .container { background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.12); }
+  .title-bar {
+    background: #1a3a7c;
+    color: white;
+    text-align: center;
+    font-size: 15px;
+    font-weight: bold;
+    letter-spacing: 1px;
+    padding: 10px 20px;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  thead th {
+    background: #f0f0f0;
+    color: #222;
+    padding: 9px 14px;
+    text-align: left;
+    border-bottom: 2px solid #ccc;
+    white-space: nowrap;
+    font-size: 12px;
+    font-weight: 600;
+  }
+  tbody tr:nth-child(odd)  { background: #fff; }
+  tbody tr:nth-child(even) { background: #f7f9fc; }
+  tbody td { padding: 8px 14px; color: #333; border-bottom: 1px solid #eee; white-space: nowrap; }
+  .num { text-align: right; font-variant-numeric: tabular-nums; }
+  tfoot td { background: #e8ecf5; font-weight: bold; padding: 9px 14px; font-size: 12px; color: #1a3a7c; }
+  .source { font-size: 10px; color: #888; text-align: right; padding: 6px 14px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="title-bar">ENGAJAMENTO CAMPANHA</div>
+  <table>
+    <thead>
+      <tr>
+        <th>TIPO_MIDIA</th>
+        <th>LOJA</th>
+        <th>INICIO_EXIBIÇÃO</th>
+        <th>FIM_EXIBIÇÃO</th>
+        <th class="num">Tempo<br>(Dias)</th>
+        <th class="num">Tempo<br>(hh:mm:ss)</th>
+        <th class="num">VISITANTES</th>
+        <th class="num">TEMPO_MED<br>ATENÇÃO (mm:ss)</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>Entrada</td>
+        <td>Aricanduva</td>
+        <td>02/03/2026 04:29:54</td>
+        <td>30/03/2026 12:22:30</td>
+        <td class="num">28,33</td>
+        <td class="num">679:52:36</td>
+        <td class="num">61.835</td>
+        <td class="num">00:08</td>
+      </tr>
+      <tr>
+        <td>Gôndola Virada Açougue</td>
+        <td>Barueri</td>
+        <td>01/03/2026 01:15:35</td>
+        <td>30/03/2026 12:22:50</td>
+        <td class="num">29,46</td>
+        <td class="num">707:07:15</td>
+        <td class="num">57.506</td>
+        <td class="num">00:16</td>
+      </tr>
+      <tr>
+        <td>Gôndola Virada Cafeteria</td>
+        <td>Barueri</td>
+        <td>01/03/2026 03:30:44</td>
+        <td>30/03/2026 12:22:21</td>
+        <td class="num">29,37</td>
+        <td class="num">704:51:37</td>
+        <td class="num">45.359</td>
+        <td class="num">00:04</td>
+      </tr>
+    </tbody>
+    <tfoot>
+      <tr>
+        <td colspan="6">TOTAL</td>
+        <td class="num">164.700</td>
+        <td class="num">—</td>
+      </tr>
+    </tfoot>
+  </table>
+  <p class="source">Fonte: Views of visitors_20260330_152902.csv · Processado em 31/03/2026</p>
+</div>
+</body>
+</html>
