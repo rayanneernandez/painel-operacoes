@@ -319,9 +319,16 @@ export function ClientDashboard() {
           const vpd: Record<string, number> = r.visitors_per_day ?? {};
           for (const [day, cnt] of Object.entries(vpd)) {
             const d = day.slice(0, 10);
-            if (d >= startDay && d <= endDay && !(d in mergedVpd)) {
-              mergedVpd[d] = Number(cnt) || 0;
-              mergedTotal += Number(cnt) || 0;
+            if (d < startDay || d > endDay) continue;
+
+            const val = Number(cnt) || 0;
+            const prev = mergedVpd[d];
+            if (prev === undefined) {
+              mergedVpd[d] = val;
+              mergedTotal += val;
+            } else if (val > prev) {
+              mergedVpd[d] = val;
+              mergedTotal += (val - prev);
             }
           }
         }
@@ -812,8 +819,8 @@ export function ClientDashboard() {
       if (isD1 && !didApplyD1DefaultRef.current && autoTodayRef.current) {
         didApplyD1DefaultRef.current = true;
         autoTodayRef.current = false;
-        const s = new Date(); s.setUTCDate(s.getUTCDate() - 2); s.setUTCHours(0, 0, 0, 0);
         const e = new Date(); e.setUTCHours(23, 59, 59, 999);
+        const s = new Date(e); s.setUTCDate(s.getUTCDate() - 3); s.setUTCHours(0, 0, 0, 0);
         setSelectedStartDate(s);
         setSelectedEndDate(e);
       }
