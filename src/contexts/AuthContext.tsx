@@ -22,6 +22,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const defaultPermissions = {
       view_dashboard: true,
+      view_devices_online: false,
       view_reports: false,
       view_analytics: false,
       export_data: false,
@@ -72,6 +73,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           const userPermissions = data.role === 'admin'
             ? {
                 view_dashboard: true,
+                view_devices_online: true,
                 view_reports: true,
                 view_analytics: true,
                 export_data: true,
@@ -123,6 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       // Map Supabase user to AuthUser type
       const defaultPermissions = {
         view_dashboard: true,
+        view_devices_online: false,
         view_reports: false,
         view_analytics: false,
         export_data: false,
@@ -133,6 +136,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const userPermissions = data.role === 'admin' 
         ? {
             view_dashboard: true,
+            view_devices_online: true,
             view_reports: true,
             view_analytics: true,
             export_data: true,

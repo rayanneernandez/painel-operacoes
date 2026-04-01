@@ -9,6 +9,7 @@ import { ClientDashboardConfig } from './pages/ClientDashboardConfig';
 import { Settings } from './pages/Settings';
 import { Reports } from './pages/Reports';
 import { Logs } from './pages/Logs';
+import { DevicesOnline } from './pages/DevicesOnline';
 import { Login } from './pages/Login';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import CampaignUpload from './pages/CampaignUpload';
@@ -86,6 +87,25 @@ const ReportsRoute = () => {
   return <Navigate to="/" replace />;
 };
 
+const DevicesOnlineRoute = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">Carregando...</div>;
+  }
+
+  if (user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)) {
+    return <DevicesOnline />;
+  }
+
+  if (user?.role === 'client') {
+    if (!user.clientId) return <MissingClientLink />;
+    return <Navigate to={`/clientes/${user.clientId}/dashboard`} replace />;
+  }
+
+  return <Navigate to="/" replace />;
+};
+
 function App() {
   return (
     <AuthProvider>
@@ -101,8 +121,9 @@ function App() {
               <Route path="clientes/:id/dashboard" element={<ClientDashboard />} />
               <Route path="clientes/:id/dashboard-config" element={<ClientDashboardConfig />} />
 
-              {/* Rotas liberadas por permissão (admin ou view_reports=true) */}
+              {/* Rotas liberadas por permissão */}
               <Route path="relatorios" element={<ReportsRoute />} />
+              <Route path="dispositivos-online" element={<DevicesOnlineRoute />} />
 
               {/* Rotas administrativas */}
               <Route element={<AdminOnlyRoute />}>

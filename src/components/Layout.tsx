@@ -9,6 +9,7 @@ import {
   LogOut,
   FileText,
   History,
+  Wifi,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import globaliaLogo from '../assets/globalia.png';
@@ -31,6 +32,12 @@ export function Layout() {
         ? (user?.clientId ? `/clientes/${user.clientId}/dashboard` : '/')
         : '/dashboard',
       show: user?.role === 'admin' || (user?.permissions?.view_dashboard ?? true)
+    },
+    { 
+      icon: Wifi, 
+      label: 'Dispositivos Online', 
+      path: '/dispositivos-online',
+      show: user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)
     },
     { 
       icon: Users, 

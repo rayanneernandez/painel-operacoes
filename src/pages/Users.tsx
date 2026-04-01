@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import supabase from '../lib/supabase';
-import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText } from 'lucide-react';
+import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText, Wifi } from 'lucide-react';
 
 // Componente Toggle
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
@@ -28,6 +28,7 @@ type UserType = {
   last_login: string | null;
   permissions: {
     view_dashboard: boolean;
+    view_devices_online: boolean;
     view_reports: boolean;
     view_analytics: boolean;
     export_data: boolean;
@@ -49,6 +50,7 @@ export function Users() {
   // Estado de permissões (mock)
   const [perms, setPerms] = useState({
     view_dashboard: true,
+    view_devices_online: false,
     view_reports: false,
     view_analytics: false,
     export_data: false,
@@ -140,19 +142,22 @@ export function Users() {
         password: ''
       });
       setSelectedClientIds(user.client_id ? [user.client_id] : user.clients.map(c => c.id));
-      // Carregar permissões do usuário
-      if (user.permissions) {
-        setPerms(user.permissions);
-      } else {
-        // Default se não tiver
-        setPerms({
-          view_dashboard: true,
-          view_reports: false,
-          view_analytics: false,
-          export_data: false,
-          manage_settings: false
-        });
-      }
+      const p = user.permissions || {
+        view_dashboard: true,
+        view_devices_online: false,
+        view_reports: false,
+        view_analytics: false,
+        export_data: false,
+        manage_settings: false
+      };
+      setPerms({
+        view_dashboard: p.view_dashboard ?? true,
+        view_devices_online: p.view_devices_online ?? false,
+        view_reports: p.view_reports ?? false,
+        view_analytics: p.view_analytics ?? false,
+        export_data: p.export_data ?? false,
+        manage_settings: p.manage_settings ?? false
+      });
     } else {
       setEditingUser(null);
       setFormData({
@@ -162,9 +167,9 @@ export function Users() {
         password: ''
       });
       setSelectedClientIds([]);
-      // Resetar permissões para default
       setPerms({
         view_dashboard: true,
+        view_devices_online: false,
         view_reports: false,
         view_analytics: false,
         export_data: false,
@@ -567,6 +572,19 @@ export function Users() {
                         </div>
                       </div>
                       <Toggle checked={perms.view_dashboard} onChange={() => togglePerm('view_dashboard')} />
+                    </div>
+
+                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
+                          <Wifi size={20} />
+                        </div>
+                        <div>
+                          <p className="font-medium text-white text-sm">Dispositivos Online</p>
+                          <p className="text-xs text-gray-500">Acesso à rede/lojas/dispositivos e status</p>
+                        </div>
+                      </div>
+                      <Toggle checked={perms.view_devices_online} onChange={() => togglePerm('view_devices_online')} />
                     </div>
 
                     <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
