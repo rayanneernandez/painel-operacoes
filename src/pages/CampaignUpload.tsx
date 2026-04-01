@@ -1,14 +1,9 @@
-export default CampaignUpload;
 // src/pages/CampaignUpload.tsx
-// Rota sugerida: /clientes/:id/campanhas
-// Adicionar no App.tsx:
-//   import { CampaignUpload } from './pages/CampaignUpload';
-//   <Route path="clientes/:id/campanhas" element={<CampaignUpload />} />
-
 import { useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { Upload, FileSpreadsheet, CheckCircle, XCircle, ArrowLeft, Loader2 } from 'lucide-react';
+import { Upload, FileSpreadsheet, CheckCircle, XCircle, ArrowLeft, Loader2, FileArchive } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import { unzip } from 'fflate';
 import supabase from '../lib/supabase';
 
 // ── Normaliza nome de coluna (remove acentos, espaços, case) ─────────────────
@@ -31,12 +26,10 @@ function hmsToSec(s: string): number {
 function parseDate(val: any): string | null {
   if (!val) return null;
   if (typeof val === 'number') {
-    // Excel serial date
     const d = XLSX.SSF.parse_date_code(val);
     if (d) return new Date(Date.UTC(d.y, d.m-1, d.d, d.H||0, d.M||0, d.S||0)).toISOString();
   }
   if (typeof val === 'string') {
-    // DD/MM/YYYY HH:MM:SS ou ISO
     const iso = val.replace(/(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})/, '$3-$2-$1T$4:$5:$6');
     const d = new Date(iso);
     if (!isNaN(d.getTime())) return d.toISOString();
@@ -44,31 +37,24 @@ function parseDate(val: any): string | null {
   return null;
 }
 
-// ── Mapeia colunas do Excel para campos internos ─────────────────────────────
+// ── Mapeia colunas do Excel (formato resumo) para campos internos ─────────────
 const COL_MAP: Record<string, string> = {
-  // MIDIA_VALIDADA / Nome
   midiavalidada: 'name', midiavalidada2: 'name', campanha: 'name', nome: 'name', midia: 'name',
-  // INICIO_EXIBIÇÃO
   inicioexibicao: 'start_date', inicio: 'start_date', startdate: 'start_date',
-  // FIM_EXIBIÇÃO
   fimexibicao: 'end_date', fim: 'end_date', enddate: 'end_date',
-  // Tempo Dias
   tempodias: 'duration_days', dias: 'duration_days',
-  // Tempo hh:mm:ss
   tempohhmmss: 'duration_hms', tempohms: 'duration_hms', tempo: 'duration_hms',
-  // VISITANTES
   visitantes: 'visitors', visitors: 'visitors',
-  // TEMPO_MED ATENÇÃO
   tempeomedatencaommss: 'avg_attention', tempmedatencao: 'avg_attention',
   atencaommss: 'avg_attention', atencao: 'avg_attention', avgattention: 'avg_attention',
   tempomedatencao: 'avg_attention',
 };
 
-function parseRows(sheet: XLSX.WorkSheet): any[] {
+// ── Parse Excel/CSV resumo ────────────────────────────────────────────────────
+function parseRowsExcel(sheet: XLSX.WorkSheet): any[] {
   const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' }) as any[][];
   if (raw.length < 2) return [];
 
-  // Encontra linha de cabeçalho (primeira linha com pelo menos 3 células não vazias)
   let headerIdx = 0;
   for (let i = 0; i < Math.min(5, raw.length); i++) {
     const nonEmpty = raw[i].filter((c: any) => String(c).trim().length > 0).length;
@@ -88,7 +74,6 @@ function parseRows(sheet: XLSX.WorkSheet): any[] {
       if (field) obj[field] = row[i];
     });
 
-    // Ignora linhas sem nome de campanha
     if (!obj.name || !String(obj.name).trim()) continue;
 
     rows.push({
@@ -105,6 +90,188 @@ function parseRows(sheet: XLSX.WorkSheet): any[] {
   return rows;
 }
 
+// ── Detecta se CSV é do formato "Views of visitors" da DisplayForce ───────────
+function isViewsCsvFormat(headers: string[]): boolean {
+  const h = headers.map(s => s.toLowerCase());
+  return h.some(c => c.includes('campaign')) && h.some(c => c.includes('device'));
+}
+
+// ── Parse CSV "Views of visitors" da DisplayForce ────────────────────────────
+// Agrupa por (Campaign + Device) e calcula visitantes, atenção, datas
+function parseViewsCsv(csvText: string): any[] {
+  const lines = csvText.split(/\r?\n/);
+  if (lines.length < 2) return [];
+
+  // Pula linha de cabeçalho extra (às vezes tem 2 linhas de cabeçalho)
+  let headerLine = 0;
+  for (let i = 0; i < Math.min(4, lines.length); i++) {
+    if (lines[i].includes(',') && lines[i].toLowerCase().includes('campaign')) {
+      headerLine = i;
+      break;
+    }
+  }
+
+  const sep = lines[headerLine].includes(';') ? ';' : ',';
+  const parseRow = (line: string) => {
+    const parts: string[] = [];
+    let cur = '';
+    let inQ = false;
+    for (const ch of line) {
+      if (ch === '"') { inQ = !inQ; continue; }
+      if (ch === sep && !inQ) { parts.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
+    }
+    parts.push(cur.trim());
+    return parts;
+  };
+
+  const headers = parseRow(lines[headerLine]);
+  const find = (...names: string[]) => {
+    for (const n of names) {
+      const idx = headers.findIndex(h => h.toLowerCase().includes(n.toLowerCase()));
+      if (idx >= 0) return idx;
+    }
+    return -1;
+  };
+
+  const iCampaign   = find('Campaign', 'Campanha');
+  const iDevice     = find('Device', 'Dispositivo');
+  const iVisitor    = find('Visitor ID', 'VisitorID');
+  const iContactId  = find('Contact ID', 'ContactID');
+  const iContactDur = find('Contact Duration');
+  const iStart      = find('Content View Start', 'Contact Start');
+  const iEnd        = find('Content View End', 'Contact End');
+
+  if (iCampaign < 0 || iDevice < 0) return [];
+
+  // Acumula por (campaign, device)
+  const map = new Map<string, {
+    visitors: Set<string>;
+    contactIds: Map<string, number>;
+    startDates: Date[];
+    endDates: Date[];
+  }>();
+
+  for (let i = headerLine + 1; i < lines.length; i++) {
+    const row = parseRow(lines[i]);
+    if (row.length < 3) continue;
+
+    const campaign = row[iCampaign]?.trim();
+    const device   = row[iDevice]?.trim();
+    if (!campaign || !device) continue;
+
+    const key = `${campaign}|||${device}`;
+    if (!map.has(key)) map.set(key, { visitors: new Set(), contactIds: new Map(), startDates: [], endDates: [] });
+    const agg = map.get(key)!;
+
+    const visId = iVisitor >= 0 ? row[iVisitor]?.trim() : null;
+    if (visId) agg.visitors.add(visId);
+
+    if (iContactId >= 0 && iContactDur >= 0) {
+      const cid = row[iContactId]?.trim();
+      const dur = parseFloat(row[iContactDur]) || 0;
+      if (cid && !agg.contactIds.has(cid)) agg.contactIds.set(cid, dur);
+    }
+
+    if (iStart >= 0 && row[iStart]) {
+      const d = new Date(row[iStart]);
+      if (!isNaN(d.getTime())) agg.startDates.push(d);
+    }
+    if (iEnd >= 0 && row[iEnd]) {
+      const d = new Date(row[iEnd]);
+      if (!isNaN(d.getTime())) agg.endDates.push(d);
+    }
+  }
+
+  const results: any[] = [];
+  for (const [key, agg] of map) {
+    const [campaign, device] = key.split('|||');
+
+    // Extrai loja e tipo_midia do device (formato: "Loja Name - TipoMidia" ou "Loja: Name - TipoMidia")
+    let loja = device;
+    let tipo_midia = '';
+    const devClean = device.includes(': ') ? device.split(': ').slice(1).join(': ') : device;
+    if (devClean.includes(' - ')) {
+      const parts = devClean.split(' - ');
+      loja = parts.slice(0, -1).join(' - ').trim();
+      tipo_midia = parts[parts.length - 1].trim();
+    } else {
+      loja = devClean;
+    }
+
+    const visitors = agg.visitors.size || agg.contactIds.size;
+
+    let avg_attention_sec = 0;
+    if (agg.contactIds.size > 0) {
+      const total = [...agg.contactIds.values()].reduce((a, b) => a + b, 0);
+      avg_attention_sec = Math.round(total / agg.contactIds.size);
+    }
+
+    const start_date = agg.startDates.length > 0
+      ? new Date(Math.min(...agg.startDates.map(d => d.getTime()))).toISOString()
+      : null;
+    const end_date = agg.endDates.length > 0
+      ? new Date(Math.max(...agg.endDates.map(d => d.getTime()))).toISOString()
+      : null;
+
+    let duration_days: number | null = null;
+    let duration_hms: string | null = null;
+    if (start_date && end_date) {
+      const delta = (new Date(end_date).getTime() - new Date(start_date).getTime()) / 1000;
+      duration_days = Math.round(delta / 86400 * 100) / 100;
+      const hh = Math.floor(delta / 3600);
+      const mm = Math.floor((delta % 3600) / 60);
+      const ss = Math.floor(delta % 60);
+      duration_hms = `${hh}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
+    }
+
+    results.push({ name: campaign, tipo_midia, loja, start_date, end_date, duration_days, duration_hms, visitors, avg_attention_sec });
+  }
+
+  return results;
+}
+
+// ── Extrai ZIP e retorna lista de {filename, bytes} ───────────────────────────
+async function extractZip(buf: ArrayBuffer): Promise<{name: string; bytes: Uint8Array}[]> {
+  return new Promise((resolve, reject) => {
+    unzip(new Uint8Array(buf), (err, files) => {
+      if (err) { reject(err); return; }
+      const result: {name: string; bytes: Uint8Array}[] = [];
+      for (const [name, bytes] of Object.entries(files)) {
+        // ignora diretórios e arquivos ocultos
+        if (name.endsWith('/') || name.startsWith('__MACOSX')) continue;
+        result.push({ name, bytes });
+      }
+      resolve(result);
+    });
+  });
+}
+
+// ── Processa um arquivo (bytes + nome) → linhas para Supabase ─────────────────
+function processFileBytes(name: string, bytes: Uint8Array): any[] {
+  const lowerName = name.toLowerCase();
+
+  if (lowerName.endsWith('.csv')) {
+    const text = new TextDecoder('utf-8').decode(bytes);
+    const firstLine = text.split('\n')[0] || '';
+    const headers = firstLine.split(/[,;]/).map(h => h.trim().replace(/^"|"$/g, ''));
+    if (isViewsCsvFormat(headers)) {
+      return parseViewsCsv(text);
+    }
+    // CSV resumo → converte para sheet e usa parseRowsExcel
+    const wb = XLSX.read(bytes, { type: 'array' });
+    return parseRowsExcel(wb.Sheets[wb.SheetNames[0]]);
+  }
+
+  if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
+    const wb = XLSX.read(bytes, { type: 'array', cellDates: false });
+    return parseRowsExcel(wb.Sheets[wb.SheetNames[0]]);
+  }
+
+  return [];
+}
+
+// ── Componente principal ──────────────────────────────────────────────────────
 export function CampaignUpload() {
   const { id: clientId } = useParams();
   const navigate = useNavigate();
@@ -113,33 +280,59 @@ export function CampaignUpload() {
   const [status,   setStatus]     = useState<'idle' | 'parsing' | 'uploading' | 'done' | 'error'>('idle');
   const [preview,  setPreview]    = useState<any[]>([]);
   const [message,  setMessage]    = useState('');
-  const [_upserted, setUpserted]   = useState(0);
+  const [_upserted, setUpserted]  = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (file: File) => {
     setStatus('parsing');
     setMessage('');
     try {
-      const buf  = await file.arrayBuffer();
-      const wb   = XLSX.read(buf, { type: 'array', cellDates: false });
-      const ws   = wb.Sheets[wb.SheetNames[0]];
-      const rows = parseRows(ws);
+      const buf = await file.arrayBuffer();
+      const lowerName = file.name.toLowerCase();
+      let allRows: any[] = [];
 
-      if (rows.length === 0) {
+      if (lowerName.endsWith('.zip')) {
+        setMessage('Extraindo ZIP...');
+        const files = await extractZip(buf);
+        const procFiles = files.filter(f => /\.(csv|xlsx|xls)$/i.test(f.name));
+        if (procFiles.length === 0) {
+          setStatus('error');
+          setMessage('ZIP não contém arquivos .csv, .xlsx ou .xls reconhecíveis.');
+          return;
+        }
+        for (const f of procFiles) {
+          const rows = processFileBytes(f.name, f.bytes);
+          allRows = allRows.concat(rows);
+        }
+      } else if (lowerName.endsWith('.csv')) {
+        const text = new TextDecoder('utf-8').decode(new Uint8Array(buf));
+        const firstLine = text.split('\n')[0] || '';
+        const headers = firstLine.split(/[,;]/).map(h => h.trim().replace(/^"|"$/g, ''));
+        if (isViewsCsvFormat(headers)) {
+          allRows = parseViewsCsv(text);
+        } else {
+          const wb = XLSX.read(buf, { type: 'array' });
+          allRows = parseRowsExcel(wb.Sheets[wb.SheetNames[0]]);
+        }
+      } else {
+        const wb = XLSX.read(buf, { type: 'array', cellDates: false });
+        allRows = parseRowsExcel(wb.Sheets[wb.SheetNames[0]]);
+      }
+
+      if (allRows.length === 0) {
         setStatus('error');
         setMessage('Nenhuma linha válida encontrada. Verifique o formato do arquivo.');
         return;
       }
 
-      setPreview(rows.slice(0, 5));
+      setPreview(allRows.slice(0, 5));
       setStatus('uploading');
-      setMessage(`${rows.length} campanhas encontradas. Salvando...`);
+      setMessage(`${allRows.length} registros encontrados. Salvando...`);
 
-      // Upsert no Supabase
-      const payload = rows.map(r => ({
+      const payload = allRows.map(r => ({
         ...r,
         client_id:  clientId,
-        updated_at: new Date().toISOString(),
+        uploaded_at: new Date().toISOString(),
       }));
 
       let saved = 0;
@@ -149,13 +342,22 @@ export function CampaignUpload() {
           .from('campaigns')
           .upsert(chunk, { onConflict: 'client_id,name,start_date', ignoreDuplicates: false })
           .select('id');
-        if (error) throw error;
-        saved += data?.length ?? chunk.length;
+        if (error) {
+          // Tenta sem start_date no conflict
+          const { error: e2, data: d2 } = await supabase
+            .from('campaigns')
+            .upsert(chunk, { onConflict: 'client_id,name', ignoreDuplicates: false })
+            .select('id');
+          if (e2) throw e2;
+          saved += d2?.length ?? chunk.length;
+        } else {
+          saved += data?.length ?? chunk.length;
+        }
       }
 
       setUpserted(saved);
       setStatus('done');
-      setMessage(`✅ ${saved} campanhas salvas com sucesso!`);
+      setMessage(`✅ ${saved} registros salvos com sucesso!`);
     } catch (e: any) {
       console.error(e);
       setStatus('error');
@@ -189,10 +391,10 @@ export function CampaignUpload() {
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <FileSpreadsheet className="text-emerald-500" />
-            Upload de Campanhas
+            Upload de Dados DisplayForce
           </h1>
           <p className="text-gray-400 text-sm mt-1">
-            Arraste o relatório Excel da Displayforce para importar as campanhas automaticamente
+            Arraste o arquivo <strong>attachments.zip</strong> do e-mail da DisplayForce, ou qualquer Excel/CSV de campanhas
           </p>
         </div>
       </div>
@@ -208,11 +410,25 @@ export function CampaignUpload() {
             dragging ? 'border-emerald-400 bg-emerald-900/10' : 'border-gray-700 hover:border-gray-500 hover:bg-gray-900'
           }`}
         >
-          <Upload size={48} className={`mb-4 ${dragging ? 'text-emerald-400' : 'text-gray-600'}`} />
+          <div className="flex gap-3 mb-4">
+            <FileArchive size={40} className={dragging ? 'text-emerald-400' : 'text-gray-500'} />
+            <Upload size={40} className={dragging ? 'text-emerald-400' : 'text-gray-600'} />
+          </div>
           <p className="text-lg font-medium text-gray-300">Arraste o arquivo aqui</p>
           <p className="text-sm text-gray-500 mt-1">ou clique para selecionar</p>
-          <p className="text-xs text-gray-600 mt-3">.xlsx, .xls, .csv</p>
-          <input ref={fileRef} type="file" accept=".xlsx,.xls,.csv" className="hidden" onChange={onInput} />
+          <p className="text-xs text-gray-600 mt-3">.zip · .xlsx · .xls · .csv</p>
+          <input ref={fileRef} type="file" accept=".zip,.xlsx,.xls,.csv" className="hidden" onChange={onInput} />
+        </div>
+      )}
+
+      {/* Instrução rápida */}
+      {status === 'idle' && (
+        <div className="bg-blue-950/30 border border-blue-800/40 rounded-xl p-4 text-sm text-blue-300 space-y-1">
+          <p className="font-semibold text-blue-200">📧 Como importar do e-mail da DisplayForce:</p>
+          <p>1. Abra o e-mail "Relatório de visitantes" recebido da DisplayForce</p>
+          <p>2. Baixe o arquivo <code className="bg-blue-900/40 px-1 rounded">attachments.zip</code></p>
+          <p>3. Arraste o ZIP aqui (não precisa extrair)</p>
+          <p>4. Os dados aparecerão automaticamente no widget "Engajamento em Campanhas"</p>
         </div>
       )}
 
@@ -220,7 +436,7 @@ export function CampaignUpload() {
       {(status === 'parsing' || status === 'uploading') && (
         <div className="flex flex-col items-center justify-center py-16 gap-4">
           <Loader2 size={40} className="text-emerald-400 animate-spin" />
-          <p className="text-gray-300">{status === 'parsing' ? 'Lendo arquivo...' : message}</p>
+          <p className="text-gray-300">{status === 'parsing' ? (message || 'Lendo arquivo...') : message}</p>
         </div>
       )}
 
@@ -235,7 +451,6 @@ export function CampaignUpload() {
             </div>
           </div>
 
-          {/* Preview */}
           {preview.length > 0 && (
             <div>
               <h3 className="text-sm font-bold uppercase tracking-wider text-gray-500 mb-3">Prévia (primeiras linhas)</h3>
@@ -244,8 +459,8 @@ export function CampaignUpload() {
                   <thead className="bg-gray-900 text-gray-400 uppercase">
                     <tr>
                       <th className="px-4 py-2">Campanha</th>
+                      <th className="px-4 py-2">Loja</th>
                       <th className="px-4 py-2">Início</th>
-                      <th className="px-4 py-2">Fim</th>
                       <th className="px-4 py-2">Visitantes</th>
                       <th className="px-4 py-2">Atenção</th>
                     </tr>
@@ -254,8 +469,8 @@ export function CampaignUpload() {
                     {preview.map((r, i) => (
                       <tr key={i} className="hover:bg-gray-900">
                         <td className="px-4 py-2 text-white font-medium">{r.name || '—'}</td>
+                        <td className="px-4 py-2 text-gray-300">{r.loja || '—'}</td>
                         <td className="px-4 py-2 text-gray-400">{r.start_date ? new Date(r.start_date).toLocaleDateString('pt-BR') : '—'}</td>
-                        <td className="px-4 py-2 text-gray-400">{r.end_date   ? new Date(r.end_date).toLocaleDateString('pt-BR')   : '—'}</td>
                         <td className="px-4 py-2 text-emerald-400">{Number(r.visitors).toLocaleString('pt-BR')}</td>
                         <td className="px-4 py-2 text-blue-400">
                           {r.avg_attention_sec > 0
@@ -296,3 +511,5 @@ export function CampaignUpload() {
     </div>
   );
 }
+
+export default CampaignUpload;

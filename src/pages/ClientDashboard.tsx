@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useAuth } from '../contexts/AuthContext';
 import {
   Globe, Clock, Building2, ChevronRight, ChevronDown,
   LayoutGrid, Users, BarChart2, Image, Upload, Calendar,
@@ -53,6 +54,7 @@ export function ClientDashboard() {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
+  const { user: authUser } = useAuth();
 
   const [view, setView] = useState<'network' | 'store' | 'camera'>('network');
   const [selectedStore, setSelectedStore] = useState<StoreType | null>(null);
@@ -62,10 +64,12 @@ export function ClientDashboard() {
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
   const [selectedStartDate, setSelectedStartDate] = useState<Date>(() => {
-    const now = new Date(); now.setUTCHours(0, 0, 0, 0); return now;
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setUTCHours(0, 0, 0, 0); return yesterday;
   });
   const [selectedEndDate, setSelectedEndDate] = useState<Date>(() => {
-    const now = new Date(); now.setUTCHours(23, 59, 59, 999); return now;
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setUTCHours(23, 59, 59, 999); return yesterday;
   });
   const [showDatePicker, setShowDatePicker] = useState(false);
   const autoTodayRef = useRef(true);
@@ -100,12 +104,12 @@ export function ClientDashboard() {
     return () => clearTimeout(t);
   }, [syncMessage]);
 
-  // Auto-hoje
+  // Auto-D1 (ontem)
   useEffect(() => {
     const tick = () => {
       if (!autoTodayRef.current) return;
-      const s = new Date(); s.setUTCHours(0, 0, 0, 0);
-      const e = new Date(); e.setUTCHours(23, 59, 59, 999);
+      const s = new Date(); s.setDate(s.getDate() - 1); s.setUTCHours(0, 0, 0, 0);
+      const e = new Date(); e.setDate(e.getDate() - 1); e.setUTCHours(23, 59, 59, 999);
       if (selectedStartDate.getTime() !== s.getTime()) setSelectedStartDate(s);
       if (selectedEndDate.getTime() !== e.getTime()) setSelectedEndDate(e);
     };
@@ -827,8 +831,9 @@ export function ClientDashboard() {
       if (isD1 && !didApplyD1DefaultRef.current && autoTodayRef.current) {
         didApplyD1DefaultRef.current = true;
         autoTodayRef.current = false;
-        const e = new Date(); e.setUTCHours(23, 59, 59, 999);
-        const s = new Date(e); s.setUTCDate(s.getUTCDate() - 3); s.setUTCHours(0, 0, 0, 0);
+        const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+        const s = new Date(yesterday); s.setUTCHours(0, 0, 0, 0);
+        const e = new Date(yesterday); e.setUTCHours(23, 59, 59, 999);
         setSelectedStartDate(s);
         setSelectedEndDate(e);
       }
@@ -1128,6 +1133,17 @@ export function ClientDashboard() {
                 {isFullscreen ? <Minimize2 size={16} className="text-emerald-400" /> : <Maximize2 size={16} className="text-gray-400" />}
               </button>
 
+              {/* Upload campanhas (apenas admin) */}
+              {authUser?.role === 'admin' && (
+                <button
+                  onClick={() => navigate(`/clientes/${id}/campanhas`)}
+                  title="Importar relatório de campanhas do e-mail"
+                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-blue-500 hover:text-blue-400 transition-colors flex-shrink-0 h-[38px] w-[38px]"
+                >
+                  <Upload size={16} className="text-gray-400" />
+                </button>
+              )}
+
               {/* Sync manual */}
               <button
                 onClick={() => triggerBackgroundSync(true)}
@@ -1252,22 +1268,4 @@ export function ClientDashboard() {
                 const heightPx = Number(widgetLayout[widget.id]?.heightPx);
                 const defaultHeightPx = widget.id === 'campaigns' ? 560 : NaN;
                 const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : defaultHeightPx;
-                const widgetStyle = Number.isFinite(resolvedHeightPx) ? { height: Math.round(resolvedHeightPx) } : undefined;
-                return (
-                  <div key={widget.id} style={widgetStyle} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>
-                    <Component {...widgetProps} />
-                  </div>
-                );
-              })
-            ) : (
-              <div className="col-span-full text-center py-20 text-gray-500">
-                <LayoutGrid size={48} className="mx-auto mb-4 opacity-20" />
-                <p>Nenhum widget configurado para este dashboard.</p>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
+   
