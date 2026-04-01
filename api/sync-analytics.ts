@@ -472,8 +472,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[sync_stores] Lojas encontradas: ${folders.length}`);
 
       const devicesData = await fetchAllPages(`${base}/public/v1/device/list`,
-        { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags","connection_state"] });
+        { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags","connection_state","status","state","online","is_online","active","player_state","playback_state"] });
       console.log(`[sync_stores] Dispositivos encontrados: ${devicesData.length}`);
+      // Log do primeiro dispositivo para diagnóstico de campos disponíveis
+      if (devicesData.length > 0) console.log(`[sync_stores] Exemplo de dispositivo (raw):`, JSON.stringify(devicesData[0]));
 
       if (folders.length === 0) return ok(res, { message:"Nenhuma loja encontrada na API DisplayForce", stores_upserted:0, devices_upserted:0 });
 
