@@ -69,6 +69,7 @@ export function ClientDashboard() {
   });
   const [showDatePicker, setShowDatePicker] = useState(false);
   const autoTodayRef = useRef(true);
+  const didApplyD1DefaultRef = useRef(false);
 
   const [syncMessage, setSyncMessage] = useState('');
   const [isSyncingStores, setIsSyncingStores] = useState(false);
@@ -804,7 +805,19 @@ export function ClientDashboard() {
   const refreshClientAndStores = useCallback(async () => {
     if (!id) return;
     const { data: client } = await supabase.from('clients').select('name, logo_url').eq('id', id).single();
-    if (client) setClientData({ name: client.name, logo: client.logo_url });
+    if (client) {
+      setClientData({ name: client.name, logo: client.logo_url });
+
+      const isD1 = String(client.name || '').toLowerCase().includes('panvel');
+      if (isD1 && !didApplyD1DefaultRef.current && autoTodayRef.current) {
+        didApplyD1DefaultRef.current = true;
+        autoTodayRef.current = false;
+        const s = new Date(); s.setUTCDate(s.getUTCDate() - 2); s.setUTCHours(0, 0, 0, 0);
+        const e = new Date(); e.setUTCHours(23, 59, 59, 999);
+        setSelectedStartDate(s);
+        setSelectedEndDate(e);
+      }
+    }
     const { data: storesData }  = await supabase.from('stores').select('id, name, city').eq('client_id', id);
     // Busca apenas dispositivos das lojas deste cliente (via store_id IN)
     const storeIds = (storesData || []).map((s: any) => s.id).filter(Boolean);
