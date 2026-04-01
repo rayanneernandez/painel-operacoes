@@ -96,6 +96,7 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
     except ImportError:
         log.error("pandas nao instalado"); return []
 
+<<<<<<< HEAD
     log.info(f"  Processando: {nome_arquivo}")
     ext = os.path.splitext(nome_arquivo.lower())[1]
     df = None
@@ -123,6 +124,40 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
 
     if df is None:
         log.error(f"  Nao conseguiu ler: {nome_arquivo}"); return []
+=======
+    log.info(f"  Processando arquivo: {nome_arquivo}")
+    ext = os.path.splitext(nome_arquivo.lower())[1]
+
+    df = None
+    if ext in (".xlsx", ".xls"):
+        try:
+            df = pd.read_excel(io.BytesIO(csv_bytes), skiprows=1)
+        except Exception as e:
+            log.error(f"  Não conseguiu ler Excel: {e}")
+            return []
+    else:
+        # .csv ou .txt — tenta UTF-8 depois latin-1
+        for enc in ("utf-8", "latin-1", "utf-8-sig"):
+            try:
+                # Tenta com e sem skiprows=1
+                for skip in (1, 0):
+                    try:
+                        df = pd.read_csv(io.BytesIO(csv_bytes), skiprows=skip, encoding=enc)
+                        # Verifica se parece ter as colunas certas
+                        cols = [str(c).lower() for c in df.columns]
+                        if any("campaign" in c or "campanha" in c or "visitor" in c for c in cols):
+                            break
+                    except Exception:
+                        continue
+                if df is not None:
+                    break
+            except Exception:
+                continue
+
+    if df is None:
+        log.error(f"  Não conseguiu ler arquivo: {nome_arquivo}")
+        return []
+>>>>>>> deedbe4 (fix: importar_agora.py aceita .xlsx/.xls além de .csv dentro dos ZIPs)
 
     df.columns = [str(c).strip() for c in df.columns]
     log.info(f"  {len(df)} linhas | Colunas: {list(df.columns)[:8]}")
@@ -201,7 +236,34 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
     log.info(f"  -> {len(registros)} registros extraidos")
     return registros
 
+<<<<<<< HEAD
 def detectar_cliente(assunto, remetente):
+=======
+# ── Extrai arquivos de um ZIP ─────────────────────────────────────────────────
+EXTENSOES_ACEITAS = (".csv", ".xlsx", ".xls", ".txt")
+
+def extrair_zip(zip_bytes: bytes) -> list:
+    """Retorna lista de (nome_arquivo, conteudo_bytes)"""
+    arquivos = []
+    try:
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
+            todos = [n for n in z.namelist() if not n.endswith("/") and not n.startswith("__MACOSX")]
+            log.info(f"    Conteúdo do ZIP ({len(todos)} arquivo(s)): {todos[:10]}")
+            for nome in todos:
+                ext = os.path.splitext(nome.lower())[1]
+                if ext in EXTENSOES_ACEITAS:
+                    arquivos.append((nome, z.read(nome)))
+                    log.info(f"    ✔ Arquivo aceito: {nome}")
+                else:
+                    log.info(f"    ✗ Arquivo ignorado (extensão {ext!r}): {nome}")
+    except zipfile.BadZipFile as e:
+        log.error(f"  ZIP inválido: {e}")
+    return arquivos
+
+# ── Detecta qual cliente pertence o e-mail ────────────────────────────────────
+def detectar_cliente(assunto: str, remetente: str) -> tuple[str, str] | None:
+    """Retorna (nome_cliente, client_id) ou None"""
+>>>>>>> deedbe4 (fix: importar_agora.py aceita .xlsx/.xls além de .csv dentro dos ZIPs)
     texto = (assunto + " " + remetente).lower()
     for nome, uid in CLIENTES.items():
         if nome in texto: return nome, uid
@@ -275,6 +337,11 @@ def main():
     processados = set()
 
     for assunto, remetente, zip_bytes in emails:
+<<<<<<< HEAD
+=======
+        # Evita processar o mesmo ZIP duas vezes (pelo hash)
+        import hashlib
+>>>>>>> deedbe4 (fix: importar_agora.py aceita .xlsx/.xls além de .csv dentro dos ZIPs)
         chave = hashlib.md5(zip_bytes).hexdigest()
         if chave in processados:
             log.info("  (ZIP ja processado)"); continue

@@ -19,7 +19,11 @@ jobs:
         with:
           python-version: '3.11'
 
+<<<<<<< HEAD
       - name: Instalar dependências (com suporte a Excel)
+=======
+      - name: Instalar dependências (leve — sem Playwright)
+>>>>>>> deedbe4 (fix: importar_agora.py aceita .xlsx/.xls além de .csv dentro dos ZIPs)
         run: pip install pandas requests imap-tools openpyxl xlrd
 
       - name: Importar e-mails da DisplayForce para o Supabase
