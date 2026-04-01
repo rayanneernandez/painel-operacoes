@@ -1,0 +1,44 @@
+name: Auto-Import — DisplayForce Emails → Supabase
+
+on:
+  # Roda a cada 4 horas automaticamente
+  schedule:
+    - cron: '0 */4 * * *'
+
+  # Permite rodar manualmente pelo GitHub (botão "Run workflow")
+  workflow_dispatch:
+
+jobs:
+  importar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Baixar código
+        uses: actions/checkout@v4
+
+      - name: Instalar Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependências (leve — sem Playwright)
+        run: pip install pandas requests imap-tools
+
+      - name: Importar e-mails da DisplayForce para o Supabase
+        env:
+          IMAP_EMAIL:        ${{ secrets.IMAP_EMAIL }}
+          IMAP_PASSWORD:     ${{ secrets.IMAP_PASSWORD }}
+          IMAP_SERVER:       "imap.gmail.com"
+          IMAP_PORT:         "993"
+          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          CLIENTES_FALLBACK: "Panvel|c6999bd9-14c0-4e26-abb1-d4b852d34421,Assai|b1c05e4d-0417-4853-9af9-8c0725df1880"
+        run: python importar_agora.py
+
+      - name: Salvar log se falhar
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: log-import-${{ github.run_id }}
+          path: importar_agora.log
