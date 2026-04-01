@@ -930,23 +930,44 @@ export function ClientDashboard() {
     };
     (async () => {
       if (!id) return;
-      const fetchConfig = async (scope: 'global' | 'client') => {
+      const fetchConfig = async (scope: 'global' | 'client' | 'client_user') => {
         const q = supabase.from('dashboard_configs').select('widgets_config, updated_at').eq('layout_name', scope).order('updated_at', { ascending: false }).limit(1);
         const { data } = scope === 'global' ? await q.is('client_id', null) : await q.eq('client_id', id);
         return data?.[0]?.widgets_config ?? null;
       };
-      let widgetsConfig = await fetchConfig('client');
-      if (!widgetsConfig) widgetsConfig = await fetchConfig('global');
-      let resolved = resolveDashboardConfig(widgetsConfig);
-      if (!resolved.ids) {
+
+      // 1. Widgets permitidos pelo admin (layout 'client' ou 'global')
+      let allowedConfig = await fetchConfig('client');
+      if (!allowedConfig) allowedConfig = await fetchConfig('global');
+      let allowedResolved = resolveDashboardConfig(allowedConfig);
+      if (!allowedResolved.ids) {
         const cc = localStorage.getItem(`dashboard-config-${id}`);
         const gc = localStorage.getItem('dashboard-config-global');
-        resolved = resolveDashboardConfig(cc ? JSON.parse(cc) : null);
-        if (!resolved.ids) resolved = resolveDashboardConfig(gc ? JSON.parse(gc) : null);
+        allowedResolved = resolveDashboardConfig(cc ? JSON.parse(cc) : null);
+        if (!allowedResolved.ids) allowedResolved = resolveDashboardConfig(gc ? JSON.parse(gc) : null);
       }
-      const finalIds = resolved.ids && resolved.ids.length ? resolved.ids : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
-      const active = finalIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
-      if (!cancelled) { setActiveWidgets(active); setWidgetLayout(resolved.widgetLayout); setIsLoadingConfig(false); }
+      const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+      const allowedIds = allowedResolved.ids && allowedResolved.ids.length ? allowedResolved.ids : defaultIds;
+      const allowedSet = new Set(allowedIds);
+
+      // 2. Seleção ativa do usuário (layout 'client_user') — pode remover widgets permitidos
+      let userConfig = await fetchConfig('client_user');
+      let userResolved = resolveDashboardConfig(userConfig);
+      if (!userResolved.ids) {
+        const uc = localStorage.getItem(`dashboard-config-user-${id}`);
+        userResolved = resolveDashboardConfig(uc ? JSON.parse(uc) : null);
+      }
+
+      // Se o usuário tem seleção salva, usa ela (filtrada pelos permitidos); senão usa todos os permitidos
+      const activeIds = userResolved.ids && userResolved.ids.length
+        ? userResolved.ids.filter((wid) => allowedSet.has(wid))
+        : allowedIds;
+
+      // Layout: combina allowed + user (user sobrescreve)
+      const mergedLayout = { ...allowedResolved.widgetLayout, ...userResolved.widgetLayout };
+
+      const active = activeIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
+      if (!cancelled) { setActiveWidgets(active); setWidgetLayout(mergedLayout); setIsLoadingConfig(false); }
     })();
     return () => { cancelled = true; };
   }, [id]);

@@ -446,14 +446,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Usa extractVisitorArray definida globalmente para extrair array de qualquer formato
 
-      // Busca paginada de uma URL com suporte a GET e POST
-      const fetchAllPages = async (url: string, bodyBase: any): Promise<any[]> => {
+      // Busca paginada de uma URL (usePost=true força POST para que params sejam enviados no body)
+      const fetchAllPages = async (url: string, bodyBase: any, usePost = false): Promise<any[]> => {
         const all: any[] = [];
         let offset = 0; const limit = 500;
         while (true) {
           const body = { ...bodyBase, limit, offset };
-          let r = await fetch(`${url}?recursive=true&limit=${limit}&offset=${offset}`, { method: "GET", headers });
-          if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+          let r: Response;
+          if (usePost) {
+            r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+          } else {
+            r = await fetch(`${url}?recursive=true&limit=${limit}&offset=${offset}`, { method: "GET", headers });
+            if (!r.ok) r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+          }
           if (!r.ok) { console.warn(`[sync_stores] ${url} retornou ${r.status}`); break; }
           const json = await r.json();
           const page = extractVisitorArray(json);
@@ -472,7 +477,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.log(`[sync_stores] Lojas encontradas: ${folders.length}`);
 
       const devicesData = await fetchAllPages(`${base}/public/v1/device/list`,
-        { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags","connection_state","status","state","online","is_online","active","player_state","playback_state"] });
+        { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags","connection_state","status","state","online","is_online","active","player_state","playback_state"] }, true);
       console.log(`[sync_stores] Dispositivos encontrados: ${devicesData.length}`);
       // Log do primeiro dispositivo para diagnóstico de campos disponíveis
       if (devicesData.length > 0) {

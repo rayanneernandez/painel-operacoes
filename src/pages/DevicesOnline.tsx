@@ -24,7 +24,7 @@ export function DevicesOnline() {
   }, [isAdmin, selectedClientId, user?.clientId]);
 
   const [stores, setStores] = useState<UiStore[]>([]);
-  const [expandedStore, setExpandedStore] = useState<string | null>(null);
+  const [expandedStores, setExpandedStores] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [lastUpdatedAt, setLastUpdatedAt] = useState<Date | null>(null);
@@ -75,9 +75,18 @@ export function DevicesOnline() {
   }, []);
 
   // ── Carrega lojas e dispositivos do banco ──────────────────────────────────
+  const toggleStore = useCallback((storeId: string) => {
+    setExpandedStores(prev => {
+      const next = new Set(prev);
+      if (next.has(storeId)) next.delete(storeId);
+      else next.add(storeId);
+      return next;
+    });
+  }, []);
+
   const refresh = useCallback(async (clientId?: string, forceSync = false) => {
     const cid = clientId ?? activeClientId;
-    if (!cid) { setStores([]); setExpandedStore(null); return; }
+    if (!cid) { setStores([]); setExpandedStores(new Set()); return; }
 
     setLoading(true);
     try {
@@ -116,11 +125,16 @@ export function DevicesOnline() {
 
       setStores(formatted);
       setLastUpdatedAt(new Date());
-      if (expandedStore && !formatted.some(s => s.id === expandedStore)) setExpandedStore(null);
+      // remove lojas expandidas que não existem mais
+      setExpandedStores(prev => {
+        const storeIdSet = new Set(formatted.map(s => s.id));
+        const next = new Set([...prev].filter(id => storeIdSet.has(id)));
+        return next.size !== prev.size ? next : prev;
+      });
     } finally {
       setLoading(false);
     }
-  }, [activeClientId, syncWithDisplayForce, expandedStore]);
+  }, [activeClientId, syncWithDisplayForce]);
 
   // Carrega ao trocar de cliente
   useEffect(() => {
@@ -232,7 +246,7 @@ export function DevicesOnline() {
                   <div key={store.id} className="bg-gray-950 rounded-xl border border-gray-800 overflow-hidden">
                     <div
                       className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-900 transition-colors"
-                      onClick={() => setExpandedStore(expandedStore === store.id ? null : store.id)}
+                      onClick={() => toggleStore(store.id)}
                     >
                       <div className="flex items-center gap-4">
                         <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${storeIsOnline ? 'bg-emerald-500/10' : 'bg-gray-900'}`}>
@@ -258,13 +272,13 @@ export function DevicesOnline() {
                             <span className="w-2 h-2 rounded-full bg-red-500" />{offlineCount}
                           </span>
                         </div>
-                        {expandedStore === store.id
+                        {expandedStores.has(store.id)
                           ? <ChevronUp size={18} className="text-gray-500" />
                           : <ChevronDown size={18} className="text-gray-500" />}
                       </div>
                     </div>
 
-                    {expandedStore === store.id && (
+                    {expandedStores.has(store.id) && (
                       <div className="bg-gray-900/50 border-t border-gray-800 p-4 animate-in slide-in-from-top-2 duration-200">
                         <h5 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
                           <Camera size={12} /> Dispositivos
