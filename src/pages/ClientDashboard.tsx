@@ -1148,7 +1148,7 @@ export function ClientDashboard() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         {getStats().map((stat, index) => (
           <div key={index} className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden group hover:border-gray-700 transition-all">
             <div className="bg-blue-600/20 p-2 text-center border-b border-blue-600/10">
@@ -1161,36 +1161,6 @@ export function ClientDashboard() {
             </div>
           </div>
         ))}
-        {/* Card de Lojas */}
-        {(() => {
-          const onlineCount  = stores.filter(s => s.status === 'online').length;
-          const offlineCount = stores.filter(s => s.status === 'offline').length;
-          return (
-            <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden hover:border-gray-700 transition-all">
-              <div className="bg-emerald-600/20 p-2 text-center border-b border-emerald-600/10">
-                <p className="text-xs text-emerald-400 font-bold uppercase tracking-wider flex items-center justify-center gap-1">
-                  <Building2 size={11} /> Lojas Cadastradas
-                </p>
-              </div>
-              <div className="p-4 text-center">
-                {isSyncingStores
-                  ? <div className="h-8 bg-gray-800 rounded animate-pulse mx-auto w-16" />
-                  : <>
-                      <p className="text-2xl font-bold text-white tracking-tight">{stores.length}</p>
-                      <div className="flex justify-center gap-3 mt-1">
-                        <span className="text-[10px] flex items-center gap-1 text-emerald-400">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 inline-block" />{onlineCount} online
-                        </span>
-                        <span className="text-[10px] flex items-center gap-1 text-gray-500">
-                          <span className="w-1.5 h-1.5 rounded-full bg-gray-600 inline-block" />{offlineCount} offline
-                        </span>
-                      </div>
-                    </>
-                }
-              </div>
-            </div>
-          );
-        })()}
       </div>
 
       {/* Widgets */}
