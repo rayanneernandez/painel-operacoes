@@ -339,9 +339,12 @@ const FACIAL_HAIR_MAP: Record<string, { label: string; color: string }> = {
   cerdas: { label: 'Cerdas', color: '#d97706' }, stubble: { label: 'Cerdas', color: '#d97706' },
 };
 const GLASSES_MAP: Record<string, { label: string; color: string }> = {
-  'sem óculos': { label: 'Sem óculos', color: '#e5e7eb' }, none: { label: 'Sem óculos', color: '#e5e7eb' }, 'false': { label: 'Sem óculos', color: '#e5e7eb' },
-  'óculos normais': { label: 'Óculos normais', color: '#93c5fd' }, normal: { label: 'Óculos normais', color: '#93c5fd' }, regular: { label: 'Óculos normais', color: '#93c5fd' }, 'true': { label: 'Óculos normais', color: '#93c5fd' },
-  'óculos escuros': { label: 'Óculos escuros', color: '#374151' }, dark: { label: 'Óculos escuros', color: '#374151' }, sunglasses: { label: 'Óculos escuros', color: '#374151' },
+  // Sem óculos
+  'sem óculos': { label: 'Sem Óculos', color: '#4b5563' }, none: { label: 'Sem Óculos', color: '#4b5563' }, 'false': { label: 'Sem Óculos', color: '#4b5563' }, '0': { label: 'Sem Óculos', color: '#4b5563' },
+  // Óculos normais (valor "usual" vem do normalizador em sync-analytics)
+  'óculos normais': { label: 'Óculos Normais', color: '#93c5fd' }, usual: { label: 'Óculos Normais', color: '#93c5fd' }, normal: { label: 'Óculos Normais', color: '#93c5fd' }, regular: { label: 'Óculos Normais', color: '#93c5fd' }, 'true': { label: 'Óculos Normais', color: '#93c5fd' }, '1': { label: 'Óculos Normais', color: '#93c5fd' },
+  // Óculos escuros (3º tipo)
+  'óculos escuros': { label: 'Óculos Escuros', color: '#1e3a5f' }, dark: { label: 'Óculos Escuros', color: '#1e3a5f' }, sunglasses: { label: 'Óculos Escuros', color: '#1e3a5f' }, 'dark glasses': { label: 'Óculos Escuros', color: '#1e3a5f' }, 'sun glasses': { label: 'Óculos Escuros', color: '#1e3a5f' },
 };
 const HAIR_TYPE_MAP: Record<string, { label: string; color: string }> = {
   normal: { label: 'Normal', color: '#2563eb' }, longo: { label: 'Longo', color: '#7c3aed' }, long: { label: 'Longo', color: '#7c3aed' },
@@ -751,15 +754,22 @@ export const WidgetAttributes = ({ attrData }: { view?: string; attrData?: { lab
 
 // ── WidgetVision ─────────────────────────────────────────────────────────────
 export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: number }[] }) => {
-  const raw = attrData?.find((a) => String(a.label).toLowerCase().includes('óculos'));
-  const glassesPct = Number(raw?.value) || 0;
-  const glassesAttr = attrData || [];
-  const hasCats = glassesAttr.some((a) => { const k = String(a.label).toLowerCase(); return k.includes('normal') || k.includes('escuro') || k.includes('sunglasses'); });
+  // Os dados de óculos chegam com prefixo _glasses_ (ex: _glasses_none, _glasses_usual, _glasses_dark)
+  const glassesCatItems = (attrData || []).filter((a) => String(a.label).startsWith('_glasses_'));
   let items: { label: string; value: number; color: string }[] = [];
-  if (hasCats) {
-    items = glassesAttr.filter((a) => Number(a.value) > 0).map((a) => { const k = String(a.label).toLowerCase().trim(); const m = GLASSES_MAP[k] ?? { label: a.label, color: '#6b7280' }; return { label: m.label, value: Number(a.value), color: m.color }; });
+  if (glassesCatItems.length > 0) {
+    // Modo categórico: extrai a chave real (sem prefixo) e mapeia pelo GLASSES_MAP
+    items = glassesCatItems
+      .filter((a) => Number(a.value) > 0)
+      .map((a) => {
+        const rawKey = String(a.label).replace('_glasses_', '').toLowerCase().trim();
+        const m = GLASSES_MAP[rawKey] ?? { label: rawKey, color: '#6b7280' };
+        return { label: m.label, value: Number(a.value), color: m.color };
+      });
   } else {
-    const w = Math.max(0, Math.min(100, glassesPct)); const wo = Math.max(0, 100 - w);
+    // Fallback: usa o total % de "Óculos" do atributo geral
+    const raw = (attrData || []).find((a) => String(a.label).toLowerCase() === 'óculos');
+    const w = Math.max(0, Math.min(100, Number(raw?.value) || 0)); const wo = Math.max(0, 100 - w);
     if (w > 0)  items.push({ label: 'Com Óculos', value: w,  color: '#93c5fd' });
     if (wo > 0) items.push({ label: 'Sem Óculos', value: wo, color: '#4b5563' });
   }
@@ -775,12 +785,21 @@ export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: 
 
 // ── WidgetFacialHair ─────────────────────────────────────────────────────────
 export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; value: number }[] }) => {
-  const beardPct = Number(attrData?.find((a) => String(a.label).toLowerCase().includes('barba'))?.value) || 0;
-  const hasCats = (attrData || []).some((a) => { const k = String(a.label).toLowerCase(); return k.includes('raspad') || k.includes('cavanhaque') || k.includes('bigode') || k.includes('cerda'); });
+  // Dados de pelos faciais chegam com prefixo _facial_ (ex: _facial_beard, _facial_shaved, _facial_goatee)
+  const facialCatItems = (attrData || []).filter((a) => String(a.label).startsWith('_facial_'));
   let items: { label: string; value: number; color: string }[] = [];
-  if (hasCats) {
-    items = (attrData || []).filter((a) => Number(a.value) > 0).map((a) => { const k = String(a.label).toLowerCase().trim(); const m = FACIAL_HAIR_MAP[k] ?? { label: a.label, color: '#6b7280' }; return { label: m.label, value: Number(a.value), color: m.color }; });
+  if (facialCatItems.length > 0) {
+    // Modo categórico: extrai a chave real e mapeia pelo FACIAL_HAIR_MAP
+    items = facialCatItems
+      .filter((a) => Number(a.value) > 0)
+      .map((a) => {
+        const rawKey = String(a.label).replace('_facial_', '').toLowerCase().trim();
+        const m = FACIAL_HAIR_MAP[rawKey] ?? { label: rawKey, color: '#6b7280' };
+        return { label: m.label, value: Number(a.value), color: m.color };
+      });
   } else {
+    // Fallback: usa o total % de "Barba" do atributo geral
+    const beardPct = Number((attrData || []).find((a) => String(a.label).toLowerCase() === 'barba')?.value) || 0;
     const w = Math.max(0, Math.min(100, beardPct)); const wo = Math.max(0, 100 - w);
     if (w > 0)  items.push({ label: 'Com Barba', value: w,  color: '#f97316' });
     if (wo > 0) items.push({ label: 'Sem Barba', value: wo, color: '#1d4ed8' });
@@ -998,41 +1017,4 @@ export const WidgetSalesQuarter = ({
         plugins: { legend: { display: false }, tooltip: { backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth:1, padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont, callbacks: { title:(i:any[])=>i[0]?.label??'', label:(ctx:any)=>{ const v=Number(ctx.raw); return `  Visitantes: ${v>=1000?`${(v/1000).toFixed(1)}k`:v.toLocaleString('pt-BR')}`; } } } },
         scales: {
           x: { grid:{ color:CJ.grid }, ticks:{ color:CJ.label, font:{ size:12 }, autoSkip:false, maxRotation:0 } },
-          y: { beginAtZero:true, grid:{ color:CJ.grid }, ticks:{ color:CJ.neutral, font:{ size:11 }, callback:(v:number)=>v>=1000?`${(v/1000).toFixed(0)}k`:String(v) } },
-        },
-      },
-    };
-  }, [JSON.stringify(visitorArr)]);
-
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
-      <h3 className="font-bold text-white mb-2 uppercase text-xs tracking-wider">Total Visitantes — Último Trimestre</h3>
-      <div className="flex gap-4 text-[10px] text-gray-500 mb-3 flex-none">
-        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: CJ.neutral }} />Visitantes <strong className="text-white ml-1">{loading ? '…' : totalV.toLocaleString('pt-BR')}</strong></span>
-      </div>
-      <CanvasBox height="100%" minHeight={0} className="flex-1 min-h-0">
-        {loading ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
-          : data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados no trimestre</div>
-          : <canvas ref={canvasRef} className="w-full h-full" />}
-      </CanvasBox>
-    </div>
-  );
-};
-
-// ── WIDGET_MAP ───────────────────────────────────────────────────────────────
-export const WIDGET_MAP: Record<string, React.FC<any>> = {
-  'flow_trend':          WidgetFlowTrend,
-  'hourly_flow':         WidgetHourlyFlow,
-  'age_pyramid':         WidgetAgePyramid,
-  'gender_dist':         WidgetGenderDist,
-  'attributes':          WidgetAttributes,
-  'campaigns':           WidgetCampaigns,
-  'kpi_flow_stats':      WidgetKPIFlowStats,
-  'chart_sales_quarter': WidgetSalesQuarter,
-  'chart_age_ranges':    WidgetAgeRanges,
-  'chart_vision':        WidgetVision,
-  'chart_facial_hair':   WidgetFacialHair,
-  'chart_hair_type':     WidgetHairType,
-  'chart_hair_color':    WidgetHairColor,
-  'heatmap': () => <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 flex items-center justify-center text-gray-500" style={{ minHeight: 200 }}>Mapa de Calor (Em breve)</div>,
-};
+          y: { beginAtZero:true, grid:{ color:CJ.grid }, ticks:{ color:CJ.
