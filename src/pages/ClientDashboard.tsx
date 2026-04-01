@@ -1187,7 +1187,7 @@ export function ClientDashboard() {
       {/* Widgets */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden min-h-[400px]">
         {view === 'network' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 items-start">
             {isLoadingConfig ? (
               <div className="col-span-full flex justify-center py-20">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
@@ -1233,8 +1233,8 @@ export function ClientDashboard() {
                 const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : defaultHeightPx;
                 const widgetStyle = Number.isFinite(resolvedHeightPx) ? { height: Math.round(resolvedHeightPx) } : undefined;
                 return (
-                  <div key={widget.id} style={widgetStyle ?? { minHeight: 280 }} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>
-                    <div className="h-full"><Component {...widgetProps} /></div>
+                  <div key={widget.id} style={widgetStyle} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>
+                    <Component {...widgetProps} />
                   </div>
                 );
               })
