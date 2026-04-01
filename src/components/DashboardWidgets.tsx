@@ -103,7 +103,7 @@ export const KPIStat = ({ label, value, color = 'text-white' }: { label: string;
 
 // ── Maps ─────────────────────────────────────────────────────────────────────
 const FACIAL_HAIR_MAP: Record<string, { label: string; color: string }> = {
-  raspados: { label: 'Raspados', color: '#f9a8d4' }, shaved: { label: 'Raspados', color: '#f9a8d4' }, none: { label: 'Raspados', color: '#f9a8d4' },
+  raspados: { label: 'Raspados', color: '#f9a8d4' }, shaved: { label: 'Raspados', color: '#f9a8d4' }, none: { label: 'Raspados', color: '#f9a8d4' }, gm: { label: 'Raspados', color: '#f9a8d4' }, 'no beard': { label: 'Raspados', color: '#f9a8d4' }, clean: { label: 'Raspados', color: '#f9a8d4' }, 'false': { label: 'Raspados', color: '#f9a8d4' }, '0': { label: 'Raspados', color: '#f9a8d4' },
   barba: { label: 'Barba', color: '#1f2937' }, beard: { label: 'Barba', color: '#1f2937' }, full: { label: 'Barba', color: '#1f2937' },
   cavanhaque: { label: 'Cavanhaque', color: '#2563eb' }, goatee: { label: 'Cavanhaque', color: '#2563eb' },
   bigode: { label: 'Bigode', color: '#dc2626' }, mustache: { label: 'Bigode', color: '#dc2626' },
@@ -530,13 +530,21 @@ export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: 
   let items: { label: string; value: number; color: string }[] = [];
   if (glassesCatItems.length > 0) {
     // Modo categórico: extrai a chave real (sem prefixo) e mapeia pelo GLASSES_MAP
-    items = glassesCatItems
+    const mapped = glassesCatItems
       .filter((a) => Number(a.value) > 0)
       .map((a) => {
         const rawKey = String(a.label).replace('_glasses_', '').toLowerCase().trim();
         const m = GLASSES_MAP[rawKey] ?? { label: rawKey, color: '#6b7280' };
         return { label: m.label, value: Number(a.value), color: m.color };
       });
+    // Mescla itens com o mesmo label (evita duplicatas como none + false → "Sem Óculos" x2)
+    const merged = new Map<string, { label: string; value: number; color: string }>();
+    for (const item of mapped) {
+      const existing = merged.get(item.label);
+      if (existing) existing.value = Math.round((existing.value + item.value) * 10) / 10;
+      else merged.set(item.label, { ...item });
+    }
+    items = Array.from(merged.values());
   } else {
     // Fallback: usa o total % de "Óculos" do atributo geral
     const raw = (attrData || []).find((a) => String(a.label).toLowerCase() === 'óculos');
@@ -561,13 +569,21 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
   let items: { label: string; value: number; color: string }[] = [];
   if (facialCatItems.length > 0) {
     // Modo categórico: extrai a chave real e mapeia pelo FACIAL_HAIR_MAP
-    items = facialCatItems
+    const mapped = facialCatItems
       .filter((a) => Number(a.value) > 0)
       .map((a) => {
         const rawKey = String(a.label).replace('_facial_', '').toLowerCase().trim();
         const m = FACIAL_HAIR_MAP[rawKey] ?? { label: rawKey, color: '#6b7280' };
         return { label: m.label, value: Number(a.value), color: m.color };
       });
+    // Mescla itens com o mesmo label (ex: shaved + none + gm → Raspados único)
+    const merged = new Map<string, { label: string; value: number; color: string }>();
+    for (const item of mapped) {
+      const existing = merged.get(item.label);
+      if (existing) existing.value = Math.round((existing.value + item.value) * 10) / 10;
+      else merged.set(item.label, { ...item });
+    }
+    items = Array.from(merged.values());
   } else {
     // Fallback: usa o total % de "Barba" do atributo geral
     const beardPct = Number((attrData || []).find((a) => String(a.label).toLowerCase() === 'barba')?.value) || 0;
