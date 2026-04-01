@@ -475,7 +475,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags","connection_state","status","state","online","is_online","active","player_state","playback_state"] });
       console.log(`[sync_stores] Dispositivos encontrados: ${devicesData.length}`);
       // Log do primeiro dispositivo para diagnóstico de campos disponíveis
-      if (devicesData.length > 0) console.log(`[sync_stores] Exemplo de dispositivo (raw):`, JSON.stringify(devicesData[0]));
+      if (devicesData.length > 0) {
+        console.log(`[sync_stores] Exemplo de dispositivo (raw):`, JSON.stringify(devicesData[0]));
+        console.log(`[sync_stores] Chaves disponíveis:`, Object.keys(devicesData[0]));
+        const connRaw0 = devicesData[0]?.connection_state ?? devicesData[0]?.online ?? devicesData[0]?.is_online ?? devicesData[0]?.connected ?? devicesData[0]?.status ?? devicesData[0]?.state;
+        console.log(`[sync_stores] connection_state raw=`, JSON.stringify(connRaw0), `type=`, typeof connRaw0);
+      }
 
       if (folders.length === 0) return ok(res, { message:"Nenhuma loja encontrada na API DisplayForce", stores_upserted:0, devices_upserted:0 });
 
@@ -510,8 +515,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const mac=String(d?.id??"").trim(); if(!mac)return;
           const existingId=devIdByStoreMac.get(`${storeId}:${mac}`);
           const extId=Number(mac);
-          const connState = String(d?.connection_state ?? d?.status ?? d?.state ?? '').toLowerCase().trim();
-          const devStatus = ['online','connected','active','reprodução','playing','running'].includes(connState) ? 'online' : 'offline';
+          const connRaw = d?.connection_state ?? d?.online ?? d?.is_online ?? d?.connected ?? d?.status ?? d?.state ?? d?.active ?? d?.player_state ?? d?.playback_state;
+          const connStr = String(connRaw ?? '').toLowerCase().trim();
+          const isOnline = connRaw === true || connRaw === 1 ||
+            ['online','connected','active','reprodução','reproduction','playing','running','true','1','yes','on','reproduzindo','ativo'].includes(connStr);
+          const devStatus = isOnline ? 'online' : 'offline';
           devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:devStatus });
         });
       });
