@@ -1017,4 +1017,41 @@ export const WidgetSalesQuarter = ({
         plugins: { legend: { display: false }, tooltip: { backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth:1, padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont, callbacks: { title:(i:any[])=>i[0]?.label??'', label:(ctx:any)=>{ const v=Number(ctx.raw); return `  Visitantes: ${v>=1000?`${(v/1000).toFixed(1)}k`:v.toLocaleString('pt-BR')}`; } } } },
         scales: {
           x: { grid:{ color:CJ.grid }, ticks:{ color:CJ.label, font:{ size:12 }, autoSkip:false, maxRotation:0 } },
-          y: { beginAtZero:true, grid:{ color:CJ.grid }, ticks:{ color:CJ.
+          y: { beginAtZero:true, grid:{ color:CJ.grid }, ticks:{ color:CJ.          y: { beginAtZero:true, grid:{ color:CJ.grid }, ticks:{ color:CJ.neutral, font:{ size:11 }, callback:(v:number)=>v>=1000?`${(v/1000).toFixed(0)}k`:String(v) } },
+        },
+      },
+    };
+  }, [JSON.stringify(visitorArr)]);
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <h3 className="font-bold text-white mb-2 uppercase text-xs tracking-wider">Total Visitantes — Último Trimestre</h3>
+      <div className="flex gap-4 text-[10px] text-gray-500 mb-3 flex-none">
+        <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: CJ.neutral }} />Visitantes <strong className="text-white ml-1">{loading ? '…' : totalV.toLocaleString('pt-BR')}</strong></span>
+      </div>
+      <CanvasBox height="100%" minHeight={0} className="flex-1 min-h-0">
+        {loading ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
+          : data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados no trimestre</div>
+          : <canvas ref={canvasRef} className="w-full h-full" />}
+      </CanvasBox>
+    </div>
+  );
+};
+
+// ── WIDGET_MAP ───────────────────────────────────────────────────────────────
+export const WIDGET_MAP: Record<string, React.FC<any>> = {
+  'flow_trend':          WidgetFlowTrend,
+  'hourly_flow':         WidgetHourlyFlow,
+  'age_pyramid':         WidgetAgePyramid,
+  'gender_dist':         WidgetGenderDist,
+  'attributes':          WidgetAttributes,
+  'campaigns':           WidgetCampaigns,
+  'kpi_flow_stats':      WidgetKPIFlowStats,
+  'chart_sales_quarter': WidgetSalesQuarter,
+  'chart_age_ranges':    WidgetAgeRanges,
+  'chart_vision':        WidgetVision,
+  'chart_facial_hair':   WidgetFacialHair,
+  'chart_hair_type':     WidgetHairType,
+  'chart_hair_color':    WidgetHairColor,
+  'heatmap': () => <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 flex items-center justify-center text-gray-500" style={{ minHeight: 200 }}>Mapa de Calor (Em breve)</div>,
+};
