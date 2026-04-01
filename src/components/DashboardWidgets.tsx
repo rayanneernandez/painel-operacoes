@@ -354,12 +354,12 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
   ].filter(s => Number(s.value) > 0);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <h3 className="font-bold text-white mb-3 flex items-center gap-2 uppercase text-xs tracking-wider">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+      <h3 className="font-bold text-white mb-3 flex items-center gap-2 uppercase text-xs tracking-wider flex-shrink-0">
         <Users size={14} className="text-pink-500" />Gênero
       </h3>
       {items.length === 0
-        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
         : <DonutLikeGender items={items} totalCount={totalCount} />
       }
     </div>
@@ -445,15 +445,16 @@ function DonutLikeGender({
   const onLeave = () => setHover(null);
 
   return (
-    <div className="flex flex-col items-center gap-3">
+    <div className="flex flex-col items-center gap-2 w-full min-w-0">
+      {/* Donut SVG — quadrado responsivo, limitado por maxSize */}
       <div
         ref={wrapRef}
-        className="relative w-full mx-auto"
-        style={{ width: `min(100%, ${maxSize}px)`, height: `min(100%, ${maxSize}px)` }}
+        className="relative mx-auto flex-shrink-0"
+        style={{ width: '100%', maxWidth: maxSize, aspectRatio: '1 / 1' }}
         onMouseMove={onMove}
         onMouseLeave={onLeave}
       >
-        <svg viewBox="0 0 100 100" width="100%" height="100%" style={{ transform: 'rotate(-90deg)' }}>
+        <svg viewBox="0 0 100 100" width="100%" height="100%" style={{ transform: 'rotate(-90deg)', display: 'block' }}>
           {arcs.map((arc, i) => {
             const active = hover?.label === arc.label;
             return (
@@ -475,7 +476,7 @@ function DonutLikeGender({
 
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
           <span className="text-2xl font-bold text-white leading-none">{segments[0]?.pct ?? 0}%</span>
-          <span className="text-[11px] text-gray-400 mt-1">{segments[0]?.label ?? ''}</span>
+          <span className="text-[11px] text-gray-400 mt-1 text-center px-1 truncate max-w-full">{segments[0]?.label ?? ''}</span>
         </div>
 
         {hover && (
@@ -491,12 +492,13 @@ function DonutLikeGender({
         )}
       </div>
 
-      <div className="flex justify-center gap-5 flex-wrap">
+      {/* Legenda — sempre dentro do card, quebra em linhas se necessário */}
+      <div className="flex justify-center gap-x-3 gap-y-1 flex-wrap w-full min-w-0 px-1">
         {segments.map((s, i) => (
-          <div key={i} className="group relative flex items-center gap-1.5 cursor-default">
+          <div key={i} className="group relative flex items-center gap-1 cursor-default min-w-0">
             <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.color }} />
-            <span className="text-[11px] text-gray-400">{s.label}</span>
-            <span className="text-[11px] font-semibold" style={{ color: s.color }}>{s.pct}%</span>
+            <span className="text-[10px] text-gray-400 truncate">{s.label}</span>
+            <span className="text-[10px] font-semibold flex-shrink-0" style={{ color: s.color }}>{s.pct}%</span>
             {s.count != null && (
               <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-950 border border-gray-700 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
                 {s.count.toLocaleString()} visitantes
@@ -557,13 +559,11 @@ export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: 
     }
   }
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col" style={{ minHeight: 260 }}>
-      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Visão</h3>
-      <div className="flex-1 flex items-center justify-center">
-        {items.length === 0
-          ? <span className="text-gray-500 text-sm">Sem dados</span>
-          : <DonutLikeGender items={items} />}
-      </div>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Visão</h3>
+      {items.length === 0
+        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
+        : <DonutLikeGender items={items} />}
     </div>
   );
 };
@@ -602,13 +602,11 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
     }
   }
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col" style={{ minHeight: 260 }}>
-      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Pelos Faciais</h3>
-      <div className="flex-1 flex items-center justify-center">
-        {items.length === 0
-          ? <span className="text-gray-500 text-sm">Sem dados</span>
-          : <DonutLikeGender items={items} />}
-      </div>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Pelos Faciais</h3>
+      {items.length === 0
+        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
+        : <DonutLikeGender items={items} />}
     </div>
   );
 };
@@ -618,13 +616,11 @@ export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: strin
   const { labels, values, colors } = mapHairData(hairTypeData, HAIR_TYPE_MAP);
   const items = labels.map((l, i) => ({ label: l, value: values[i], color: colors[i] }));
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col" style={{ minHeight: 260 }}>
-      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Tipo de Cabelo</h3>
-      <div className="flex-1 flex items-center justify-center">
-        {items.length === 0
-          ? <span className="text-gray-500 text-sm">Sem dados</span>
-          : <DonutLikeGender items={items} />}
-      </div>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Tipo de Cabelo</h3>
+      {items.length === 0
+        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
+        : <DonutLikeGender items={items} />}
     </div>
   );
 };
@@ -641,13 +637,11 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
   const finalItems = restSum > 0 ? [...top, { label: 'Outros', value: restSum, color: '#6b7280' }] : top;
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col" style={{ minHeight: 260 }}>
-      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Cor de Cabelo</h3>
-      <div className="flex-1 flex items-center justify-center">
-        {finalItems.length === 0
-          ? <span className="text-gray-500 text-sm">Sem dados</span>
-          : <DonutLikeGender items={finalItems} />}
-      </div>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Cor de Cabelo</h3>
+      {finalItems.length === 0
+        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
+        : <DonutLikeGender items={finalItems} />}
     </div>
   );
 };
