@@ -107,7 +107,7 @@ const FACIAL_HAIR_MAP: Record<string, { label: string; color: string }> = {
   barba: { label: 'Barba', color: '#1f2937' }, beard: { label: 'Barba', color: '#1f2937' }, full: { label: 'Barba', color: '#1f2937' },
   cavanhaque: { label: 'Cavanhaque', color: '#2563eb' }, goatee: { label: 'Cavanhaque', color: '#2563eb' },
   bigode: { label: 'Bigode', color: '#dc2626' }, mustache: { label: 'Bigode', color: '#dc2626' },
-  cerdas: { label: 'Cerdas', color: '#d97706' }, stubble: { label: 'Cerdas', color: '#d97706' },
+  cerdas: { label: 'Cerdas', color: '#d97706' }, stubble: { label: 'Cerdas', color: '#d97706' }, bristle: { label: 'Cerdas', color: '#d97706' }, bristles: { label: 'Cerdas', color: '#d97706' },
 };
 const GLASSES_MAP: Record<string, { label: string; color: string }> = {
   // Sem óculos
