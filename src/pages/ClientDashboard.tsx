@@ -70,6 +70,7 @@ export function ClientDashboard() {
   const [showDatePicker, setShowDatePicker] = useState(false);
   const autoTodayRef = useRef(true);
   const didApplyD1DefaultRef = useRef(false);
+  const loadSeqRef = useRef(0);
 
   const [syncMessage, setSyncMessage] = useState('');
   const [isSyncingStores, setIsSyncingStores] = useState(false);
@@ -255,6 +256,9 @@ export function ClientDashboard() {
   // ── loadData: busca dados respeitando o período selecionado ──────────────
   const loadData = useCallback(async () => {
     if (!id) return;
+    const seq = ++loadSeqRef.current;
+    const isCurrent = () => seq === loadSeqRef.current;
+
     setIsLoadingData(true);
     try {
       const startIso = selectedStartDate.toISOString();
@@ -272,6 +276,7 @@ export function ClientDashboard() {
             body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
           });
           const json = resp.ok ? await resp.json() : null;
+          if (!isCurrent()) return;
           if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
             applyRollup({
               total_visitors:         json.dashboard.total_visitors,
@@ -308,6 +313,8 @@ export function ClientDashboard() {
         .gt('total_visitors', 0)
         .order('updated_at', { ascending: false })
         .limit(20);
+
+      if (!isCurrent()) return;
 
       if (allRollups && allRollups.length > 0) {
         // Mescla visitors_per_day de todos os rollups, filtrando pelo período
@@ -368,6 +375,7 @@ export function ClientDashboard() {
           body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
         });
         const json = resp.ok ? await resp.json() : null;
+        if (!isCurrent()) return;
 
         if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
           console.log('[loadData] ✅ Rebuild:', json.dashboard.total_visitors);
@@ -397,7 +405,7 @@ export function ClientDashboard() {
     } catch (err) {
       console.error('[loadData] erro:', err);
     } finally {
-      setIsLoadingData(false);
+      if (isCurrent()) setIsLoadingData(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
@@ -885,15 +893,11 @@ export function ClientDashboard() {
     let cancelled = false;
 
     const run = async () => {
-      // Carrega estrutura em paralelo
       refreshClientAndStores();
       syncStoresFromServer();
 
-      // Carrega dados do banco IMEDIATAMENTE
-      await loadData();
       if (cancelled) return;
 
-      // Sync em background SILENCIOSO se passou 1h
       if (shouldSync(id)) {
         triggerBackgroundSync(false);
       }
@@ -901,14 +905,12 @@ export function ClientDashboard() {
 
     void run();
 
-    // Recarrega silenciosamente a cada 10min
     const t = setInterval(async () => {
       if (cancelled || document.visibilityState !== 'visible') return;
       await loadData();
       if (shouldSync(id)) triggerBackgroundSync(false);
     }, 10 * 60 * 1000);
 
-    // Sync periódico a cada 30min
     const syncInterval = setInterval(() => {
       if (!cancelled && document.visibilityState === 'visible' && shouldSync(id)) {
         triggerBackgroundSync(false);
@@ -916,8 +918,7 @@ export function ClientDashboard() {
     }, 30 * 60 * 1000);
 
     return () => { cancelled = true; clearInterval(t); clearInterval(syncInterval); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+  }, [id, loadData, refreshClientAndStores, syncStoresFromServer, triggerBackgroundSync]);
 
   // ── Config de widgets ────────────────────────────────────────────────────
   useEffect(() => {
