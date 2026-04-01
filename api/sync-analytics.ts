@@ -508,7 +508,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const mac=String(d?.id??"").trim(); if(!mac)return;
           const existingId=devIdByStoreMac.get(`${storeId}:${mac}`);
           const extId=Number(mac);
-          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:d?.connection_state==="online"?"online":"offline" });
+          const connState = String(d?.connection_state ?? d?.status ?? d?.state ?? '').toLowerCase().trim();
+          const devStatus = ['online','connected','active','reprodução','playing','running'].includes(connState) ? 'online' : 'offline';
+          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:devStatus });
         });
       });
       if (devicesPayload.length > 0) await supabase.from("devices").upsert(devicesPayload);
