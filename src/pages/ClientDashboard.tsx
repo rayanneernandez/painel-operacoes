@@ -1268,4 +1268,22 @@ export function ClientDashboard() {
                 const heightPx = Number(widgetLayout[widget.id]?.heightPx);
                 const defaultHeightPx = widget.id === 'campaigns' ? 560 : NaN;
                 const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : defaultHeightPx;
-   
+                const widgetStyle = Number.isFinite(resolvedHeightPx) ? { height: Math.round(resolvedHeightPx) } : undefined;
+                return (
+                  <div key={widget.id} style={widgetStyle} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>
+                    <Component {...widgetProps} />
+                  </div>
+                );
+              })
+            ) : (
+              <div className="col-span-full text-center py-20 text-gray-500">
+                <LayoutGrid size={48} className="mx-auto mb-4 opacity-20" />
+                <p>Nenhum widget configurado para este dashboard.</p>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
