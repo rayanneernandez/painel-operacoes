@@ -547,17 +547,23 @@ export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: 
     items = Array.from(merged.values());
   } else {
     // Fallback: usa o total % de "Óculos" do atributo geral
+    // Só exibe se o valor for > 0 para evitar mostrar "Sem Óculos 100%" sem dados reais
     const raw = (attrData || []).find((a) => String(a.label).toLowerCase() === 'óculos');
-    const w = Math.max(0, Math.min(100, Number(raw?.value) || 0)); const wo = Math.max(0, 100 - w);
-    if (w > 0)  items.push({ label: 'Com Óculos', value: w,  color: '#93c5fd' });
-    if (wo > 0) items.push({ label: 'Sem Óculos', value: wo, color: '#4b5563' });
+    const w = Math.max(0, Math.min(100, Number(raw?.value) || 0));
+    if (w > 0) {
+      const wo = Math.max(0, 100 - w);
+      items.push({ label: 'Com Óculos', value: w, color: '#93c5fd' });
+      if (wo > 0) items.push({ label: 'Sem Óculos', value: wo, color: '#4b5563' });
+    }
   }
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col" style={{ minHeight: 260 }}>
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Visão</h3>
-      {items.length === 0
-        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={items} />}
+      <div className="flex-1 flex items-center justify-center">
+        {items.length === 0
+          ? <span className="text-gray-500 text-sm">Sem dados</span>
+          : <DonutLikeGender items={items} />}
+      </div>
     </div>
   );
 };
@@ -586,17 +592,23 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
     items = Array.from(merged.values());
   } else {
     // Fallback: usa o total % de "Barba" do atributo geral
+    // Só exibe se o valor for > 0 para evitar mostrar "Sem Barba 100%" sem dados reais
     const beardPct = Number((attrData || []).find((a) => String(a.label).toLowerCase() === 'barba')?.value) || 0;
-    const w = Math.max(0, Math.min(100, beardPct)); const wo = Math.max(0, 100 - w);
-    if (w > 0)  items.push({ label: 'Com Barba', value: w,  color: '#f97316' });
-    if (wo > 0) items.push({ label: 'Sem Barba', value: wo, color: '#1d4ed8' });
+    if (beardPct > 0) {
+      const w = Math.max(0, Math.min(100, beardPct));
+      const wo = Math.max(0, 100 - w);
+      items.push({ label: 'Com Barba', value: w, color: '#f97316' });
+      if (wo > 0) items.push({ label: 'Sem Barba', value: wo, color: '#1d4ed8' });
+    }
   }
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col" style={{ minHeight: 260 }}>
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Pelos Faciais</h3>
-      {items.length === 0
-        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={items} />}
+      <div className="flex-1 flex items-center justify-center">
+        {items.length === 0
+          ? <span className="text-gray-500 text-sm">Sem dados</span>
+          : <DonutLikeGender items={items} />}
+      </div>
     </div>
   );
 };
@@ -606,11 +618,13 @@ export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: strin
   const { labels, values, colors } = mapHairData(hairTypeData, HAIR_TYPE_MAP);
   const items = labels.map((l, i) => ({ label: l, value: values[i], color: colors[i] }));
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col" style={{ minHeight: 260 }}>
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Tipo de Cabelo</h3>
-      {items.length === 0
-        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={items} />}
+      <div className="flex-1 flex items-center justify-center">
+        {items.length === 0
+          ? <span className="text-gray-500 text-sm">Sem dados</span>
+          : <DonutLikeGender items={items} />}
+      </div>
     </div>
   );
 };
@@ -627,11 +641,13 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
   const finalItems = restSum > 0 ? [...top, { label: 'Outros', value: restSum, color: '#6b7280' }] : top;
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col" style={{ minHeight: 260 }}>
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Cor de Cabelo</h3>
-      {finalItems.length === 0
-        ? <div style={{ height: 200 }} className="flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={finalItems} />}
+      <div className="flex-1 flex items-center justify-center">
+        {finalItems.length === 0
+          ? <span className="text-gray-500 text-sm">Sem dados</span>
+          : <DonutLikeGender items={finalItems} />}
+      </div>
     </div>
   );
 };
