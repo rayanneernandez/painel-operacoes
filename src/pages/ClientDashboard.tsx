@@ -183,10 +183,10 @@ export function ClientDashboard() {
     if (!rollup) return false;
     setTotalVisitors(rollup.total_visitors ?? 0);
     setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
-    setAvgVisitSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
-    setAvgAttentionSeconds(Math.round(
+    setAvgVisitSeconds(Math.round(
       rollup.avg_attention_seconds ?? rollup.avg_contact_time_seconds ?? rollup.avg_attention_sec ?? 0
     ));
+    setAvgAttentionSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
     const vpd: Record<string, number> = rollup.visitors_per_day ?? {};
     setVisitorsPerDayMap(vpd);
     const vph: Record<string, number> = rollup.visitors_per_hour_avg ?? {};
