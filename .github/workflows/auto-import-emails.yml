@@ -1,11 +1,8 @@
 name: Auto-Import — DisplayForce Emails → Supabase
 
 on:
-  # Roda a cada 4 horas automaticamente
   schedule:
     - cron: '0 */4 * * *'
-
-  # Permite rodar manualmente pelo GitHub (botão "Run workflow")
   workflow_dispatch:
 
 jobs:
@@ -22,8 +19,8 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependências (leve — sem Playwright)
-        run: pip install pandas requests imap-tools
+      - name: Instalar dependências (com suporte a Excel)
+        run: pip install pandas requests imap-tools openpyxl xlrd
 
       - name: Importar e-mails da DisplayForce para o Supabase
         env:
