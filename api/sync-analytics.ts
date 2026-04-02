@@ -472,12 +472,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return all;
       };
 
-      const folders = await fetchAllPages(`${base}/public/v1/folder/list`,
+      // Tenta device-folder/list (nome correto da API), com fallback para folder/list
+      let folders = await fetchAllPages(`${base}/public/v1/device-folder/list`,
         { id:[], name:[], parent_ids:[], recursive:true });
+      if (folders.length === 0) {
+        folders = await fetchAllPages(`${base}/public/v1/folder/list`,
+          { id:[], name:[], parent_ids:[], recursive:true });
+      }
       console.log(`[sync_stores] Lojas encontradas: ${folders.length}`);
 
+      // Busca dispositivos com os campos corretos conforme a API Displayforce
       const devicesData = await fetchAllPages(`${base}/public/v1/device/list`,
-        { id:[], name:[], parent_ids:[], recursive:true, params:["id","name","parent_id","parent_ids","tags","connection_state","status","state","online","is_online","active","player_state","playback_state"] }, true);
+        { id:[], name:[], parent_ids:[], recursive:true }, true);
       console.log(`[sync_stores] Dispositivos encontrados: ${devicesData.length}`);
       // Log do primeiro dispositivo para diagnóstico de campos disponíveis
       if (devicesData.length > 0) {
@@ -493,6 +499,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const nameToStore = new Map<string, { id:string; city?:string|null }>();
       (dbStores || []).forEach((s:any) => { const n=String(s?.name||"").trim().toLowerCase(); if(!n||!s?.id)return; nameToStore.set(n,{id:String(s.id),city:s.city}); });
 
+      // Mapa de cidade por pasta (extraída do endereço dos dispositivos nessa pasta)
+      const cityByFolder = new Map<string, string>();
+      devicesData.forEach((d: any) => {
+        const pid = String(d?.parent_id ?? '').trim();
+        if (!pid || cityByFolder.has(pid)) return;
+        const addr = String(d?.address ?? d?.location ?? d?.city ?? '').trim();
+        if (addr) cityByFolder.set(pid, addr);
+      });
+
       const folderToStoreId = new Map<string,string>();
       const storesPayload: any[] = [];
       for (const f of folders) {
@@ -501,7 +516,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const existing = nameToStore.get(name.toLowerCase());
         const storeId = existing?.id || crypto.randomUUID();
         folderToStoreId.set(folderId, storeId);
-        storesPayload.push({ id:storeId, client_id, name, city:existing?.city??"Não informada" });
+        // Usa cidade da pasta (da API), ou da loja existente no banco, ou endereço extraído do dispositivo
+        const folderCity = String(f?.address ?? f?.city ?? f?.location ?? '').trim();
+        const city = folderCity || existing?.city || cityByFolder.get(folderId) || null;
+        storesPayload.push({ id:storeId, client_id, name, city });
       }
       if (storesPayload.length > 0) await supabase.from("stores").upsert(storesPayload);
 
@@ -520,10 +538,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const mac=String(d?.id??"").trim(); if(!mac)return;
           const existingId=devIdByStoreMac.get(`${storeId}:${mac}`);
           const extId=Number(mac);
-          const connRaw = d?.connection_state ?? d?.online ?? d?.is_online ?? d?.connected ?? d?.status ?? d?.state ?? d?.active ?? d?.player_state ?? d?.playback_state;
+          // Campos possíveis para status de conexão na API Displayforce
+          const connRaw = d?.connection_state ?? d?.player_status ?? d?.online ?? d?.is_online
+            ?? d?.connected ?? d?.status ?? d?.state ?? d?.active
+            ?? d?.player_state ?? d?.playback_state ?? d?.activation_state;
           const connStr = String(connRaw ?? '').toLowerCase().trim();
+          // connection_state da Displayforce: true/false, 0/1, "online"/"offline", "connected", etc.
+          // activation_state indica se está ativado (não necessariamente online)
           const isOnline = connRaw === true || connRaw === 1 ||
-            ['online','connected','active','reprodução','reproduction','playing','running','true','1','yes','on','reproduzindo','ativo'].includes(connStr);
+            ['online','connected','active','reprodução','reproduction','playing',
+             'running','true','1','yes','on','reproduzindo','ativo','activated',
+             'normal','ready','idle'].includes(connStr);
           const devStatus = isOnline ? 'online' : 'offline';
           devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:devStatus });
         });
