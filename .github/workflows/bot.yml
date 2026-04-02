@@ -25,7 +25,13 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Instalar Chromium (Playwright)
-        run: playwright install --with-deps chromium
+        run: |
+          # Ubuntu 24.04: libasound2 foi renomeado para libasound2t64
+          sudo apt-get install -y libasound2t64
+          # Instalar Chromium
+          playwright install chromium
+          # Instalar demais dependências (ignorar erro do libasound2 renomeado)
+          playwright install-deps chromium || echo "Aviso: libasound2 não encontrado (libasound2t64 já instalado)"
 
       - name: Rodar o bot
         env:
