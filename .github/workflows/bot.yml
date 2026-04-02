@@ -12,7 +12,6 @@ jobs:
   rodar-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Baixar código do repositório
         uses: actions/checkout@v4
@@ -26,21 +25,19 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Instalar Chromium (Playwright)
-        run: |
-          playwright install chromium
-          playwright install-deps chromium
+        run: playwright install --with-deps chromium
 
       - name: Rodar o bot
         env:
           DISPLAYFORCE_EMAIL: ${{ secrets.DISPLAYFORCE_EMAIL }}
-          DISPLAYFORCE_PASS:  ${{ secrets.DISPLAYFORCE_PASS }}
-          RELATORIO_EMAIL:    ${{ secrets.RELATORIO_EMAIL }}
-          IMAP_EMAIL:         ${{ secrets.IMAP_EMAIL }}
-          IMAP_PASSWORD:      ${{ secrets.IMAP_PASSWORD }}
-          SUPABASE_URL:       ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:       ${{ secrets.SUPABASE_KEY }}
-          HEADLESS:           "true"
-          HORARIO_EXECUCAO:   "10:00"
+          DISPLAYFORCE_PASS: ${{ secrets.DISPLAYFORCE_PASS }}
+          RELATORIO_EMAIL: ${{ secrets.RELATORIO_EMAIL }}
+          IMAP_EMAIL: ${{ secrets.IMAP_EMAIL }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          HEADLESS: "true"
+          HORARIO_EXECUCAO: "10:00"
         run: python bot_displayforce.py --once
 
       - name: Salvar logs em caso de erro
