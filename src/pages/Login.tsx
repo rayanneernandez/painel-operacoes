@@ -77,7 +77,7 @@ export function Login() {
       ref={rootRef}
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
-      className="min-h-screen bg-[#07070c] text-white relative overflow-hidden cursor-glow"
+      className="min-h-screen lg:h-screen bg-[#07070c] text-white relative overflow-hidden cursor-glow"
     >
       <div className="pointer-events-none absolute inset-0">
         <div className="absolute -top-40 -left-40 w-[740px] h-[740px] bg-gradient-to-br from-violet-600/25 via-indigo-600/10 to-transparent blur-[140px] rounded-full" />
@@ -86,8 +86,8 @@ export function Login() {
         <div className="absolute inset-0 grid-pattern opacity-50" />
       </div>
 
-      <div className="relative z-10 w-full min-h-screen flex flex-col lg:flex-row">
-        <section className="px-6 py-10 lg:px-14 lg:py-14 flex flex-col justify-between lg:w-[55%] xl:w-[58%]">
+      <div className="relative z-10 w-full min-h-screen lg:h-full flex flex-col lg:flex-row">
+        <section className="px-6 py-10 lg:px-14 lg:py-10 lg:h-full flex flex-col justify-between lg:w-[55%] xl:w-[58%]">
           <div>
             <div className="flex items-center">
               <img
@@ -254,10 +254,10 @@ export function Login() {
             </div>
           </div>
 
-          <div className="mt-10 text-xs text-gray-600">© 2026 Global IA </div>
+          
         </section>
 
-        <section className="relative px-6 py-10 lg:px-14 lg:py-14 flex items-center justify-center lg:w-[45%] xl:w-[42%]">
+        <section className="relative px-6 py-10 lg:px-14 lg:py-10 lg:h-full flex items-center justify-center lg:w-[45%] xl:w-[42%]">
           <div className="hidden lg:block absolute inset-y-0 left-0 w-px bg-gradient-to-b from-transparent via-violet-500/20 to-transparent" />
 
           <div className="w-full max-w-md">
