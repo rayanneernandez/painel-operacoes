@@ -22,3 +22,114 @@
 ::-webkit-scrollbar-thumb:hover {
   background: #4b5563; 
 }
+
+.grid-pattern {
+  background-image:
+    linear-gradient(to right, rgba(255,255,255,0.06) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.06) 1px, transparent 1px);
+  background-size: 72px 72px;
+}
+
+.glow-text {
+  text-shadow:
+    0 0 18px rgba(139,92,246,0.35),
+    0 0 36px rgba(236,72,153,0.22);
+}
+
+@keyframes scan-sweep {
+  0% { transform: translateY(-30%); opacity: 0; }
+  12% { opacity: 1; }
+  70% { opacity: 1; }
+  100% { transform: translateY(140%); opacity: 0; }
+}
+
+@keyframes scan-line {
+  0% { transform: translateY(-12%); opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  100% { transform: translateY(140%); opacity: 0; }
+}
+
+.scan-sweep {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 28%;
+  background: linear-gradient(to bottom, transparent, rgba(139,92,246,0.18), transparent);
+  filter: blur(1px);
+  animation: scan-sweep 2.6s ease-in-out infinite;
+}
+
+.scan-line {
+  position: absolute;
+  left: 10%;
+  right: 10%;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(to right, transparent, rgba(167,139,250,0.9), transparent);
+  box-shadow: 0 0 18px rgba(139,92,246,0.45);
+  animation: scan-line 2.6s ease-in-out infinite;
+}
+
+@keyframes reveal-up {
+  0% { opacity: 0; transform: translateY(6px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.reveal-up {
+  opacity: 0;
+  transform: translateY(6px);
+  animation: reveal-up 520ms ease-out forwards;
+}
+
+.cursor-glow {
+  --mx: 50%;
+  --my: 35%;
+  --glow-opacity: 0;
+}
+
+.cursor-glow::before {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  opacity: var(--glow-opacity);
+  transition: opacity 180ms ease;
+  background: radial-gradient(480px circle at var(--mx) var(--my), rgba(255,255,255,0.075), rgba(255,255,255,0.03) 18%, transparent 60%);
+  mix-blend-mode: screen;
+}
+
+@keyframes mesh-twinkle {
+  0%, 100% { opacity: 0.25; transform: scale(0.92); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+@keyframes mesh-dash {
+  to { stroke-dashoffset: -90; }
+}
+
+.mesh-point {
+  opacity: 0.35;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: mesh-twinkle 2.2s ease-in-out infinite;
+}
+
+.mesh-dash {
+  stroke-dasharray: 4 6;
+  stroke-dashoffset: 0;
+  animation: mesh-dash 3.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-sweep,
+  .scan-line,
+  .reveal-up,
+  .mesh-point,
+  .mesh-dash {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}
