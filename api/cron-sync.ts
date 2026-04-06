@@ -164,8 +164,9 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
     const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
-    // Janela padrão: ontem + hoje. Pode ser sobrescrita via body (ex: backfill histórico).
-    const syncStart = overrideSyncStart ?? new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
+    const collectionStart = cfg.collection_start || "2025-01-01T00:00:00.000Z";
+    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
+    const syncStart = overrideSyncStart ?? (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart);
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
     const endpoint = cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`;
@@ -236,8 +237,6 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
     }
 
     // ── Rollups em memória a partir dos dados da API (sem re-query ao banco) ─
-    const collectionStart = cfg.collection_start || "2025-01-01T00:00:00.000Z";
-
     if (allRows.length > 0) {
       // 1. Rollup de hoje (filtro em memória, sem RPC)
       const rowsToday = allRows.filter(r => r.timestamp && r.timestamp >= todayStart);

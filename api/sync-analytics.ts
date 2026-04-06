@@ -427,8 +427,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!needed) return ok(res, { message: "Sync não necessário", needs_sync: false, started: false });
 
       const now = new Date();
-      // CORREÇÃO: usa o start passado OU collection_start, não ignora o start do frontend
-      const syncStart = String(start || cfg.collection_start || "2025-01-01T00:00:00.000Z");
+      const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
+      const collectionStart = String(cfg.collection_start || "2025-01-01T00:00:00.000Z");
+      const syncStart = String(start || (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart));
       const syncEnd   = String(end   || cfg.collection_end   || now.toISOString());
       const deviceList = Array.isArray(devices) ? devices : [];
 

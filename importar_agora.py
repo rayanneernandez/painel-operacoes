@@ -7,16 +7,23 @@ from datetime import datetime, timezone, timedelta
 from email.header import decode_header
 
 def _load_env(path=".env"):
-    if not os.path.exists(path): return
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith("#") or "=" not in line: continue
-            k, v = line.split("=", 1)
-            k, v = k.strip(), v.strip().strip('"').strip("'")
-            if k and v and k not in os.environ: os.environ[k] = v
+    try:
+        if not os.path.exists(path): return
+        with open(path, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if not line or line.startswith("#"): continue
+                if line.lower().startswith("$env:"): line = line[5:].strip()
+                if "=" not in line: continue
+                k, v = line.split("=", 1)
+                k, v = k.strip(), v.strip()
+                if not k or not v: continue
+                if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                    v = v[1:-1]
+                if k not in os.environ: os.environ[k] = v
+    except Exception: return
 
-_load_env(".env")
+_load_env(os.environ.get("DOTENV_PATH", ".env"))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[logging.StreamHandler(sys.stdout), logging.FileHandler("importar_agora.log", encoding="utf-8")])
@@ -96,7 +103,6 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
     except ImportError:
         log.error("pandas nao instalado"); return []
 
-<<<<<<< HEAD
     log.info(f"  Processando: {nome_arquivo}")
     ext = os.path.splitext(nome_arquivo.lower())[1]
     df = None
@@ -116,7 +122,7 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
                 try:
                     df = pd.read_csv(io.BytesIO(arq_bytes), skiprows=skip, encoding=enc)
                     cols = [str(c).lower() for c in df.columns]
-                    if any("campaign" in c or "visitor" in c for c in cols): break
+                    if any("campaign" in c or "campanha" in c or "visitor" in c for c in cols): break
                     df = None
                 except Exception:
                     df = None
@@ -124,40 +130,6 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
 
     if df is None:
         log.error(f"  Nao conseguiu ler: {nome_arquivo}"); return []
-=======
-    log.info(f"  Processando arquivo: {nome_arquivo}")
-    ext = os.path.splitext(nome_arquivo.lower())[1]
-
-    df = None
-    if ext in (".xlsx", ".xls"):
-        try:
-            df = pd.read_excel(io.BytesIO(csv_bytes), skiprows=1)
-        except Exception as e:
-            log.error(f"  Não conseguiu ler Excel: {e}")
-            return []
-    else:
-        # .csv ou .txt — tenta UTF-8 depois latin-1
-        for enc in ("utf-8", "latin-1", "utf-8-sig"):
-            try:
-                # Tenta com e sem skiprows=1
-                for skip in (1, 0):
-                    try:
-                        df = pd.read_csv(io.BytesIO(csv_bytes), skiprows=skip, encoding=enc)
-                        # Verifica se parece ter as colunas certas
-                        cols = [str(c).lower() for c in df.columns]
-                        if any("campaign" in c or "campanha" in c or "visitor" in c for c in cols):
-                            break
-                    except Exception:
-                        continue
-                if df is not None:
-                    break
-            except Exception:
-                continue
-
-    if df is None:
-        log.error(f"  Não conseguiu ler arquivo: {nome_arquivo}")
-        return []
->>>>>>> deedbe4 (fix: importar_agora.py aceita .xlsx/.xls além de .csv dentro dos ZIPs)
 
     df.columns = [str(c).strip() for c in df.columns]
     log.info(f"  {len(df)} linhas | Colunas: {list(df.columns)[:8]}")
@@ -169,6 +141,7 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
         return None
 
     col_campaign    = _find("Campaign", "Campanha")
+    col_content     = _find("Content", "Conteúdo", "Conteudo", "Video", "Vídeo")
     col_device      = _find("Device", "Dispositivo")
     col_visitor     = _find("Visitor ID", "VisitorID")
     col_contact_id  = _find("Contact ID", "ContactID")
@@ -184,10 +157,31 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
     df = df[df[col_campaign].notna() & (df[col_campaign].astype(str).str.strip() != "") &
             df[col_device].notna() & (df[col_device].astype(str).str.strip() != "")].copy()
 
+    import re as _re
+    def _clean_content(raw):
+        n = str(raw).strip()
+        n = _re.sub(r'\.mp4$', '', n, flags=_re.IGNORECASE)
+        meses = r'(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)'
+        n = _re.sub(rf'(?:[_\-\s]+\d{{1,2}}{meses})+(?:[_\-]\d{{2,4}})?', '', n, flags=_re.IGNORECASE)
+        n = _re.sub(r'[_\-\s]*\d{3,4}\s*[xX]\s*\d{3,4}', '', n)
+        n = _re.sub(r'\s*\([^)]*(?:vertical|horizontal)[^)]*\)', '', n, flags=_re.IGNORECASE)
+        n = _re.sub(r'\s*\(\d+\)\s*$', '', n)
+        n = _re.sub(r'[_\s]+v\d+$', '', n, flags=_re.IGNORECASE)
+        n = _re.sub(r'[_\-\s]+$', '', n)
+        return n.strip()
+
     agora = datetime.now(timezone.utc).isoformat()
     registros = []
 
-    for (camp, dev), grupo in df.groupby([col_campaign, col_device]):
+    group_keys = [col_campaign, col_content, col_device] if (col_content and col_content in df.columns) else [col_campaign, col_device]
+
+    for group_vals, grupo in df.groupby(group_keys):
+        if len(group_keys) == 3:
+            camp, content_val, dev = group_vals
+            content_val = _clean_content(content_val) if str(content_val).strip().lower() != "nan" else ""
+        else:
+            camp, dev = group_vals
+            content_val = ""
         camp = str(camp).strip()
         if not camp or camp.lower() == "nan": continue
 
@@ -198,6 +192,7 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
             parts = dev_str.rsplit(" - ", 1)
             loja, tipo_midia = parts[0].strip(), parts[1].strip()
 
+        display_count = len(grupo)
         visitors = grupo[col_visitor].nunique() if col_visitor else len(grupo)
         avg_attention = 0
         if col_contact_id and col_contact_dur:
@@ -227,43 +222,19 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
                 duration_hms = f"{hh}:{mm:02d}:{ss:02d}"
             except Exception: pass
 
-        registros.append({"client_id": client_id, "name": camp, "tipo_midia": tipo_midia,
-            "loja": loja, "start_date": start_date, "end_date": end_date,
+        registros.append({"client_id": client_id, "name": camp,
+            "content_name": content_val if content_val else None,
+            "tipo_midia": tipo_midia, "loja": loja,
+            "start_date": start_date, "end_date": end_date,
             "duration_days": duration_days, "duration_hms": duration_hms,
+            "display_count": display_count,
             "visitors": int(visitors), "avg_attention_sec": avg_attention,
-            "uploaded_at": agora, "updated_at": agora})
+            "uploaded_at": agora})
 
     log.info(f"  -> {len(registros)} registros extraidos")
     return registros
 
-<<<<<<< HEAD
 def detectar_cliente(assunto, remetente):
-=======
-# ── Extrai arquivos de um ZIP ─────────────────────────────────────────────────
-EXTENSOES_ACEITAS = (".csv", ".xlsx", ".xls", ".txt")
-
-def extrair_zip(zip_bytes: bytes) -> list:
-    """Retorna lista de (nome_arquivo, conteudo_bytes)"""
-    arquivos = []
-    try:
-        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-            todos = [n for n in z.namelist() if not n.endswith("/") and not n.startswith("__MACOSX")]
-            log.info(f"    Conteúdo do ZIP ({len(todos)} arquivo(s)): {todos[:10]}")
-            for nome in todos:
-                ext = os.path.splitext(nome.lower())[1]
-                if ext in EXTENSOES_ACEITAS:
-                    arquivos.append((nome, z.read(nome)))
-                    log.info(f"    ✔ Arquivo aceito: {nome}")
-                else:
-                    log.info(f"    ✗ Arquivo ignorado (extensão {ext!r}): {nome}")
-    except zipfile.BadZipFile as e:
-        log.error(f"  ZIP inválido: {e}")
-    return arquivos
-
-# ── Detecta qual cliente pertence o e-mail ────────────────────────────────────
-def detectar_cliente(assunto: str, remetente: str) -> tuple[str, str] | None:
-    """Retorna (nome_cliente, client_id) ou None"""
->>>>>>> deedbe4 (fix: importar_agora.py aceita .xlsx/.xls além de .csv dentro dos ZIPs)
     texto = (assunto + " " + remetente).lower()
     for nome, uid in CLIENTES.items():
         if nome in texto: return nome, uid
@@ -337,11 +308,11 @@ def main():
     processados = set()
 
     for assunto, remetente, zip_bytes in emails:
-<<<<<<< HEAD
-=======
+
+
         # Evita processar o mesmo ZIP duas vezes (pelo hash)
         import hashlib
->>>>>>> deedbe4 (fix: importar_agora.py aceita .xlsx/.xls além de .csv dentro dos ZIPs)
+
         chave = hashlib.md5(zip_bytes).hexdigest()
         if chave in processados:
             log.info("  (ZIP ja processado)"); continue
@@ -375,3 +346,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+                                                                                                           

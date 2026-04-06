@@ -74,6 +74,7 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
         return None
 
     col_campaign   = _find("Campaign", "Campanha")
+    col_content    = _find("Content", "Conteúdo", "Conteudo", "Video", "Vídeo")
     col_device     = _find("Device", "Dispositivo")
     col_visitor    = _find("Visitor ID", "VisitorID")
     col_contact_id = _find("Contact ID", "ContactID")
@@ -90,6 +91,19 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
         df[col_device].notna()   & (df[col_device].astype(str).str.strip()   != "")
     ].copy()
 
+    import re as _re
+    def _clean_content(raw: str) -> str:
+        n = str(raw).strip()
+        n = _re.sub(r'\.mp4$', '', n, flags=_re.IGNORECASE)
+        meses = r'(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)'
+        n = _re.sub(rf'(?:[_\-\s]+\d{{1,2}}{meses})+(?:[_\-]\d{{2,4}})?', '', n, flags=_re.IGNORECASE)
+        n = _re.sub(r'[_\-\s]*\d{3,4}\s*[xX]\s*\d{3,4}', '', n)
+        n = _re.sub(r'\s*\([^)]*(?:vertical|horizontal)[^)]*\)', '', n, flags=_re.IGNORECASE)
+        n = _re.sub(r'\s*\(\d+\)\s*$', '', n)
+        n = _re.sub(r'[_\s]+v\d+$', '', n, flags=_re.IGNORECASE)
+        n = _re.sub(r'[_\-\s]+$', '', n)
+        return n.strip()
+
     def _parse_device(s: str):
         s = str(s).strip()
         if ": " in s:
@@ -102,12 +116,21 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
     agora = datetime.now(timezone.utc).isoformat()
     registros = []
 
-    for (camp, dev), grupo in df.groupby([col_campaign, col_device]):
+    group_keys = [col_campaign, col_content, col_device] if (col_content and col_content in df.columns) else [col_campaign, col_device]
+
+    for group_vals, grupo in df.groupby(group_keys):
+        if len(group_keys) == 3:
+            camp, content_val, dev = group_vals
+            content_val = _clean_content(content_val) if str(content_val).strip().lower() != "nan" else ""
+        else:
+            camp, dev = group_vals
+            content_val = ""
         camp = str(camp).strip()
         if not camp or camp.lower() == "nan":
             continue
         loja, tipo_midia = _parse_device(dev)
 
+        display_count = len(grupo)
         visitors = grupo[col_visitor].nunique() if col_visitor else len(grupo)
 
         avg_attention = 0
@@ -139,8 +162,7 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
         duration_days = duration_hms = None
         if start_date and end_date:
             try:
-                import pandas as _pd
-                delta = _pd.Timestamp(end_date) - _pd.Timestamp(start_date)
+                delta = pd.Timestamp(end_date) - pd.Timestamp(start_date)
                 total = int(delta.total_seconds())
                 duration_days = round(total / 86400, 2)
                 hh, rem = divmod(total, 3600)
@@ -152,17 +174,19 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
         registros.append({
             "client_id":         client_id,
             "name":              camp,
+            "content_name":      content_val if content_val else None,
             "tipo_midia":        tipo_midia,
             "loja":              loja,
             "start_date":        start_date,
             "end_date":          end_date,
             "duration_days":     duration_days,
             "duration_hms":      duration_hms,
+            "display_count":     display_count,
             "visitors":          int(visitors),
             "avg_attention_sec": avg_attention,
             "uploaded_at":       agora,
         })
-        log.info(f"  → '{camp}' | loja='{loja}' | tipo='{tipo_midia}' | visitantes={visitors} | atenção={avg_attention}s")
+        log.info(f"  → '{camp}' | content='{content_val}' | loja='{loja}' | tipo='{tipo_midia}' | exibições={display_count} | visitantes={visitors}")
 
     log.info(f"  Total extraído: {len(registros)} registros")
     return registros

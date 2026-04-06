@@ -282,6 +282,7 @@ def upsert_campanhas(registros: list[dict]) -> int:
         return [{k: v for k, v in r.items() if k not in keys} for r in rows]
 
     tentativas = [
+        ("client_id,name,content_name,tipo_midia,loja", set()),
         ("client_id,name,tipo_midia,loja", set()),
         ("client_id,name,start_date,end_date", set()),
         ("client_id,name", set()),
@@ -398,6 +399,8 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
         "visitors":      ["VISITANTES", "Visitantes", "Visitors"],
         "avg_attention": ["TEMPO_MED ATENÇÃO (mm:ss)", "TEMPO_MED_ATENÇÃO", "TEMPO MED ATENÇÃO",
                           "TEMPO_MED ATENCAO", "Atenção (mm:ss)", "Avg Attention"],
+        "display_count": ["QUANTIDADE DE EXIBIÇÕES", "QTD EXIBIÇÕES", "QTD_EXIBICOES",
+                          "Exibições", "Exibicoes", "Display Count", "Shows", "Views"],
     }
 
     def encontrar_coluna(df: pd.DataFrame, opcoes: list[str]) -> str | None:
@@ -447,6 +450,7 @@ def processar_excel(caminho_arquivo: str, client_id: str) -> list[dict]:
             "end_date":          parse_data(row.get(mapa["end_date"]))   if mapa["end_date"]   else None,
             "duration_days":     _to_float(row.get(mapa["duration_days"])) if mapa["duration_days"] else None,
             "duration_hms":      str(row.get(mapa["duration_hms"], "")).strip() if mapa["duration_hms"] else None,
+            "display_count":     _to_int(row.get(mapa["display_count"])) if mapa.get("display_count") else None,
             "visitors":          _to_int(row.get(mapa["visitors"])) if mapa["visitors"] else 0,
             "avg_attention_sec": parse_tempo_atencao(row.get(mapa["avg_attention"], "")) if mapa["avg_attention"] else 0,
             "uploaded_at":       agora,
@@ -469,6 +473,49 @@ def _to_float(val) -> float | None:
         return float(str(val).replace(",", "."))
     except Exception:
         return None
+
+
+def _clean_content_name(raw: str) -> str:
+    """
+    Limpa o nome do vídeo/conteúdo removendo:
+    - Períodos de exibição (ex: _10mar_15mar_26, -05mar_26-30mai_26)
+    - Resolução e formato (ex: - 1080x1920, _1080x1920, (43' Vertical))
+    - Extensão .mp4
+    - Versões (_v4, (1), (2))
+    - Separadores finais
+    """
+    import re
+    name = str(raw).strip()
+
+    # Remove extensão .mp4 (case-insensitive)
+    name = re.sub(r'\.mp4$', '', name, flags=re.IGNORECASE)
+
+    # Remove períodos de exibição:
+    # Cobre: _10mar_15mar_26 | -05mar_26-30mai_26 | -15fev_26-15Ago_26 | _03mar_31mar_26
+    # Lógica: um ou mais tokens "sep+dia+mês" seguidos de um ano opcional no final
+    meses = r'(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)'
+    padrao_data = rf'(?:[_\-\s]+\d{{1,2}}{meses})+(?:[_\-]\d{{2,4}})?'
+    name = re.sub(padrao_data, '', name, flags=re.IGNORECASE)
+
+    # Remove resolução: 1080x1920, 1920x1080, 1080 x 1920, etc.
+    name = re.sub(r'[_\-\s]*\d{3,4}\s*[xX]\s*\d{3,4}', '', name)
+
+    # Remove formato entre parênteses: (43' Vertical), (43 Vertical), (Horizontal), etc.
+    name = re.sub(r'\s*\([^)]*(?:vertical|horizontal|vert|horiz)[^)]*\)', '', name, flags=re.IGNORECASE)
+
+    # Remove parênteses com apenas números no final: (1), (2), (3)
+    name = re.sub(r'\s*\(\d+\)\s*$', '', name)
+
+    # Remove versão no final: _v4, _v2, v4
+    name = re.sub(r'[_\s]+v\d+$', '', name, flags=re.IGNORECASE)
+
+    # Remove separadores soltos no final (_ - espaço)
+    name = re.sub(r'[_\-\s]+$', '', name)
+
+    # Limpa separadores duplos internos
+    name = re.sub(r'[_\-]{2,}', '-', name)
+
+    return name.strip()
 
 
 def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
@@ -517,6 +564,7 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
         return None
 
     col_campaign   = _find_col("Campaign", "Campanha")
+    col_content    = _find_col("Content", "Conteúdo", "Conteudo", "Video", "Vídeo")
     col_device     = _find_col("Device", "Dispositivo")
     col_visitor    = _find_col("Visitor ID", "Visitor_ID", "VisitorID")
     col_contact_id = _find_col("Contact ID", "Contact_ID", "ContactID")
@@ -525,7 +573,7 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
     col_end        = _find_col("Content View End",   "Contact End",   "View End")
 
     log.info(
-        f"  Mapeamento: campaign={col_campaign}, device={col_device}, "
+        f"  Mapeamento: campaign={col_campaign}, content={col_content}, device={col_device}, "
         f"visitor={col_visitor}, contact_id={col_contact_id}, "
         f"contact_dur={col_contact_dur}, start={col_start}, end={col_end}"
     )
@@ -560,15 +608,33 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
             loja = s
         return loja, tipo_midia
 
-    # ── Agregar por Campaign + Device ──────────────────────────
+    # ── Agregar por Campaign + Content + Device ────────────────
     agora     = datetime.now(timezone.utc).isoformat()
     registros = []
 
-    for (campaign_val, device_val), grupo in df.groupby([col_campaign, col_device]):
+    # Define chaves de agrupamento: inclui Content se a coluna existir
+    group_keys = [col_campaign, col_device]
+    if col_content and col_content in df.columns:
+        group_keys = [col_campaign, col_content, col_device]
+
+    for group_vals, grupo in df.groupby(group_keys):
+        # Desempacota os valores do grupo conforme as chaves usadas
+        if len(group_keys) == 3:
+            campaign_val, content_val, device_val = group_vals
+            content_val = str(content_val).strip()
+            content_val = "" if content_val.lower() == "nan" else content_val
+        else:
+            campaign_val, device_val = group_vals
+            content_val = ""
         campaign_val = str(campaign_val).strip()
         device_val   = str(device_val).strip()
-        if not campaign_val or campaign_val.lower() == "nan":
+        campaign_val = "" if campaign_val.lower() == "nan" else campaign_val
+        if not campaign_val:
             continue
+
+        # Limpa o nome do vídeo removendo datas, resolução e formato
+        if content_val:
+            content_val = _clean_content_name(content_val)
 
         loja, tipo_midia = _parse_device(device_val)
 
@@ -629,23 +695,28 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
             except Exception:
                 pass
 
+        # Quantidade de exibições (total de linhas no grupo = nº de interações de exibição)
+        display_count = len(grupo)
+
         reg = {
             "client_id":         client_id,
             "name":              campaign_val,
+            "content_name":      content_val if content_val else None,
             "tipo_midia":        tipo_midia,
             "loja":              loja,
             "start_date":        start_date,
             "end_date":          end_date,
             "duration_days":     duration_days,
             "duration_hms":      duration_hms,
+            "display_count":     display_count,
             "visitors":          int(visitantes),
             "avg_attention_sec": avg_attention,
             "uploaded_at":       agora,
         }
         registros.append(reg)
         log.info(
-            f"    → '{campaign_val}' | loja='{loja}' | tipo='{tipo_midia}' "
-            f"| visitantes={visitantes} | atenção={avg_attention}s"
+            f"    → '{campaign_val}' | content='{content_val}' | loja='{loja}' | tipo='{tipo_midia}' "
+            f"| exibições={display_count} | visitantes={visitantes} | atenção={avg_attention}s"
         )
 
     log.info(f"  {len(registros)} registros extraídos do Views CSV")

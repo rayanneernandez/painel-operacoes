@@ -658,7 +658,7 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
     import('../lib/supabase').then(({ default: supabase }) => {
       let q = supabase
         .from('campaigns')
-        .select('name,tipo_midia,loja,start_date,end_date,duration_days,duration_hms,visitors,avg_attention_sec,uploaded_at')
+        .select('name,content_name,tipo_midia,loja,start_date,end_date,duration_days,display_count,visitors,avg_attention_sec,uploaded_at')
         .eq('client_id', clientId)
         .order('start_date', { ascending: false })
         .limit(500);
@@ -675,9 +675,6 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
 
   React.useEffect(() => { fetchData(); }, [fetchData]);
 
-  const fmtDate = (d: string | null) =>
-    d ? new Date(d).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '—';
-
   const fmtAtencao = (s: number) => {
     if (!s || s === 0) return '—';
     const total = Math.floor(Number(s));
@@ -686,6 +683,14 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
     const sec = total % 60;
     if (h > 0) return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
     return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+  };
+
+  const getStatus = (start: string | null, end: string | null): { label: string; color: string } => {
+    const now = new Date();
+    if (!start && !end) return { label: '—', color: 'text-gray-500' };
+    if (end && new Date(end) < now) return { label: 'Encerrada', color: 'text-red-400' };
+    if (start && new Date(start) > now) return { label: 'Agendada', color: 'text-yellow-400' };
+    return { label: 'Ativa', color: 'text-emerald-400' };
   };
 
   const totalVisitantes = rows.reduce((acc, r) => acc + (Number(r.visitors) || 0), 0);
@@ -735,32 +740,37 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
           <table className="min-w-full text-left text-xs border-separate border-spacing-0">
             <thead>
               <tr className="sticky top-0 z-10">
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Tipo Mídia</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Loja</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Início Exibição</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Fim Exibição</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Tempo (Dias)</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Tempo (hh:mm:ss)</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Campanha</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Por Loja</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Device</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Status</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Qtd. Exibições</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Dias de Exibição Ativa</th>
                 <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Visitantes</th>
                 <th className="bg-gray-900 pb-2 pt-1 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Atenção Média</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => (
+              {rows.map((r, i) => {
+                const status = getStatus(r.start_date, r.end_date);
+                return (
                 <tr
                   key={i}
                   className={`transition-colors hover:bg-gray-800/50 ${i % 2 === 0 ? 'bg-transparent' : 'bg-gray-800/20'}`}
                 >
-                  <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap">{r.tipo_midia || '—'}</td>
+                  <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap max-w-[200px] truncate" title={r.content_name || r.name || ''}>{r.content_name || r.name || '—'}</td>
                   <td className="py-2 pr-4 text-gray-200 whitespace-nowrap">{r.loja || '—'}</td>
-                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.start_date)}</td>
-                  <td className="py-2 pr-4 text-gray-400 whitespace-nowrap">{fmtDate(r.end_date)}</td>
+                  <td className="py-2 pr-4 text-cyan-400 whitespace-nowrap">{r.tipo_midia || '—'}</td>
+                  <td className="py-2 pr-4 whitespace-nowrap">
+                    <span className={`font-semibold ${status.color}`}>{status.label}</span>
+                  </td>
+                  <td className="py-2 pr-4 text-orange-400 text-right font-mono">{r.display_count != null ? Number(r.display_count).toLocaleString('pt-BR') : '—'}</td>
                   <td className="py-2 pr-4 text-yellow-400 text-right font-mono">{r.duration_days != null ? Number(r.duration_days).toFixed(2) : '—'}</td>
-                  <td className="py-2 pr-4 text-gray-400 text-right font-mono">{r.duration_hms && r.duration_hms !== 'None' ? r.duration_hms : '—'}</td>
                   <td className="py-2 pr-4 text-emerald-400 text-right font-bold">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
                   <td className="py-2 text-blue-400 text-right font-bold">{fmtAtencao(r.avg_attention_sec)}</td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
             {rows.length > 1 && (
               <tfoot>
