@@ -974,10 +974,16 @@ export function ClientDashboard() {
         userResolved = resolveDashboardConfig(uc ? JSON.parse(uc) : null);
       }
 
-      // Se o usuário tem seleção salva, usa ela (filtrada pelos permitidos); senão usa todos os permitidos
-      const activeIds = userResolved.ids && userResolved.ids.length
+      // Se o usuário tem seleção salva, usa ela (filtrada pelos permitidos); senão usa todos os permitidos.
+      // Sempre garante que TODOS os widgets permitidos pelo admin apareçam (novos widgets entram automaticamente).
+      const baseActiveIds = userResolved.ids && userResolved.ids.length
         ? userResolved.ids.filter((wid) => allowedSet.has(wid))
         : allowedIds;
+
+      const activeIds = [...baseActiveIds];
+      for (const wid of allowedIds) {
+        if (!activeIds.includes(wid)) activeIds.push(wid);
+      }
 
       // Layout: combina allowed + user (user sobrescreve)
       const mergedLayout = { ...allowedResolved.widgetLayout, ...userResolved.widgetLayout };
