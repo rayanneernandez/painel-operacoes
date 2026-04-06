@@ -674,13 +674,17 @@ export function ClientDashboard() {
   const loadWeekFlowData = useCallback(async () => {
     if (!id) return;
 
-    // ── Determina o intervalo de datas ────────────────────────────────────
-    // Se um período de mais de 1 dia foi selecionado → usa o período completo.
-    // Se apenas um dia → mostra a semana inteira daquele dia (Seg→Dom).
-    const isMultiDay = selectedStartDate.toDateString() !== selectedEndDate.toDateString();
+    // ── Regra do gráfico/KPI "Média Visitantes" ───────────────────────────
+    // Até 7 dias selecionados: sempre usa os ÚLTIMOS 7 DIAS (rolling) até o fim selecionado.
+    // Mais de 7 dias: respeita o período selecionado.
+    const selectedDays = Math.max(
+      1,
+      Math.ceil((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1
+    );
+    const useSelectedPeriod = selectedDays > 7;
 
     let startIso: string, endIso: string, startDay: string, endDay: string;
-    if (isMultiDay) {
+    if (useSelectedPeriod) {
       const s = new Date(selectedStartDate); s.setUTCHours(0, 0, 0, 0);
       const e = new Date(selectedEndDate);   e.setUTCHours(23, 59, 59, 999);
       startIso = s.toISOString();
@@ -688,33 +692,25 @@ export function ClientDashboard() {
       startDay = s.toISOString().slice(0, 10);
       endDay   = e.toISOString().slice(0, 10);
     } else {
-      // Dia único: calcula a semana (Seg→Dom) do dia selecionado
-      const end = new Date(selectedEndDate); end.setUTCHours(23, 59, 59, 999);
-      const dow = end.getUTCDay(); const offset = (dow + 6) % 7;
-      const start = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() - offset, 0, 0, 0, 0));
-      startIso = start.toISOString();
-      endIso   = end.toISOString();
-      startDay = start.toISOString().slice(0, 10);
-      endDay   = end.toISOString().slice(0, 10);
+      const e = new Date(selectedEndDate); e.setUTCHours(23, 59, 59, 999);
+      const s = new Date(e.getTime() - 6 * 86400000); s.setUTCHours(0, 0, 0, 0);
+      startIso = s.toISOString();
+      endIso   = e.toISOString();
+      startDay = s.toISOString().slice(0, 10);
+      endDay   = e.toISOString().slice(0, 10);
     }
 
-    // ── Agrega visitors_per_day por dia da semana ─────────────────────────
-    // Período = 1 semana → totais por dia.
-    // Período > 1 semana → MÉDIA por ocorrência de cada dia da semana.
+    // ── Agrega visitors_per_day por dia da semana (sempre SOMA) ───────────
     const toWeekDays = (vpd: Record<string, number>) => {
       const totals = [0, 0, 0, 0, 0, 0, 0];
-      const counts = [0, 0, 0, 0, 0, 0, 0];
       Object.entries(vpd || {}).forEach(([dateStr, count]) => {
         const d = new Date(dateStr + 'T00:00:00Z');
         if (isNaN(d.getTime())) return;
         const ud = d.getUTCDay();
         const idx = ud === 0 ? 6 : ud - 1;
         totals[idx] += Number(count) || 0;
-        counts[idx] += 1;
       });
-      if (!isMultiDay) return totals;
-      // Período com múltiplos dias: retorna média por dia da semana
-      return totals.map((total, i) => counts[i] > 0 ? Math.round(total / counts[i]) : 0);
+      return totals;
     };
 
     try {
@@ -729,7 +725,7 @@ export function ClientDashboard() {
           .gte('end', startIso)
           .gt('total_visitors', 0)
           .order('updated_at', { ascending: false })
-          .limit(isMultiDay ? 30 : 10);
+          .limit(useSelectedPeriod ? 30 : 10);
 
         if (rollups && rollups.length > 0) {
           const mergedVpd: Record<string, number> = {};
@@ -743,7 +739,9 @@ export function ClientDashboard() {
             }
           }
           if (Object.keys(mergedVpd).length > 0) {
-            setDailyStats(toWeekDays(mergedVpd));
+            const weekDays = toWeekDays(mergedVpd);
+            setDailyStats(weekDays);
+            if (!useSelectedPeriod) setAvgVisitorsPerDay(Math.round(weekDays.reduce((a, b) => a + b, 0) / 7));
             return;
           }
         }
@@ -771,18 +769,20 @@ export function ClientDashboard() {
             from2 += page2; if (from2 > 50000) break;
           }
           if (Object.keys(visPerDay).length > 0) {
-            setDailyStats(toWeekDays(visPerDay));
+            const weekDays = toWeekDays(visPerDay);
+            setDailyStats(weekDays);
+            if (!useSelectedPeriod) setAvgVisitorsPerDay(Math.round(weekDays.reduce((a, b) => a + b, 0) / 7));
             return;
           }
         } catch (_) { /* ignora e cai no zero */ }
 
         setDailyStats([0, 0, 0, 0, 0, 0, 0]);
+        if (!useSelectedPeriod) setAvgVisitorsPerDay(0);
         return;
       }
 
       // ── Filtro por dispositivo (loja selecionada) ─────────────────────
       const days = [0, 0, 0, 0, 0, 0, 0];
-      const occurrences = [0, 0, 0, 0, 0, 0, 0]; // para calcular média quando multi-dia
       let from = 0; const page = 1000;
       while (true) {
         const { data, error } = await supabase.from('visitor_analytics').select('timestamp')
@@ -798,22 +798,12 @@ export function ClientDashboard() {
         from += page; if (from > 20000) break;
       }
 
-      if (isMultiDay) {
-        // Conta quantas vezes cada dia da semana aparece no período
-        let cur = new Date(startDay + 'T00:00:00Z');
-        const endD = new Date(endDay + 'T00:00:00Z');
-        while (cur <= endD) {
-          const ud = cur.getUTCDay(); const idx = ud === 0 ? 6 : ud - 1;
-          occurrences[idx] += 1;
-          cur = new Date(cur.getTime() + 86400000);
-        }
-        setDailyStats(days.map((total, i) => occurrences[i] > 0 ? Math.round(total / occurrences[i]) : 0));
-      } else {
-        setDailyStats(days);
-      }
+      setDailyStats(days);
+      if (!useSelectedPeriod) setAvgVisitorsPerDay(Math.round(days.reduce((a, b) => a + b, 0) / 7));
     } catch (e) {
       console.warn('[Dashboard] Erro semana:', e);
       setDailyStats([0, 0, 0, 0, 0, 0, 0]);
+      if (selectedDays <= 7) setAvgVisitorsPerDay(0);
     }
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
