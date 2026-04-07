@@ -426,18 +426,39 @@ export function ClientDashboard() {
     console.log(`[BgSync] Disparando sync (force=${force})...`);
 
     try {
+      const selectedStartAligned = new Date(selectedStartDate); selectedStartAligned.setUTCHours(0, 0, 0, 0);
+      const selectedEndAligned = new Date(selectedEndDate); selectedEndAligned.setUTCHours(23, 59, 59, 999);
+      const selectedDays = Math.max(1, Math.ceil((selectedEndAligned.getTime() - selectedStartAligned.getTime() + 1) / 86400000));
+
       // Para clientes D-2 (ex: Panvel), o sync começa em D-2 para garantir que esses dados
       // sejam buscados da API e salvos no banco antes de serem exibidos no dashboard
       const syncStartDate = useD2DefaultRef.current
         ? (() => { const d = new Date(); d.setDate(d.getDate() - 2); d.setUTCHours(0, 0, 0, 0); return d.toISOString(); })()
         : undefined;
 
+      let forceRange: { start?: string; end?: string } = {};
+      if (force) {
+        if (selectedDays > 1 || !autoTodayRef.current) {
+          forceRange = { start: selectedStartAligned.toISOString(), end: selectedEndAligned.toISOString() };
+        } else {
+          const recoveryStart = new Date(Date.UTC(
+            selectedEndAligned.getUTCFullYear(),
+            selectedEndAligned.getUTCMonth() - 2,
+            1,
+            0, 0, 0, 0
+          ));
+          forceRange = { start: recoveryStart.toISOString(), end: selectedEndAligned.toISOString() };
+        }
+      }
+
       const resp = await fetch('/api/sync-analytics', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           client_id: id,
-          ...(syncStartDate ? { start: syncStartDate } : {}),
-          end: new Date().toISOString(),
+          ...(forceRange.start ? { start: forceRange.start } : {}),
+          ...(forceRange.end ? { end: forceRange.end } : {}),
+          ...(!forceRange.start && syncStartDate ? { start: syncStartDate } : {}),
+          ...(!forceRange.end ? { end: new Date().toISOString() } : {}),
           background_sync: true,
           force_full_sync: force,
           ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),

@@ -36,6 +36,35 @@ function safeNumber(x: any): number | null {
 function asISODateUTC(d: Date) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}-${String(d.getUTCDate()).padStart(2,"0")}`;
 }
+function startOfUtcDay(value: string | Date) {
+  const d = value instanceof Date ? new Date(value) : new Date(value);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+}
+function endOfUtcDay(value: string | Date) {
+  const d = value instanceof Date ? new Date(value) : new Date(value);
+  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
+}
+function addUtcDays(value: Date, days: number) {
+  return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate() + days, value.getUTCHours(), value.getUTCMinutes(), value.getUTCSeconds(), value.getUTCMilliseconds()));
+}
+function monthStartMonthsAgoUtc(base: Date, monthsAgo: number) {
+  return new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - monthsAgo, 1, 0, 0, 0, 0));
+}
+function buildChunkedRanges(rangeStart: string, rangeEnd: string, chunkDays = 1) {
+  const start = startOfUtcDay(rangeStart);
+  const end = endOfUtcDay(rangeEnd);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start > end) return [];
+
+  const ranges: Array<{ start: string; end: string }> = [];
+  let cursor = start;
+  while (cursor <= end) {
+    const chunkEndCandidate = endOfUtcDay(addUtcDays(cursor, Math.max(1, chunkDays) - 1));
+    const chunkEnd = chunkEndCandidate < end ? chunkEndCandidate : end;
+    ranges.push({ start: cursor.toISOString(), end: chunkEnd.toISOString() });
+    cursor = addUtcDays(startOfUtcDay(chunkEnd), 1);
+  }
+  return ranges;
+}
 
 function extractTimes(visit: any) {
   const startRaw = visit.start ?? visit.timestamp ?? visit.start_time ?? visit.begin ?? null;
@@ -268,7 +297,129 @@ async function needsSync(client_id: string, forceSync = false): Promise<boolean>
   return Date.now() - Date.parse(data.last_synced_at) > 60 * 60 * 1000;
 }
 
-// ── Background sync: respeita o start passado, não usa collection_start ──────
+async function runSingleWindowSync(client_id: string, cfg: ClientApiConfig, syncStart: string, syncEnd: string, devices: any[]) {
+  const analyticsUrl = `${(cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "")}${cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`}`;
+  const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+  const ck = cfg.custom_header_key?.trim(); const cv = cfg.custom_header_value?.trim();
+  if (ck && cv) headers[ck] = cv;
+  else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
+  else { console.error("[BgSync] api_key não configurada"); return { totalFetched: 0 }; }
+
+  const baseBody: any = {
+    start: syncStart, end: syncEnd,
+    tracks: cfg.collect_tracks ?? true, face_quality: cfg.collect_face_quality ?? true,
+    glasses: cfg.collect_glasses ?? true, facial_hair: cfg.collect_beard ?? true,
+    hair_color: cfg.collect_hair_color ?? true, hair_type: cfg.collect_hair_type ?? true,
+    headwear: cfg.collect_headwear ?? true,
+    additional_attributes: ["smile","pitch","yaw","x","y","height"],
+  };
+  if (devices.length > 0) baseBody.devices = devices;
+
+  let offset = 0, pageCount = 0, totalFetched = 0;
+  let apiReportedTotal: number | null = null;
+  let lastPageSig: string | null = null;
+
+  while (pageCount < 2000) {
+    pageCount++;
+    let resp: Response;
+    try {
+      resp = await fetch(analyticsUrl, { method: "POST", headers, body: JSON.stringify({ ...baseBody, limit: 1000, offset }) });
+    } catch (e) {
+      console.error("[BgSync] Fetch error:", e);
+      break;
+    }
+    if (!resp.ok) { console.error(`[BgSync] API ${resp.status}`); break; }
+
+    const json = await resp.json();
+    const page: any[] = extractVisitorArray(json);
+
+    if (apiReportedTotal === null) {
+      const t = json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total;
+      const n = Number(t);
+      if (Number.isFinite(n) && n > 0) {
+        apiReportedTotal = n;
+        console.log(`[BgSync] Total API (${syncStart.slice(0, 10)}): ${apiReportedTotal}`);
+      }
+    }
+
+    if (page.length === 0) break;
+
+    const sig = `${offset}:${page.length}:${JSON.stringify(page[0]).slice(0, 80)}`;
+    if (sig === lastPageSig) {
+      console.warn("[BgSync] Página duplicada, encerrando.");
+      break;
+    }
+    lastPageSig = sig;
+
+    totalFetched += page.length;
+    const rows = buildAndDeduplicateRows(page, client_id);
+    for (let i = 0; i < rows.length; i += 500) {
+      const { error } = await supabase.from("visitor_analytics").upsert(rows.slice(i, i + 500), { onConflict: "visit_uid", ignoreDuplicates: true });
+      if (error) console.error("[BgSync] Upsert erro:", error);
+    }
+    console.log(`[BgSync] Janela ${syncStart.slice(0, 10)} → ${syncEnd.slice(0, 10)} | página ${pageCount}: +${page.length} (total: ${totalFetched})`);
+
+    const reachedTotal = apiReportedTotal !== null && offset + page.length >= apiReportedTotal;
+    if (reachedTotal || page.length < 1000) break;
+    offset += page.length;
+    await new Promise(r => setTimeout(r, 200));
+  }
+
+  return { totalFetched };
+}
+
+async function rebuildBackgroundRollups(client_id: string, cfg: ClientApiConfig, syncStart: string, syncEnd: string, devices: any[]) {
+  const HISTORIC_END = "9999-12-31T23:59:59.999Z";
+  const now = new Date();
+  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
+  const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
+  const deviceNums = devices.map(Number).filter(Number.isFinite);
+
+  if (deviceNums.length > 0) {
+    const rows = await fetchAllDBRows(client_id, syncStart, syncEnd, deviceNums);
+    if (rows.length > 0) await saveRollup(buildRollup(rows, client_id, syncStart, syncEnd));
+    return;
+  }
+
+  const historicStart = cfg.collection_start || syncStart;
+  const { data: rpcHist, error: rpcHistErr } = await supabase.rpc("build_visitor_rollup", {
+    p_client_id: client_id, p_start: historicStart, p_end: syncEnd,
+  });
+  if (!rpcHistErr && rpcHist && Number((rpcHist as any).total_visitors) > 0) {
+    await supabase.from("visitor_analytics_rollups").upsert(
+      { client_id, start: historicStart, end: HISTORIC_END, ...(rpcHist as any), updated_at: new Date().toISOString() },
+      { onConflict: "client_id,start,end" }
+    );
+    console.log(`[BgSync] Rollup histórico salvo: ${(rpcHist as any).total_visitors} visitantes`);
+  }
+
+  const { data: rpcToday, error: rpcTodayErr } = await supabase.rpc("build_visitor_rollup", {
+    p_client_id: client_id, p_start: todayStart.toISOString(), p_end: syncEnd,
+  });
+  if (!rpcTodayErr && rpcToday && Number((rpcToday as any).total_visitors) > 0) {
+    await supabase.from("visitor_analytics_rollups").upsert(
+      { client_id, start: todayStart.toISOString(), end: todayEnd.toISOString(), ...(rpcToday as any), updated_at: new Date().toISOString() },
+      { onConflict: "client_id,start,end" }
+    );
+    console.log(`[BgSync] Rollup hoje salvo: ${(rpcToday as any).total_visitors} visitantes`);
+  }
+
+  const dow = now.getUTCDay(); const offset2 = (dow + 6) % 7;
+  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - offset2, 0, 0, 0, 0));
+  const weekEnd   = new Date(Date.UTC(weekStart.getUTCFullYear(), weekStart.getUTCMonth(), weekStart.getUTCDate() + 6, 23, 59, 59, 999));
+  const { data: rpcWeek, error: rpcWeekErr } = await supabase.rpc("build_visitor_rollup", {
+    p_client_id: client_id, p_start: weekStart.toISOString(), p_end: weekEnd.toISOString(),
+  });
+  if (!rpcWeekErr && rpcWeek && Number((rpcWeek as any).total_visitors) > 0) {
+    await supabase.from("visitor_analytics_rollups").upsert(
+      { client_id, start: weekStart.toISOString(), end: weekEnd.toISOString(), ...(rpcWeek as any), updated_at: new Date().toISOString() },
+      { onConflict: "client_id,start,end" }
+    );
+    console.log(`[BgSync] Rollup semana salvo: ${(rpcWeek as any).total_visitors} visitantes`);
+  }
+}
+
+// ── Background sync: usa janelas menores para completar melhor dias densos ──────
 async function runBackgroundSync(client_id: string, cfg: ClientApiConfig, syncStart: string, syncEnd: string, devices: any[]) {
   const syncKey = `${client_id}:${syncStart}:${syncEnd}`;
   if (_activeSyncs.has(syncKey)) { console.log(`[BgSync] Já em andamento, pulando.`); return; }
@@ -276,117 +427,20 @@ async function runBackgroundSync(client_id: string, cfg: ClientApiConfig, syncSt
   console.log(`[BgSync] Iniciando: ${syncStart} → ${syncEnd}`);
 
   try {
-    const analyticsUrl = `${(cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "")}${cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`}`;
-    const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
-    const ck = cfg.custom_header_key?.trim(); const cv = cfg.custom_header_value?.trim();
-    if (ck && cv) headers[ck] = cv;
-    else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
-    else { console.error("[BgSync] api_key não configurada"); return; }
+    const daySpan = Math.max(1, Math.ceil((endOfUtcDay(syncEnd).getTime() - startOfUtcDay(syncStart).getTime() + 1) / 86400000));
+    const chunkDays = devices.length > 0 ? Math.min(daySpan, 2) : 1;
+    const maxWindows = daySpan <= 3 ? daySpan : Math.min(daySpan, 5);
+    const windows = buildChunkedRanges(syncStart, syncEnd, chunkDays).slice(0, maxWindows);
 
-    const baseBody: any = {
-      start: syncStart, end: syncEnd,
-      tracks: cfg.collect_tracks ?? true, face_quality: cfg.collect_face_quality ?? true,
-      glasses: cfg.collect_glasses ?? true, facial_hair: cfg.collect_beard ?? true,
-      hair_color: cfg.collect_hair_color ?? true, hair_type: cfg.collect_hair_type ?? true,
-      headwear: cfg.collect_headwear ?? true,
-      additional_attributes: ["smile","pitch","yaw","x","y","height"],
-    };
-    if (devices.length > 0) baseBody.devices = devices;
-
-    let offset = 0, pageCount = 0, totalFetched = 0;
-    let apiReportedTotal: number | null = null;
-    let lastPageSig: string | null = null;
-
-    while (pageCount < 2000) {
-      pageCount++;
-      let resp: Response;
-      try { resp = await fetch(analyticsUrl, { method: "POST", headers, body: JSON.stringify({ ...baseBody, limit: 1000, offset }) }); }
-      catch (e) { console.error("[BgSync] Fetch error:", e); break; }
-      if (!resp.ok) { console.error(`[BgSync] API ${resp.status}`); break; }
-
-      const json = await resp.json();
-      const page: any[] = extractVisitorArray(json);
-
-      if (apiReportedTotal === null) {
-        const t = json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total;
-        const n = Number(t); if (Number.isFinite(n) && n > 0) { apiReportedTotal = n; console.log(`[BgSync] Total API: ${apiReportedTotal}`); }
-      }
-
-      if (page.length > 0) {
-        const sig = `${offset}:${page.length}:${JSON.stringify(page[0]).slice(0, 80)}`;
-        if (sig === lastPageSig) { console.warn("[BgSync] Página duplicada, encerrando."); break; }
-        lastPageSig = sig;
-        totalFetched += page.length;
-        const rows = buildAndDeduplicateRows(page, client_id);
-        for (let i = 0; i < rows.length; i += 500) {
-          const { error } = await supabase.from("visitor_analytics").upsert(rows.slice(i, i + 500), { onConflict: "visit_uid", ignoreDuplicates: true });
-          if (error) console.error(`[BgSync] Upsert erro:`, error);
-        }
-        console.log(`[BgSync] Página ${pageCount}: +${page.length} (total: ${totalFetched})`);
-      }
-
-      const reachedTotal = apiReportedTotal !== null && offset + page.length >= apiReportedTotal;
-      if (reachedTotal || page.length < 1000 || page.length === 0) break;
-      offset += 1000;
-      await new Promise(r => setTimeout(r, 200));
+    let totalFetched = 0;
+    for (const windowRange of windows) {
+      const result = await runSingleWindowSync(client_id, cfg, windowRange.start, windowRange.end, devices);
+      totalFetched += result.totalFetched;
+      await new Promise(r => setTimeout(r, 250));
     }
 
     console.log(`[BgSync] ✅ Concluído: ${totalFetched} registros`);
-
-    // ── Após sync: rebuild rollups automaticamente ──────────────────────────
-    // end fixo no futuro: garante que o rollup histórico SEMPRE seja encontrado
-    // pelo dashboard, inclusive no dia seguinte e em qualquer data futura
-    const HISTORIC_END = "9999-12-31T23:59:59.999Z";
-    const now = new Date();
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
-    const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
-
-    // 1. Rollup do período sincronizado
-    const deviceNums = devices.map(Number).filter(Number.isFinite);
-    if (deviceNums.length > 0) {
-      const rows = await fetchAllDBRows(client_id, syncStart, syncEnd, deviceNums);
-      if (rows.length > 0) await saveRollup(buildRollup(rows, client_id, syncStart, syncEnd));
-    } else {
-      // 2. Rollup histórico completo (end=FIXO no futuro: sempre encontrado pelo dashboard)
-      const historicStart = cfg.collection_start || syncStart;
-      const { data: rpcHist, error: rpcHistErr } = await supabase.rpc("build_visitor_rollup", {
-        p_client_id: client_id, p_start: historicStart, p_end: syncEnd,
-      });
-      if (!rpcHistErr && rpcHist && Number((rpcHist as any).total_visitors) > 0) {
-        await supabase.from("visitor_analytics_rollups").upsert(
-          { client_id, start: historicStart, end: HISTORIC_END, ...(rpcHist as any), updated_at: new Date().toISOString() },
-          { onConflict: "client_id,start,end" }
-        );
-        console.log(`[BgSync] Rollup histórico salvo: ${(rpcHist as any).total_visitors} visitantes`);
-      }
-
-      // 3. Rollup do dia atual (start=hoje 00:00, end=hoje 23:59:59)
-      const { data: rpcToday, error: rpcTodayErr } = await supabase.rpc("build_visitor_rollup", {
-        p_client_id: client_id, p_start: todayStart.toISOString(), p_end: syncEnd,
-      });
-      if (!rpcTodayErr && rpcToday && Number((rpcToday as any).total_visitors) > 0) {
-        await supabase.from("visitor_analytics_rollups").upsert(
-          { client_id, start: todayStart.toISOString(), end: todayEnd.toISOString(), ...(rpcToday as any), updated_at: new Date().toISOString() },
-          { onConflict: "client_id,start,end" }
-        );
-        console.log(`[BgSync] Rollup hoje salvo: ${(rpcToday as any).total_visitors} visitantes`);
-      }
-
-      // 4. Rollup da semana atual (seg→dom)
-      const dow = now.getUTCDay(); const offset2 = (dow + 6) % 7;
-      const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - offset2, 0, 0, 0, 0));
-      const weekEnd   = new Date(Date.UTC(weekStart.getUTCFullYear(), weekStart.getUTCMonth(), weekStart.getUTCDate() + 6, 23, 59, 59, 999));
-      const { data: rpcWeek, error: rpcWeekErr } = await supabase.rpc("build_visitor_rollup", {
-        p_client_id: client_id, p_start: weekStart.toISOString(), p_end: weekEnd.toISOString(),
-      });
-      if (!rpcWeekErr && rpcWeek && Number((rpcWeek as any).total_visitors) > 0) {
-        await supabase.from("visitor_analytics_rollups").upsert(
-          { client_id, start: weekStart.toISOString(), end: weekEnd.toISOString(), ...(rpcWeek as any), updated_at: new Date().toISOString() },
-          { onConflict: "client_id,start,end" }
-        );
-        console.log(`[BgSync] Rollup semana salvo: ${(rpcWeek as any).total_visitors} visitantes`);
-      }
-    }
+    await rebuildBackgroundRollups(client_id, cfg, syncStart, syncEnd, devices);
 
     await markSyncDone(client_id);
   } catch (e) {
@@ -427,9 +481,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!needed) return ok(res, { message: "Sync não necessário", needs_sync: false, started: false });
 
       const now = new Date();
-      const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
+      const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 2, 0, 0, 0, 0)).toISOString();
+      const recoveryStart = monthStartMonthsAgoUtc(now, 2).toISOString();
       const collectionStart = String(cfg.collection_start || "2025-01-01T00:00:00.000Z");
-      const syncStart = String(start || (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart));
+      const forceStart = Date.parse(collectionStart) > Date.parse(recoveryStart) ? collectionStart : recoveryStart;
+      const syncStart = String(start || (forceSync ? forceStart : (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart)));
       const syncEnd   = String(end   || cfg.collection_end   || now.toISOString());
       const deviceList = Array.isArray(devices) ? devices : [];
 
