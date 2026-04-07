@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
+import { logService } from '@/services/logService';
 import {
   LayoutDashboard,
   Users,
@@ -19,10 +20,103 @@ export function Layout() {
   const navigate = useNavigate();
   const { logout, user } = useAuth();
 
+  const navStateRef = useRef<{ path: string; atMs: number } | null>(null);
+  const pathRef = useRef<string>('');
+  const lastClickAtRef = useRef<number>(0);
+
   useEffect(() => {
     document.documentElement.classList.add('dark');
     localStorage.setItem('theme', 'dark');
   }, []);
+
+  useEffect(() => {
+    pathRef.current = `${location.pathname}${location.search || ''}`;
+  }, [location.pathname, location.search]);
+
+  useEffect(() => {
+    const email = user?.email;
+    if (!email) return;
+
+    const nowMs = Date.now();
+    const currentPath = `${location.pathname}${location.search || ''}`;
+
+    const prev = navStateRef.current;
+    navStateRef.current = { path: currentPath, atMs: nowMs };
+
+    if (!prev) {
+      void logService.logAction(email, 'VIEW', `Entrou: ${currentPath}`, 'network', currentPath, {
+        type: 'page_enter',
+        to: currentPath,
+        at: new Date(nowMs).toISOString(),
+      });
+      return;
+    }
+
+    if (prev.path === currentPath) return;
+
+    const durationMs = Math.max(0, nowMs - prev.atMs);
+    void logService.logAction(email, 'VIEW', `Navegou: ${prev.path}  ${currentPath}`, 'network', currentPath, {
+      type: 'navigate',
+      from: prev.path,
+      to: currentPath,
+      duration_ms: durationMs,
+      duration_seconds: Math.round(durationMs / 1000),
+      at: new Date(nowMs).toISOString(),
+    });
+  }, [location.pathname, location.search, user?.email]);
+
+  useEffect(() => {
+    const email = user?.email;
+    if (!email) return;
+
+    const handler = (ev: MouseEvent) => {
+      const nowMs = Date.now();
+      if (nowMs - lastClickAtRef.current < 800) return;
+
+      const target = ev.target;
+      if (!(target instanceof Element)) return;
+
+      const tag = target.tagName?.toLowerCase?.() || '';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      const el = (target.closest('a,button,[role="button"],[data-track-click]') as Element | null) || target;
+      if (!el) return;
+
+      const elTag = el.tagName?.toLowerCase?.() || '';
+      const elId = (el as HTMLElement).id ? `#${(el as HTMLElement).id}` : '';
+      const elClassRaw = (el as HTMLElement).className;
+      const elClasses = typeof elClassRaw === 'string'
+        ? elClassRaw.split(' ').filter(Boolean).slice(0, 3).map((c) => `.${c}`).join('')
+        : '';
+      const selector = `${elTag}${elId}${elClasses}`.trim() || elTag || 'element';
+
+      const aria = (el as HTMLElement).getAttribute?.('aria-label') || '';
+      const title = (el as HTMLElement).getAttribute?.('title') || '';
+      const track = (el as HTMLElement).getAttribute?.('data-track-click') || '';
+
+      let text = '';
+      if (!aria && !title && !track) {
+        const rawText = (el as HTMLElement).innerText || '';
+        text = rawText.replace(/\s+/g, ' ').trim().slice(0, 80);
+      }
+
+      const label = (track || aria || title || text || selector).trim().slice(0, 120);
+      const href = el instanceof HTMLAnchorElement ? (el.getAttribute('href') || '') : '';
+
+      lastClickAtRef.current = nowMs;
+
+      void logService.logAction(email, 'VIEW', `Clique: ${label}`, 'network', pathRef.current, {
+        type: 'click',
+        path: pathRef.current,
+        element: { selector, tag: elTag },
+        href: href || null,
+        at: new Date(nowMs).toISOString(),
+      });
+    };
+
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
+  }, [user?.email]);
 
   const menuItems = [
     { 

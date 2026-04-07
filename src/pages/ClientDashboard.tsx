@@ -75,6 +75,8 @@ export function ClientDashboard() {
   const autoTodayRef = useRef(true);
   const didApplyD1DefaultRef = useRef(false);
   const loadSeqRef = useRef(0);
+  // Flag para clientes que usam D-2 como data padrão (ex: Panvel)
+  const useD2DefaultRef = useRef(false);
 
   const [syncMessage, setSyncMessage] = useState('');
   const [isSyncingStores, setIsSyncingStores] = useState(false);
@@ -424,10 +426,17 @@ export function ClientDashboard() {
     console.log(`[BgSync] Disparando sync (force=${force})...`);
 
     try {
+      // Para clientes D-2 (ex: Panvel), o sync começa em D-2 para garantir que esses dados
+      // sejam buscados da API e salvos no banco antes de serem exibidos no dashboard
+      const syncStartDate = useD2DefaultRef.current
+        ? (() => { const d = new Date(); d.setDate(d.getDate() - 2); d.setUTCHours(0, 0, 0, 0); return d.toISOString(); })()
+        : undefined;
+
       const resp = await fetch('/api/sync-analytics', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           client_id: id,
+          ...(syncStartDate ? { start: syncStartDate } : {}),
           end: new Date().toISOString(),
           background_sync: true,
           force_full_sync: force,
@@ -817,13 +826,18 @@ export function ClientDashboard() {
     if (client) {
       setClientData({ name: client.name, logo: client.logo_url });
 
-      const isD1 = String(client.name || '').toLowerCase().includes('panvel');
-      if (isD1 && !didApplyD1DefaultRef.current && autoTodayRef.current) {
+      const isPanvel = String(client.name || '').toLowerCase().includes('panvel');
+      if (isPanvel) {
+        useD2DefaultRef.current = true; // marca para usar D-2 no sync
+      }
+      if (isPanvel && !didApplyD1DefaultRef.current && autoTodayRef.current) {
         didApplyD1DefaultRef.current = true;
         autoTodayRef.current = false;
-        const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-        const s = new Date(yesterday); s.setUTCHours(0, 0, 0, 0);
-        const e = new Date(yesterday); e.setUTCHours(23, 59, 59, 999);
+        // Panvel: usa D-2 (2 dias atrás) como padrão, pois os dados do dia anterior
+        // ainda não estão processados — o sistema trabalha com D-2
+        const twoDaysAgo = new Date(); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+        const s = new Date(twoDaysAgo); s.setUTCHours(0, 0, 0, 0);
+        const e = new Date(twoDaysAgo); e.setUTCHours(23, 59, 59, 999);
         setSelectedStartDate(s);
         setSelectedEndDate(e);
       }

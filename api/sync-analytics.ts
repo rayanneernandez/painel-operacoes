@@ -524,7 +524,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       if (storesPayload.length > 0) await supabase.from("stores").upsert(storesPayload);
 
+      // Remove do banco as lojas deste cliente que não existem mais na API
+      // (ex: loja renomeada, encerrada ou removida do DisplayForce)
       const storeIds = storesPayload.map(s => s.id).filter(Boolean);
+      if (storeIds.length > 0) {
+        const { data: allDbStores } = await supabase.from("stores").select("id").eq("client_id", client_id);
+        const orphanIds = (allDbStores || []).map((s: any) => String(s.id)).filter(dbId => !storeIds.includes(dbId));
+        if (orphanIds.length > 0) {
+          console.log(`[sync_stores] Removendo ${orphanIds.length} loja(s) obsoleta(s) do banco:`, orphanIds);
+          // Primeiro remove os dispositivos das lojas obsoletas
+          await supabase.from("devices").delete().in("store_id", orphanIds);
+          // Depois remove as lojas obsoletas
+          await supabase.from("stores").delete().in("id", orphanIds);
+        }
+      }
+
       const { data: dbDevs } = storeIds.length ? await supabase.from("devices").select("id,mac_address,store_id").in("store_id", storeIds) : { data: [] as any[] };
       const devIdByStoreMac = new Map<string,string>();
       (dbDevs||[]).forEach((d:any) => { const sid=String(d?.store_id||""); const mac=String(d?.mac_address||"").trim(); const did=String(d?.id||""); if(!sid||!mac||!did)return; devIdByStoreMac.set(`${sid}:${mac}`,did); });
@@ -556,7 +570,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
       if (devicesPayload.length > 0) await supabase.from("devices").upsert(devicesPayload);
 
-      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length });
+      // Remove dispositivos de stores não sincronizadas (segurança adicional)
+      if (storeIds.length > 0) {
+        const allSyncedMacs = devicesPayload.map(d => d.mac_address).filter(Boolean);
+        if (allSyncedMacs.length > 0) {
+          await supabase.from("devices")
+            .delete()
+            .in("store_id", storeIds)
+            .not("mac_address", "in", `(${allSyncedMacs.map(m => `'${m}'`).join(",")})`);
+        }
+      }
+
+      const storesRemoved = storeIds.length > 0
+        ? ((await supabase.from("stores").select("id", { count: "exact", head: true }).eq("client_id", client_id)).count ?? 0)
+        : 0;
+
+      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length, stores_total: storeIds.length });
     }
 
     const now        = new Date();
