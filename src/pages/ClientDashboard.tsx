@@ -72,6 +72,14 @@ export function ClientDashboard() {
     yesterday.setUTCHours(23, 59, 59, 999); return yesterday;
   });
   const [showDatePicker, setShowDatePicker] = useState(false);
+  const [draftStartDate, setDraftStartDate] = useState<Date>(() => {
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setUTCHours(0, 0, 0, 0); return yesterday;
+  });
+  const [draftEndDate, setDraftEndDate] = useState<Date>(() => {
+    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setUTCHours(23, 59, 59, 999); return yesterday;
+  });
   const autoTodayRef = useRef(true);
   const didApplyD1DefaultRef = useRef(false);
   const loadSeqRef = useRef(0);
@@ -114,12 +122,21 @@ export function ClientDashboard() {
       const e = new Date(); e.setDate(e.getDate() - 1); e.setUTCHours(23, 59, 59, 999);
       if (selectedStartDate.getTime() !== s.getTime()) setSelectedStartDate(s);
       if (selectedEndDate.getTime() !== e.getTime()) setSelectedEndDate(e);
+      setDraftStartDate(s);
+      setDraftEndDate(e);
     };
     tick();
     const t = setInterval(tick, 60 * 1000);
     return () => clearInterval(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!showDatePicker) {
+      setDraftStartDate(selectedStartDate);
+      setDraftEndDate(selectedEndDate);
+    }
+  }, [selectedStartDate, selectedEndDate, showDatePicker]);
 
   // Dashboard state
   const [totalVisitors, setTotalVisitors] = useState(0);
@@ -861,6 +878,8 @@ export function ClientDashboard() {
         const e = new Date(twoDaysAgo); e.setUTCHours(23, 59, 59, 999);
         setSelectedStartDate(s);
         setSelectedEndDate(e);
+        setDraftStartDate(s);
+        setDraftEndDate(e);
       }
     }
     const { data: storesData }  = await supabase.from('stores').select('id, name, city').eq('client_id', id);
@@ -1202,7 +1221,17 @@ export function ClientDashboard() {
               {/* Date Picker */}
               <div className="flex flex-col items-end flex-1 sm:flex-none">
                 <div className="relative w-full sm:w-auto">
-                  <button onClick={() => setShowDatePicker(!showDatePicker)} className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors">
+                  <button
+                    onClick={() => {
+                      const next = !showDatePicker;
+                      if (next) {
+                        setDraftStartDate(selectedStartDate);
+                        setDraftEndDate(selectedEndDate);
+                      }
+                      setShowDatePicker(next);
+                    }}
+                    className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors"
+                  >
                     <div className="flex items-center gap-2 flex-nowrap">
                       <Calendar size={16} className="text-gray-500" />
                       <span className="text-sm whitespace-nowrap">{selectedStartDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })} → {selectedEndDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</span>
@@ -1214,17 +1243,30 @@ export function ClientDashboard() {
                       <div className="flex flex-col sm:flex-row items-end gap-3">
                         <div className="w-full sm:w-auto">
                           <label className="block text-xs text-gray-400">Início</label>
-                          <input type="date" value={selectedStartDate.toISOString().slice(0, 10)}
-                            onChange={(e) => { autoTodayRef.current = false; const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setSelectedStartDate(d); }}
+                          <input type="date" value={draftStartDate.toISOString().slice(0, 10)}
+                            onChange={(e) => { const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setDraftStartDate(d); }}
                             className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
                         </div>
                         <div className="w-full sm:w-auto">
                           <label className="block text-xs text-gray-400">Fim</label>
-                          <input type="date" value={selectedEndDate.toISOString().slice(0, 10)}
-                            onChange={(e) => { autoTodayRef.current = false; const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setSelectedEndDate(d); }}
+                          <input type="date" value={draftEndDate.toISOString().slice(0, 10)}
+                            onChange={(e) => { const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setDraftEndDate(d); }}
                             className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
                         </div>
-                        <button onClick={() => setShowDatePicker(false)} className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md">Aplicar</button>
+                        <button
+                          onClick={() => {
+                            autoTodayRef.current = false;
+                            let nextStart = new Date(draftStartDate); nextStart.setUTCHours(0, 0, 0, 0);
+                            let nextEnd = new Date(draftEndDate); nextEnd.setUTCHours(23, 59, 59, 999);
+                            if (nextEnd.getTime() < nextStart.getTime()) nextEnd = new Date(nextStart.getTime() + 86399999);
+                            setSelectedStartDate(nextStart);
+                            setSelectedEndDate(nextEnd);
+                            setShowDatePicker(false);
+                          }}
+                          className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md"
+                        >
+                          Aplicar
+                        </button>
                       </div>
                     </div>
                   )}
