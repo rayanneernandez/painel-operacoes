@@ -88,6 +88,22 @@ function buildRows(visits: any[], client_id: string) {
   return Array.from(map.values());
 }
 
+async function upsertVisitorAnalyticsRows(rows: any[]) {
+  let total = 0;
+  for (let i = 0; i < rows.length; i += 250) {
+    const chunk = rows.slice(i, i + 250);
+    const { error } = await supabase
+      .from("visitor_analytics")
+      .upsert(chunk, { onConflict: "visit_uid", ignoreDuplicates: true });
+    if (error) {
+      console.error("[cron] visitor_analytics upsert error:", error);
+      continue;
+    }
+    total += chunk.length;
+  }
+  return total;
+}
+
 // ── Constrói rollup em memória ────────────────────────────────────────────────
 function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEnd: string) {
   const startMs = Date.parse(rangeStart), endMs = Date.parse(rangeEnd);
@@ -165,9 +181,9 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
     const collectionStart = cfg.collection_start || "2025-01-01T00:00:00.000Z";
-    // Sync automático frequente deve olhar só uma janela curta recente.
-    // Isso mantém o dashboard atualizado sem explodir volume de requisições.
-    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
+    // Sync automático frequente deve focar no dia atual.
+    // Isso mantém atualização contínua e reduz risco de timeout na Vercel.
+    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).toISOString();
     const syncStart = overrideSyncStart ?? (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart);
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
@@ -222,6 +238,7 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
 
       const rows = buildRows(items, client_id);
       allRows.push(...rows);
+      await upsertVisitorAnalyticsRows(rows);
 
       totalFetched += items.length;
       const apiTotal = Number(json?.pagination?.total ?? json?.total ?? 0);
