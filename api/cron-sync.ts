@@ -165,7 +165,9 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
     const collectionStart = cfg.collection_start || "2025-01-01T00:00:00.000Z";
-    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
+    // Sync automático frequente deve olhar só uma janela curta recente.
+    // Isso mantém o dashboard atualizado sem explodir volume de requisições.
+    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 1, 0, 0, 0, 0)).toISOString();
     const syncStart = overrideSyncStart ?? (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart);
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
