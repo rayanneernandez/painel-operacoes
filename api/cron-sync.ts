@@ -181,9 +181,9 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
     const collectionStart = cfg.collection_start || "2025-01-01T00:00:00.000Z";
-    // Sync automático frequente deve focar no dia atual.
-    // Isso mantém atualização contínua e reduz risco de timeout na Vercel.
-    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).toISOString();
+    // Sync diário cobre os últimos 6 dias (D-6 → hoje) para garantir que dados de D-2
+    // (Panvel) e dias anteriores sempre sejam buscados mesmo que algum sync tenha falhado.
+    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
     const syncStart = overrideSyncStart ?? (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart);
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
