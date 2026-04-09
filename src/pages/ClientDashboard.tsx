@@ -326,6 +326,8 @@ export function ClientDashboard() {
       const endIso   = endAligned.toISOString();
       const startDay = startIso.slice(0, 10);
       const endDay   = endIso.slice(0, 10);
+      const todayDay = alignUtcStartOfDay(new Date()).toISOString().slice(0, 10);
+      const rangeTouchesToday = startDay <= todayDay && endDay >= todayDay;
 
       // ── Filtro por dispositivo (loja selecionada com dispositivos) ───────
       // Se há IDs de dispositivo, filtra exclusivamente por eles.
@@ -383,7 +385,7 @@ export function ClientDashboard() {
       if (!isCurrent()) return;
 
       const exactRollup = exactRollups?.[0];
-      if (exactRollup) {
+      if (exactRollup && !rangeTouchesToday) {
         const exactRollupDailyTotal = sumVisitorsPerDay(exactRollup.visitors_per_day);
         const exactRollupTotal = Number(exactRollup.total_visitors ?? 0);
         const exactRollupLooksConsistent =
@@ -446,15 +448,17 @@ export function ClientDashboard() {
         return;
       }
 
-      const { data: allRollups } = await supabase
-        .from('visitor_analytics_rollups')
-        .select('*')
-        .eq('client_id', id)
-        .lte('start', endIso)
-        .gte('end', startIso)
-        .gt('total_visitors', 0)
-        .order('updated_at', { ascending: false })
-        .limit(20);
+      const { data: allRollups } = rangeTouchesToday
+        ? { data: [] as any[] }
+        : await supabase
+            .from('visitor_analytics_rollups')
+            .select('*')
+            .eq('client_id', id)
+            .lte('start', endIso)
+            .gte('end', startIso)
+            .gt('total_visitors', 0)
+            .order('updated_at', { ascending: false })
+            .limit(20);
 
       if (!isCurrent()) return;
 
