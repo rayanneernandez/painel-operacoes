@@ -855,7 +855,7 @@ export function ClientDashboard() {
           .lte('start', quarterEnd)
           .gte('end', quarterStart)
           .order('updated_at', { ascending: false })
-          .limit(20);
+          .limit(200);
 
         if (rollups && rollups.length > 0) {
           const merged: Record<string, number> = {};
