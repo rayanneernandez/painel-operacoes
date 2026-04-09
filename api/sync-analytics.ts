@@ -316,10 +316,10 @@ async function runSingleWindowSync(client_id: string, cfg: ClientApiConfig, sync
   if (devices.length > 0) baseBody.devices = devices;
 
   let offset = 0, pageCount = 0, totalFetched = 0;
-  let apiReportedTotal: number | null = null;
-  let lastPageSig: string | null = null;
+  let apiReportedGlobalTotal: number | null = null;
+  let lastPageFirstItem: string | null = null;
 
-  while (pageCount < 2000) {
+  while (pageCount < 200) {
     pageCount++;
     let resp: Response;
     try {
@@ -333,23 +333,25 @@ async function runSingleWindowSync(client_id: string, cfg: ClientApiConfig, sync
     const json = await resp.json();
     const page: any[] = extractVisitorArray(json);
 
-    if (apiReportedTotal === null) {
+    // Só confia no total global se for maior que 1 página (evita confundir total_page com total_global)
+    if (apiReportedGlobalTotal === null) {
       const t = json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total;
       const n = Number(t);
-      if (Number.isFinite(n) && n > 0) {
-        apiReportedTotal = n;
-        console.log(`[BgSync] Total API (${syncStart.slice(0, 10)}): ${apiReportedTotal}`);
+      if (Number.isFinite(n) && n > 1000) {
+        apiReportedGlobalTotal = n;
+        console.log(`[BgSync] Total global API (${syncStart.slice(0, 10)}): ${apiReportedGlobalTotal}`);
       }
     }
 
     if (page.length === 0) break;
 
-    const sig = `${offset}:${page.length}:${JSON.stringify(page[0]).slice(0, 80)}`;
-    if (sig === lastPageSig) {
-      console.warn("[BgSync] Página duplicada, encerrando.");
+    // Detecta loop infinito: se a API ignorar o offset e sempre retornar a mesma primeira linha
+    const firstItemSig = JSON.stringify(page[0]).slice(0, 120);
+    if (firstItemSig === lastPageFirstItem) {
+      console.warn("[BgSync] API retornou mesma página (offset ignorado), encerrando.");
       break;
     }
-    lastPageSig = sig;
+    lastPageFirstItem = firstItemSig;
 
     totalFetched += page.length;
     const rows = buildAndDeduplicateRows(page, client_id);
@@ -357,12 +359,13 @@ async function runSingleWindowSync(client_id: string, cfg: ClientApiConfig, sync
       const { error } = await supabase.from("visitor_analytics").upsert(rows.slice(i, i + 500), { onConflict: "visit_uid", ignoreDuplicates: true });
       if (error) console.error("[BgSync] Upsert erro:", error);
     }
-    console.log(`[BgSync] Janela ${syncStart.slice(0, 10)} → ${syncEnd.slice(0, 10)} | página ${pageCount}: +${page.length} (total: ${totalFetched})`);
+    console.log(`[BgSync] Janela ${syncStart.slice(0, 10)} → ${syncEnd.slice(0, 10)} | p${pageCount} offset=${offset}: +${page.length} (total: ${totalFetched})`);
 
-    const reachedTotal = apiReportedTotal !== null && offset + page.length >= apiReportedTotal;
-    if (reachedTotal || page.length < 1000) break;
+    // Para somente quando a página está incompleta OU quando temos certeza do total global
+    const reachedGlobalTotal = apiReportedGlobalTotal !== null && offset + page.length >= apiReportedGlobalTotal;
+    if (reachedGlobalTotal || page.length < 1000) break;
     offset += page.length;
-    await new Promise(r => setTimeout(r, 200));
+    await new Promise(r => setTimeout(r, 150));
   }
 
   return { totalFetched };
@@ -554,12 +557,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const nameToStore = new Map<string, { id:string; city?:string|null }>();
       (dbStores || []).forEach((s:any) => { const n=String(s?.name||"").trim().toLowerCase(); if(!n||!s?.id)return; nameToStore.set(n,{id:String(s.id),city:s.city}); });
 
+      // Helper: extrai string segura de campo que pode ser objeto ou string
+      const toSafeStr = (v: any): string => {
+        if (typeof v === 'string') return v.trim();
+        if (v && typeof v === 'object') {
+          const inner = v?.city ?? v?.name ?? v?.address ?? v?.label ?? '';
+          return typeof inner === 'string' ? inner.trim() : '';
+        }
+        return '';
+      };
+
       // Mapa de cidade por pasta (extraída do endereço dos dispositivos nessa pasta)
       const cityByFolder = new Map<string, string>();
       devicesData.forEach((d: any) => {
         const pid = String(d?.parent_id ?? '').trim();
         if (!pid || cityByFolder.has(pid)) return;
-        const addr = String(d?.address ?? d?.location ?? d?.city ?? '').trim();
+        const addr = toSafeStr(d?.address) || toSafeStr(d?.location) || toSafeStr(d?.city);
         if (addr) cityByFolder.set(pid, addr);
       });
 
@@ -572,7 +585,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const storeId = existing?.id || crypto.randomUUID();
         folderToStoreId.set(folderId, storeId);
         // Usa cidade da pasta (da API), ou da loja existente no banco, ou endereço extraído do dispositivo
-        const folderCity = String(f?.address ?? f?.city ?? f?.location ?? '').trim();
+        const folderCity = toSafeStr(f?.address) || toSafeStr(f?.city) || toSafeStr(f?.location);
         const city = folderCity || existing?.city || cityByFolder.get(folderId) || null;
         storesPayload.push({ id:storeId, client_id, name, city });
       }
@@ -639,7 +652,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ? ((await supabase.from("stores").select("id", { count: "exact", head: true }).eq("client_id", client_id)).count ?? 0)
         : 0;
 
-      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length, stores_total: storeIds.length });
+      // Diagnóstico: mostra as chaves do primeiro dispositivo para ajudar a entender o parent_id
+      const diagDevice = devicesData[0];
+      const diagKeys = diagDevice ? Object.keys(diagDevice) : [];
+      const diagParentId = diagDevice?.parent_id ?? diagDevice?.folder_id ?? diagDevice?.group_id ?? 'N/A';
+      const diagFolderIds = folders.slice(0, 3).map((f: any) => ({ id: f?.id, name: f?.name }));
+      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length, stores_total: storeIds.length, devices_total_api: devicesData.length, diag: { device_keys: diagKeys, device_parent_id_sample: diagParentId, folder_id_sample: diagFolderIds } });
     }
 
     const now        = new Date();
