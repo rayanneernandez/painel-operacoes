@@ -171,6 +171,20 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   };
 }
 
+function splitRowsByUtcDay(rows: any[]) {
+  const byDay = new Map<string, any[]>();
+  for (const row of rows) {
+    if (!row?.timestamp) continue;
+    const d = new Date(row.timestamp);
+    if (isNaN(d.getTime())) continue;
+    const key = asISODateUTC(d);
+    const existing = byDay.get(key) || [];
+    existing.push(row);
+    byDay.set(key, existing);
+  }
+  return byDay;
+}
+
 // ── Sync de um cliente ────────────────────────────────────────────────────────
 async function syncClient(client_id: string, cfg: any, overrideSyncStart?: string, overrideSyncEnd?: string): Promise<{ synced: number; error?: string }> {
   try {
@@ -181,9 +195,8 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 
     const collectionStart = cfg.collection_start || "2025-01-01T00:00:00.000Z";
-    // Sync diário cobre os últimos 6 dias (D-6 → hoje) para garantir que dados de D-2
-    // (Panvel) e dias anteriores sempre sejam buscados mesmo que algum sync tenha falhado.
-    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 6, 0, 0, 0, 0)).toISOString();
+    // Janela automática curta para reduzir timeout e ainda cobrir ontem/anteontem.
+    const defaultStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 2, 0, 0, 0, 0)).toISOString();
     const syncStart = overrideSyncStart ?? (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart);
 
     const apiBase = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
@@ -257,15 +270,17 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
 
     // ── Rollups em memória a partir dos dados da API (sem re-query ao banco) ─
     if (allRows.length > 0) {
-      // 1. Rollup de hoje (filtro em memória, sem RPC)
-      const rowsToday = allRows.filter(r => r.timestamp && r.timestamp >= todayStart);
-      if (rowsToday.length > 0) {
-        const rrToday = buildRollup(rowsToday, client_id, todayStart, todayEnd);
-        await supabase.from("visitor_analytics_rollups").upsert(rrToday, { onConflict: "client_id,start,end" });
-        console.log(`[cron] Rollup hoje: ${rrToday.total_visitors} visitantes`);
+      // Salva rollup diário EXATO para cada dia sincronizado.
+      const rowsByDay = splitRowsByUtcDay(allRows);
+      for (const [dayKey, dayRows] of rowsByDay.entries()) {
+        const dayStart = `${dayKey}T00:00:00.000Z`;
+        const dayEnd = `${dayKey}T23:59:59.999Z`;
+        const rrDay = buildRollup(dayRows, client_id, dayStart, dayEnd);
+        await supabase.from("visitor_analytics_rollups").upsert(rrDay, { onConflict: "client_id,start,end" });
+        console.log(`[cron] Rollup ${dayKey}: ${rrDay.total_visitors} visitantes`);
       }
 
-      // 2. Rollup do período sincronizado (2 dias)
+      // 2. Rollup do período sincronizado
       const rrSync = buildRollup(allRows, client_id, syncStart, todayEnd);
 
       // 3. Atualiza rollup histórico (end=9999) mesclando os dias novos
@@ -376,8 +391,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ? activeConfigs.filter((c: any) => c.client_id === onlyClientId)
     : activeConfigs;
 
+  const syncStateByClient = new Map<string, string | null>();
+  if (configsToRun.length > 0) {
+    const { data: syncStates } = await supabase
+      .from("client_sync_state")
+      .select("client_id,last_synced_at")
+      .in("client_id", configsToRun.map((c: any) => c.client_id));
+    for (const row of (syncStates || [])) {
+      syncStateByClient.set(String((row as any).client_id), (row as any).last_synced_at ?? null);
+    }
+  }
+
+  const orderedConfigs = [...configsToRun].sort((a: any, b: any) => {
+    const da = Date.parse(syncStateByClient.get(a.client_id) || "1970-01-01T00:00:00.000Z");
+    const db = Date.parse(syncStateByClient.get(b.client_id) || "1970-01-01T00:00:00.000Z");
+    return da - db;
+  });
+
+  const runConfigs = onlyClientId ? orderedConfigs : orderedConfigs.slice(0, 1);
+
   const results: any[] = [];
-  for (const cfg of configsToRun) {
+  for (const cfg of runConfigs) {
     // Segurança global: se já passaram 55s desde o início, pula clientes restantes
     if (Date.now() - startTime > 55_000) {
       console.warn("[cron] Limite de tempo global atingido, pulando clientes restantes");
