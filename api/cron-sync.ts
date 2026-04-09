@@ -190,7 +190,6 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
   try {
     const now = new Date();
     const syncEnd    = overrideSyncEnd   ?? now.toISOString();
-    const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0)).toISOString();
     const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();
     const HISTORIC_END = "9999-12-31T23:59:59.999Z";
 

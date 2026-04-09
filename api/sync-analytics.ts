@@ -373,9 +373,6 @@ async function runSingleWindowSync(client_id: string, cfg: ClientApiConfig, sync
 
 async function rebuildBackgroundRollups(client_id: string, cfg: ClientApiConfig, syncStart: string, syncEnd: string, devices: any[]) {
   const HISTORIC_END = "9999-12-31T23:59:59.999Z";
-  const now = new Date();
-  const todayStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0, 0));
-  const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999));
   const deviceNums = devices.map(Number).filter(Number.isFinite);
 
   if (deviceNums.length > 0) {
@@ -649,10 +646,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
-      const storesRemoved = storeIds.length > 0
-        ? ((await supabase.from("stores").select("id", { count: "exact", head: true }).eq("client_id", client_id)).count ?? 0)
-        : 0;
-
       // Diagnóstico: verifica correspondência entre folder_id e device parent_id
       const diagDevice = devicesData[0];
       const diagKeys = diagDevice ? Object.keys(diagDevice) : [];
@@ -751,7 +744,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const next_offset = offset === 0 ? null : offset;
-    const done = next_offset === null;
 
     if (combined.length === 0) {
       // Sem dados novos da API — reconstrói do banco
@@ -765,4 +757,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!rpcErr && rpcData) {
         const stats = rpcData as any; const totalVisitors = Number(stats?.total_visitors ?? 0);
         if (totalVisitors > 0) {
-          const rollupRow = { client_id, start:rangeStart, end:rangeEnd, total_visitors:totalVisitors, avg_visitors_per_day:stats.avg_visitors_per_day??0, visitors_per_day:stats.visitors_per_day??{}, visitors_per_hour_avg:stats.visitors_per_hour_avg??{}, age_pyramid_percent:stats.age_pyramid_percent??{}, gender_percent:stats.gender_percent??{}, attributes_percent:stats.attributes_percent??{}, avg_visit_time_seconds:stats.avg_visit_time_seconds??null, avg_dwell_time_seconds:null, avg_contact_time_seconds:stats.avg_contact_time_seconds??null, updated_at:n
+          const rollupRow = { client_id, start:rangeStart, end:rangeEnd, total_visitors:totalVisitors, avg_visitors_per_day:stats.avg_visitors_per_day??0, visitors_per_day:stats.visitors_per_day??{}, visitors_per_hour_avg:stats.visitors_per_hour_avg??{}, age_pyramid_percent:stats.age_pyramid_percent??{}, gender_percent:stats.gender_percent??{}, attributes_percent:stats.attributes_percent??{}, avg_visit_time_seconds:stats.avg_visit_time_seconds??null, avg_dwell_time_seconds:null, avg_contact_time_seconds:stats.avg_contact_time_seconds??null, updated_at:new Date().toISOString() };
+          await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict:"client_id,start,end" });
+          return ok(res, { message:"Rollup recalculado via SQL", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:totalVisitors, next_offset:null, done:true, dashboard: { total_visitors:totalVisitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:null, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:true });
+        }
+      }
+      return ok(res, { message:"Sem dados", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
+    }
+
+    const toUpsert = buildAndDeduplicateRows(combined, client_id);
+    let upserted = 0;
+    for (let i = 0; i < toUpsert.length; i += 500) {
+      const { error, data } = await supabase.from("visitor_analytics").upsert(toUpsert.slice(i, i+500), { onConflict:"visit_uid", ignoreDuplicates:true }).select("visit_uid");
+      if (error) console.error(`Upsert chunk ${i} error:`, error);
+      else upserted += data?.length ?? 0;
+    }
+
+    return ok(res, { message: next_offset === null ? "Sincronização concluída" : "Sincronização parcial — continue chamando", start:rangeStart, end:rangeEnd, externalFetched:combined.length, raw_upserted_new:upserted, total_in_db:null, next_offset, done:next_offset === null, dashboard:null, stored_rollup:false });
+
+  } catch (err: any) {
+    console.error("Erro inesperado:", err);
+    return bad(res, 500, { error:"Erro inesperado", details:err?.message||String(err) });
+  }
+}
