@@ -754,6 +754,28 @@ export function ClientDashboard() {
     return out;
   }, []);
 
+  const selectedCalendarMonths = useCallback((rangeStart: Date, rangeEnd: Date) => {
+    const out: { label: string; startIso: string; endIso: string }[] = [];
+    const startMonth = new Date(Date.UTC(rangeStart.getUTCFullYear(), rangeStart.getUTCMonth(), 1, 0, 0, 0, 0));
+    const endMonth = new Date(Date.UTC(rangeEnd.getUTCFullYear(), rangeEnd.getUTCMonth(), 1, 0, 0, 0, 0));
+    for (let cursor = startMonth; cursor <= endMonth; cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 1, 0, 0, 0, 0))) {
+      const yy = cursor.getUTCFullYear();
+      const mm = cursor.getUTCMonth();
+      out.push({
+        label: cursor.toLocaleString('pt-BR', { month: 'short', timeZone: 'UTC' }).replace('.', '').toUpperCase(),
+        startIso: new Date(Date.UTC(yy, mm, 1, 0, 0, 0, 0)).toISOString(),
+        endIso: new Date(Date.UTC(yy, mm + 1, 0, 23, 59, 59, 999)).toISOString(),
+      });
+    }
+    return out;
+  }, []);
+
+  const quarterMonthsForFilter = useCallback((rangeStart: Date, rangeEnd: Date) => {
+    const explicitMonths = selectedCalendarMonths(rangeStart, rangeEnd);
+    if (explicitMonths.length === 3) return explicitMonths;
+    return lastQuarterMonths(alignUtcEndOfDay(rangeEnd));
+  }, [lastQuarterMonths, selectedCalendarMonths]);
+
   const fetchSalesFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
     if (!id) return 0;
     if (salesSourceRef.current === 'none') return 0;
@@ -817,8 +839,7 @@ export function ClientDashboard() {
     if (!id) return;
     setIsLoadingQuarter(true);
     try {
-      const today = new Date();
-      const months = lastQuarterMonths(today);
+      const months = quarterMonthsForFilter(selectedStartDate, selectedEndDate);
       const quarterStart = months[0].startIso;
       const quarterEnd   = months[months.length - 1].endIso;
       const qStartDay    = quarterStart.slice(0, 10);
@@ -898,7 +919,7 @@ export function ClientDashboard() {
       setIsLoadingQuarter(false);
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, deviceIds, lastQuarterMonths, fetchSalesFromDb, fetchVisitorsFromDb]);
+  }, [id, deviceIds, selectedStartDate, selectedEndDate, quarterMonthsForFilter, fetchSalesFromDb, fetchVisitorsFromDb]);
 
   const loadCompareData = useCallback(async () => {
     if (!id) return;
