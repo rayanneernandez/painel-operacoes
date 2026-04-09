@@ -16,7 +16,7 @@ import supabase from '../lib/supabase';
 const _rebuilding = new Set<string>();
 
 // ── Intervalo mínimo entre syncs background (1 hora) ─────────────────────────
-const SYNC_INTERVAL_MS = 60 * 60 * 1000;
+const SYNC_INTERVAL_MS = 10 * 60 * 1000;
 const lastSyncKey = (cid: string) => `last_bg_sync_${cid}`;
 
 function shouldSync(clientId: string): boolean {
@@ -64,6 +64,38 @@ function alignUtcEndOfDay(value: Date | string) {
 
 function sumVisitorsPerDay(vpd: Record<string, number> | null | undefined) {
   return Object.values(vpd || {}).reduce((acc, value) => acc + (Number(value) || 0), 0);
+}
+
+function hasNestedMetricData(value: any): boolean {
+  if (!value || typeof value !== 'object') return false;
+  return Object.values(value).some((entry) => {
+    if (entry && typeof entry === 'object') return hasNestedMetricData(entry);
+    return Number(entry) > 0;
+  });
+}
+
+function rollupMetadataScore(rollup: any): number {
+  if (!rollup || typeof rollup !== 'object') return 0;
+  let score = 0;
+  if (hasNestedMetricData(rollup.gender_percent)) score += 10;
+  if (hasNestedMetricData(rollup.age_pyramid_percent)) score += 10;
+  if (hasNestedMetricData(rollup.attributes_percent)) score += 20;
+  if (Number(rollup.avg_visit_time_seconds) > 0) score += 2;
+  if (Number(rollup.avg_contact_time_seconds) > 0) score += 2;
+  return score;
+}
+
+function hydrateRollupMetadata(baseRollup: any, fallbackRollup: any) {
+  if (!baseRollup || !fallbackRollup) return baseRollup;
+  return {
+    ...fallbackRollup,
+    ...baseRollup,
+    gender_percent: hasNestedMetricData(baseRollup.gender_percent) ? baseRollup.gender_percent : (fallbackRollup.gender_percent ?? {}),
+    age_pyramid_percent: hasNestedMetricData(baseRollup.age_pyramid_percent) ? baseRollup.age_pyramid_percent : (fallbackRollup.age_pyramid_percent ?? {}),
+    attributes_percent: hasNestedMetricData(baseRollup.attributes_percent) ? baseRollup.attributes_percent : (fallbackRollup.attributes_percent ?? {}),
+    avg_visit_time_seconds: Number(baseRollup.avg_visit_time_seconds) > 0 ? baseRollup.avg_visit_time_seconds : (fallbackRollup.avg_visit_time_seconds ?? baseRollup.avg_visit_time_seconds ?? null),
+    avg_contact_time_seconds: Number(baseRollup.avg_contact_time_seconds) > 0 ? baseRollup.avg_contact_time_seconds : (fallbackRollup.avg_contact_time_seconds ?? baseRollup.avg_contact_time_seconds ?? null),
+  };
 }
 
 const DISPLAYFORCE_AGE_ORDER = ['1-19', '20-29', '30-45', '46-100'] as const;
@@ -441,6 +473,11 @@ export function ClientDashboard() {
 
       if (!isCurrent()) return;
 
+      const metadataFallbackRollup =
+        [exactRollupCandidate, ...(allRollups || [])]
+          .filter(Boolean)
+          .sort((a, b) => rollupMetadataScore(b) - rollupMetadataScore(a))[0] ?? null;
+
       if (allRollups && allRollups.length > 0) {
         // Mescla visitors_per_day de todos os rollups, filtrando pelo período
         const mergedVpd: Record<string, number> = {};
@@ -473,7 +510,7 @@ export function ClientDashboard() {
 
           if (exactRollupCandidate && !preferMergedOverExact) {
             console.log(`[loadData] exact rollup: ${exactRollupCandidateTotal}`);
-            applyRollup(exactRollupCandidate);
+            applyRollup(hydrateRollupMetadata(exactRollupCandidate, metadataFallbackRollup));
             return;
           }
 
@@ -485,12 +522,12 @@ export function ClientDashboard() {
 
           const daysInPeriod = selectedDays;
           console.log(`[loadData] ✅ ${mergedTotal} visitantes (${startDay}→${endDay})`);
-          applyRollup({
+          applyRollup(hydrateRollupMetadata({
             ...metaRollup,
             total_visitors:       mergedTotal,
             avg_visitors_per_day: Math.round(mergedTotal / daysInPeriod),
             visitors_per_day:     mergedVpd,
-          });
+          }, metadataFallbackRollup));
           return;
         }
 
@@ -503,7 +540,7 @@ export function ClientDashboard() {
       // ── Sem rollups úteis: tenta rebuild via backend ───────────────────
       if (exactRollupCandidate) {
         console.log(`[loadData] exact rollup fallback: ${exactRollupCandidateTotal}`);
-        applyRollup(exactRollupCandidate);
+        applyRollup(hydrateRollupMetadata(exactRollupCandidate, metadataFallbackRollup));
         return;
       }
 

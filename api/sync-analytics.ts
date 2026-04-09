@@ -294,7 +294,7 @@ async function needsSync(client_id: string, forceSync = false): Promise<boolean>
   if (forceSync) return true;
   const { data } = await supabase.from("client_sync_state").select("last_synced_at").eq("client_id", client_id).single();
   if (!data?.last_synced_at) return true;
-  return Date.now() - Date.parse(data.last_synced_at) > 15 * 60 * 1000;
+  return Date.now() - Date.parse(data.last_synced_at) > 10 * 60 * 1000;
 }
 
 async function runSingleWindowSync(client_id: string, cfg: ClientApiConfig, syncStart: string, syncEnd: string, devices: any[]) {

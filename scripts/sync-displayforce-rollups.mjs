@@ -266,6 +266,40 @@ function averageHourMaps(hourMaps, daysCount) {
   return out;
 }
 
+function hasNestedMetricData(value) {
+  if (!value || typeof value !== "object") return false;
+  return Object.values(value).some((entry) => {
+    if (entry && typeof entry === "object") return hasNestedMetricData(entry);
+    return Number(entry) > 0;
+  });
+}
+
+function aggregateAttributesFromDailyRows(rows) {
+  const categories = ["glasses", "facial_hair", "hair_color", "hair_type", "headwear"];
+  const out = {};
+  for (const category of categories) {
+    const weightedTotals = {};
+    let totalWeight = 0;
+    for (const row of rows || []) {
+      const source = row?.attributes_percent?.[category];
+      const weight = Number(row?.total_visitors ?? 0);
+      if (!source || typeof source !== "object" || weight <= 0) continue;
+      const entries = Object.entries(source).filter(([, value]) => Number(value) > 0);
+      if (entries.length === 0) continue;
+      totalWeight += weight;
+      for (const [key, value] of entries) {
+        weightedTotals[key] = (weightedTotals[key] || 0) + Number(value) * weight;
+      }
+    }
+    out[category] = totalWeight > 0
+      ? Object.fromEntries(
+          Object.entries(weightedTotals).map(([key, value]) => [key, Number((value / totalWeight).toFixed(2))])
+        )
+      : {};
+  }
+  return out;
+}
+
 function buildRangeRow({
   existing = {},
   clientId,
@@ -276,6 +310,7 @@ function buildRangeRow({
   visitorsPerHourAvg,
   genderPercent,
   agePyramidPercent,
+  attributesPercent,
   avgVisitTimeSeconds,
   avgContactTimeSeconds,
 }) {
@@ -291,7 +326,7 @@ function buildRangeRow({
     visitors_per_hour_avg: visitorsPerHourAvg,
     gender_percent: Object.keys(genderPercent || {}).length > 0 ? genderPercent : (existing.gender_percent || {}),
     age_pyramid_percent: Object.keys(agePyramidPercent || {}).length > 0 ? agePyramidPercent : (existing.age_pyramid_percent || {}),
-    attributes_percent: existing.attributes_percent || {},
+    attributes_percent: hasNestedMetricData(attributesPercent) ? attributesPercent : (existing.attributes_percent || {}),
     avg_visit_time_seconds: avgVisitTimeSeconds ?? existing.avg_visit_time_seconds ?? null,
     avg_contact_time_seconds: avgContactTimeSeconds ?? existing.avg_contact_time_seconds ?? null,
     updated_at: new Date().toISOString(),
@@ -378,6 +413,7 @@ async function syncClientRollups(supabase, cookieHeader, clientKey, rangeStart, 
   const rangeStartIso = rangeStart.toISOString();
   const rangeEndIso = rangeEnd.toISOString();
   const existingRange = await loadExistingRollup(supabase, cfg.clientId, rangeStartIso, rangeEndIso);
+  const aggregatedAttributes = aggregateAttributesFromDailyRows(dailyRows);
   const exactRow = buildRangeRow({
     existing: existingRange,
     clientId: cfg.clientId,
@@ -388,6 +424,7 @@ async function syncClientRollups(supabase, cookieHeader, clientKey, rangeStart, 
     visitorsPerHourAvg: averageHourMaps(hourMaps, days.length),
     genderPercent: buildGenderPercent(overallSex),
     agePyramidPercent: buildAgePercent(overallAge, existingRange.age_pyramid_percent || {}),
+    attributesPercent: aggregatedAttributes,
     avgVisitTimeSeconds: Number(overallAttention.visit_duration ?? existingRange.avg_visit_time_seconds ?? 0) || null,
     avgContactTimeSeconds: Number(overallAttention.attention_duration ?? existingRange.avg_contact_time_seconds ?? 0) || null,
   });
