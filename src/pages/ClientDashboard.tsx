@@ -66,6 +66,9 @@ function sumVisitorsPerDay(vpd: Record<string, number> | null | undefined) {
   return Object.values(vpd || {}).reduce((acc, value) => acc + (Number(value) || 0), 0);
 }
 
+const DISPLAYFORCE_AGE_ORDER = ['1-19', '20-29', '30-45', '46-100'] as const;
+const LEGACY_AGE_ORDER = ['18-', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'] as const;
+
 export function ClientDashboard() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -298,9 +301,9 @@ export function ClientDashboard() {
       ...facialData.map(d  => ({ label: `_facial_${d.label}`,  value: d.value })),
     ]);
     const agePct: Record<string, number> = rollup.age_pyramid_percent ?? {};
-    const ageOrder = ['65+', '55-64', '45-54', '35-44', '25-34', '18-24', '18-'];
     const ageMap: Record<string, { m: number; f: number }> = {};
     const bucketMap: Record<string, string> = {
+      '1-19': '1-19', '20-29': '20-29', '30-45': '30-45', '46-100': '46-100',
       '65-74': '65+', '75+': '65+', '55-64': '55-64', '45-54': '45-54',
       '35-44': '35-44', '25-34': '25-34', '18-24': '18-24', '0-9': '18-', '10-17': '18-',
     };
@@ -314,7 +317,13 @@ export function ClientDashboard() {
       ageMap[label].m += Number((p * maleRatio).toFixed(1));
       ageMap[label].f += Number((p * femaleRatio).toFixed(1));
     });
-    setAgeStats(ageOrder.map((age) => ({ age, m: ageMap[age]?.m ?? 0, f: ageMap[age]?.f ?? 0 })));
+    const hasDisplayforceAgeBuckets = DISPLAYFORCE_AGE_ORDER.some((age) => age in ageMap);
+    const orderedAges = hasDisplayforceAgeBuckets ? [...DISPLAYFORCE_AGE_ORDER] : [...LEGACY_AGE_ORDER];
+    setAgeStats(
+      orderedAges
+        .map((age) => ({ age, m: ageMap[age]?.m ?? 0, f: ageMap[age]?.f ?? 0 }))
+        .filter((age) => hasDisplayforceAgeBuckets || age.m > 0 || age.f > 0 || orderedAges.length === LEGACY_AGE_ORDER.length)
+    );
     setLastUpdate(new Date());
     return true;
   }

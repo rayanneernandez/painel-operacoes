@@ -258,9 +258,18 @@ export const WidgetHourlyFlow = ({ hourlyData, genderData }: { view?: string; ho
 // ── WidgetAgePyramid ─────────────────────────────────────────────────────────
 export const WidgetAgePyramid = ({ ageData, totalVisitors }: { view?: string; ageData?: any[]; totalVisitors?: number }) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
-  const defaultData = [{ age:'65+',m:0,f:0 },{ age:'55-64',m:0,f:0 },{ age:'45-54',m:0,f:0 },{ age:'35-44',m:0,f:0 },{ age:'25-34',m:0,f:0 },{ age:'18-24',m:0,f:0 },{ age:'18-',m:0,f:0 }];
-  const data = (ageData && ageData.length ? ageData : defaultData).slice().reverse();
-  const lblMap: Record<string,string> = { '18-':'<18','18-24':'18-24','25-34':'25-34','35-44':'35-44','45-54':'45-54','55-64':'55-64','65+':'65+' };
+  const defaultData = [{ age:'18-',m:0,f:0 },{ age:'18-24',m:0,f:0 },{ age:'25-34',m:0,f:0 },{ age:'35-44',m:0,f:0 },{ age:'45-54',m:0,f:0 },{ age:'55-64',m:0,f:0 },{ age:'65+',m:0,f:0 }];
+  const displayforceOrder = ['1-19', '20-29', '30-45', '46-100'];
+  const legacyOrder = ['18-', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
+  const lblMap: Record<string,string> = {
+    '1-19':'<20','20-29':'20-29','30-45':'30-45','46-100':'>45',
+    '18-':'<18','18-24':'18-24','25-34':'25-34','35-44':'35-44','45-54':'45-54','55-64':'55-64','65+':'65+'
+  };
+  const sourceData = ageData && ageData.length ? ageData : defaultData;
+  const sourceKeys = sourceData.map((d) => String(d.age));
+  const order = displayforceOrder.some((age) => sourceKeys.includes(age)) ? displayforceOrder : legacyOrder;
+  const byAge = new Map(sourceData.map((d) => [String(d.age), d]));
+  const data = order.map((age) => byAge.get(age) ?? { age, m: 0, f: 0 });
 
   useChartJs(canvasRef, () => ({
     type: 'bar',
@@ -305,8 +314,14 @@ export const WidgetAgePyramid = ({ ageData, totalVisitors }: { view?: string; ag
 // ── WidgetAgeRanges ──────────────────────────────────────────────────────────
 export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: number; f: number }[] }) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
-  const order  = ['18-','18-24','25-34','35-44','45-54','55-64','65+'];
-  const lblMap: Record<string,string> = { '18-':'<18','18-24':'18-25','25-34':'26-35','35-44':'36-45','45-54':'46-60','55-64':'55-64','65+':'60+' };
+  const displayforceOrder = ['1-19', '20-29', '30-45', '46-100'];
+  const legacyOrder = ['18-','18-24','25-34','35-44','45-54','55-64','65+'];
+  const sourceKeys = (ageData || []).map((d) => String(d.age));
+  const order = displayforceOrder.some((age) => sourceKeys.includes(age)) ? displayforceOrder : legacyOrder;
+  const lblMap: Record<string,string> = {
+    '1-19':'<20','20-29':'20-29','30-45':'30-45','46-100':'>45',
+    '18-':'<18','18-24':'18-24','25-34':'25-34','35-44':'35-44','45-54':'45-54','55-64':'55-64','65+':'65+'
+  };
   const byAge  = new Map((ageData||[]).map((d) => [String(d.age), d]));
   const vals   = order.map((age) => { const d = byAge.get(age); return (Number(d?.m)||0)+(Number(d?.f)||0); });
 

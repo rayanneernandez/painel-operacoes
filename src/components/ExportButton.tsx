@@ -195,8 +195,15 @@ function generateExcel(data: ExportData) {
   XLSX.utils.book_append_sheet(wb, wsWeek, 'Fluxo por Hora');
 
   // ── Aba 4: Dados Demográficos ──────────────────────────────────────────────
-  const ageOrder = ['18-', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
-  const ageLblMap: Record<string, string> = { '18-': '<18', '18-24': '18-24', '25-34': '25-34', '35-44': '35-44', '45-54': '45-54', '55-64': '55-64', '65+': '65+' };
+  const displayforceAgeOrder = ['1-19', '20-29', '30-45', '46-100'];
+  const legacyAgeOrder = ['18-', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'];
+  const ageOrder = displayforceAgeOrder.some((age) => data.ageStats.some((item) => item.age === age))
+    ? displayforceAgeOrder
+    : legacyAgeOrder;
+  const ageLblMap: Record<string, string> = {
+    '1-19': '<20', '20-29': '20-29', '30-45': '30-45', '46-100': '>45',
+    '18-': '<18', '18-24': '18-24', '25-34': '25-34', '35-44': '35-44', '45-54': '45-54', '55-64': '55-64', '65+': '65+'
+  };
   const ageMap = new Map(data.ageStats.map(a => [a.age, a]));
 
   const demoRows: XLSX.CellObject[][] = [
@@ -360,7 +367,10 @@ export const ExportButton: React.FC<Props> = ({ data }) => {
 
       // Pirâmide etária
       section('FAIXA ETÁRIA');
-      const ageLblMap: Record<string, string> = { '18-': '<18', '18-24': '18-24', '25-34': '25-34', '35-44': '35-44', '45-54': '45-54', '55-64': '55-64', '65+': '65+' };
+      const ageLblMap: Record<string, string> = {
+        '1-19': '<20', '20-29': '20-29', '30-45': '30-45', '46-100': '>45',
+        '18-': '<18', '18-24': '18-24', '25-34': '25-34', '35-44': '35-44', '45-54': '45-54', '55-64': '55-64', '65+': '65+'
+      };
       data.ageStats.forEach((a, i) => {
         const total = (Number(a.m) + Number(a.f)).toFixed(1);
         row(`${ageLblMap[a.age] ?? a.age}`, `M: ${a.m.toFixed(1)}%  F: ${a.f.toFixed(1)}%  Total: ${total}%`, i % 2 !== 0);
