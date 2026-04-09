@@ -98,6 +98,64 @@ function hydrateRollupMetadata(baseRollup: any, fallbackRollup: any) {
   };
 }
 
+function countInclusiveUtcDays(startValue: Date | string, endValue: Date | string) {
+  const start = startValue ? alignUtcStartOfDay(startValue) : null;
+  const end = endValue ? alignUtcStartOfDay(endValue) : null;
+  if (!start || !end || Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return 0;
+  return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+}
+
+function countRollupDays(rollup: any) {
+  return countInclusiveUtcDays(rollup?.start, rollup?.end);
+}
+
+function overlapVisitorsForRange(rollup: any, startDay: string, endDay: string) {
+  const vpd: Record<string, number> = rollup?.visitors_per_day ?? {};
+  let total = 0;
+  for (const [day, value] of Object.entries(vpd)) {
+    const normalizedDay = day.slice(0, 10);
+    if (normalizedDay < startDay || normalizedDay > endDay) continue;
+    total += Number(value) || 0;
+  }
+  return total > 0 ? total : Number(rollup?.total_visitors ?? 0);
+}
+
+function aggregateAttributesFromRollups(rollups: any[], startDay: string, endDay: string) {
+  const categories = ['glasses', 'facial_hair', 'hair_color', 'hair_type', 'headwear'];
+  const targetDays = countInclusiveUtcDays(`${startDay}T00:00:00.000Z`, `${endDay}T00:00:00.000Z`);
+  const candidateRollups = (rollups || []).filter((rollup) => {
+    if (!hasNestedMetricData(rollup?.attributes_percent)) return false;
+    const days = countRollupDays(rollup);
+    return days <= 7 || days === targetDays;
+  });
+  const out: Record<string, Record<string, number>> = {};
+
+  for (const category of categories) {
+    const weightedTotals: Record<string, number> = {};
+    let totalWeight = 0;
+
+    for (const rollup of candidateRollups) {
+      const source = rollup?.attributes_percent?.[category];
+      const weight = overlapVisitorsForRange(rollup, startDay, endDay);
+      if (!source || typeof source !== 'object' || weight <= 0) continue;
+      const entries = Object.entries(source).filter(([, value]) => Number(value) > 0);
+      if (entries.length === 0) continue;
+      totalWeight += weight;
+      for (const [key, value] of entries) {
+        weightedTotals[key] = (weightedTotals[key] || 0) + Number(value) * weight;
+      }
+    }
+
+    out[category] = totalWeight > 0
+      ? Object.fromEntries(
+          Object.entries(weightedTotals).map(([key, value]) => [key, Number((value / totalWeight).toFixed(2))])
+        )
+      : {};
+  }
+
+  return out;
+}
+
 const DISPLAYFORCE_AGE_ORDER = ['1-19', '20-29', '30-45', '46-100'] as const;
 const LEGACY_AGE_ORDER = ['18-', '18-24', '25-34', '35-44', '45-54', '55-64', '65+'] as const;
 
@@ -477,6 +535,22 @@ export function ClientDashboard() {
         [exactRollupCandidate, ...(allRollups || [])]
           .filter(Boolean)
           .sort((a, b) => rollupMetadataScore(b) - rollupMetadataScore(a))[0] ?? null;
+      const aggregatedAttributesFallback = aggregateAttributesFromRollups(
+        [exactRollupCandidate, ...(allRollups || [])].filter(Boolean),
+        startDay,
+        endDay
+      );
+      const hydrateForApply = (rollup: any) => {
+        const hydrated = hydrateRollupMetadata(rollup, metadataFallbackRollup);
+        if (!hydrated) return hydrated;
+        if (hasNestedMetricData(hydrated.attributes_percent) || !hasNestedMetricData(aggregatedAttributesFallback)) {
+          return hydrated;
+        }
+        return {
+          ...hydrated,
+          attributes_percent: aggregatedAttributesFallback,
+        };
+      };
 
       if (allRollups && allRollups.length > 0) {
         // Mescla visitors_per_day de todos os rollups, filtrando pelo período
@@ -510,7 +584,7 @@ export function ClientDashboard() {
 
           if (exactRollupCandidate && !preferMergedOverExact) {
             console.log(`[loadData] exact rollup: ${exactRollupCandidateTotal}`);
-            applyRollup(hydrateRollupMetadata(exactRollupCandidate, metadataFallbackRollup));
+            applyRollup(hydrateForApply(exactRollupCandidate));
             return;
           }
 
@@ -522,12 +596,12 @@ export function ClientDashboard() {
 
           const daysInPeriod = selectedDays;
           console.log(`[loadData] ✅ ${mergedTotal} visitantes (${startDay}→${endDay})`);
-          applyRollup(hydrateRollupMetadata({
+          applyRollup(hydrateForApply({
             ...metaRollup,
             total_visitors:       mergedTotal,
             avg_visitors_per_day: Math.round(mergedTotal / daysInPeriod),
             visitors_per_day:     mergedVpd,
-          }, metadataFallbackRollup));
+          }));
           return;
         }
 
@@ -540,7 +614,7 @@ export function ClientDashboard() {
       // ── Sem rollups úteis: tenta rebuild via backend ───────────────────
       if (exactRollupCandidate) {
         console.log(`[loadData] exact rollup fallback: ${exactRollupCandidateTotal}`);
-        applyRollup(hydrateRollupMetadata(exactRollupCandidate, metadataFallbackRollup));
+        applyRollup(hydrateForApply(exactRollupCandidate));
         return;
       }
 
