@@ -381,6 +381,28 @@ async function rebuildBackgroundRollups(client_id: string, cfg: ClientApiConfig,
     return;
   }
 
+  // Gera rollup para cada dia do período sincronizado individualmente.
+  // Isso garante que o dashboard encontre dados ao filtrar qualquer data específica.
+  const cursor = startOfUtcDay(syncStart);
+  const endDay = endOfUtcDay(syncEnd);
+  let d = new Date(cursor.getTime());
+  while (d <= endDay) {
+    const dayStart = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 0, 0, 0, 0));
+    const dayEnd   = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
+    const { data: rpcDay, error: rpcDayErr } = await supabase.rpc("build_visitor_rollup", {
+      p_client_id: client_id, p_start: dayStart.toISOString(), p_end: dayEnd.toISOString(),
+    });
+    if (!rpcDayErr && rpcDay && Number((rpcDay as any).total_visitors) > 0) {
+      await supabase.from("visitor_analytics_rollups").upsert(
+        { client_id, start: dayStart.toISOString(), end: dayEnd.toISOString(), ...(rpcDay as any), updated_at: new Date().toISOString() },
+        { onConflict: "client_id,start,end" }
+      );
+      console.log(`[BgSync] Rollup ${asISODateUTC(dayStart)} salvo: ${(rpcDay as any).total_visitors} visitantes`);
+    }
+    d = addUtcDays(d, 1);
+  }
+
+  // Também atualiza rollup histórico global (end=9999) para consultas de período amplo
   const historicStart = cfg.collection_start || syncStart;
   const { data: rpcHist, error: rpcHistErr } = await supabase.rpc("build_visitor_rollup", {
     p_client_id: client_id, p_start: historicStart, p_end: syncEnd,
@@ -391,31 +413,6 @@ async function rebuildBackgroundRollups(client_id: string, cfg: ClientApiConfig,
       { onConflict: "client_id,start,end" }
     );
     console.log(`[BgSync] Rollup histórico salvo: ${(rpcHist as any).total_visitors} visitantes`);
-  }
-
-  const { data: rpcToday, error: rpcTodayErr } = await supabase.rpc("build_visitor_rollup", {
-    p_client_id: client_id, p_start: todayStart.toISOString(), p_end: syncEnd,
-  });
-  if (!rpcTodayErr && rpcToday && Number((rpcToday as any).total_visitors) > 0) {
-    await supabase.from("visitor_analytics_rollups").upsert(
-      { client_id, start: todayStart.toISOString(), end: todayEnd.toISOString(), ...(rpcToday as any), updated_at: new Date().toISOString() },
-      { onConflict: "client_id,start,end" }
-    );
-    console.log(`[BgSync] Rollup hoje salvo: ${(rpcToday as any).total_visitors} visitantes`);
-  }
-
-  const dow = now.getUTCDay(); const offset2 = (dow + 6) % 7;
-  const weekStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - offset2, 0, 0, 0, 0));
-  const weekEnd   = new Date(Date.UTC(weekStart.getUTCFullYear(), weekStart.getUTCMonth(), weekStart.getUTCDate() + 6, 23, 59, 59, 999));
-  const { data: rpcWeek, error: rpcWeekErr } = await supabase.rpc("build_visitor_rollup", {
-    p_client_id: client_id, p_start: weekStart.toISOString(), p_end: weekEnd.toISOString(),
-  });
-  if (!rpcWeekErr && rpcWeek && Number((rpcWeek as any).total_visitors) > 0) {
-    await supabase.from("visitor_analytics_rollups").upsert(
-      { client_id, start: weekStart.toISOString(), end: weekEnd.toISOString(), ...(rpcWeek as any), updated_at: new Date().toISOString() },
-      { onConflict: "client_id,start,end" }
-    );
-    console.log(`[BgSync] Rollup semana salvo: ${(rpcWeek as any).total_visitors} visitantes`);
   }
 }
 
@@ -429,8 +426,9 @@ async function runBackgroundSync(client_id: string, cfg: ClientApiConfig, syncSt
   try {
     const daySpan = Math.max(1, Math.ceil((endOfUtcDay(syncEnd).getTime() - startOfUtcDay(syncStart).getTime() + 1) / 86400000));
     const chunkDays = devices.length > 0 ? Math.min(daySpan, 2) : 1;
-    const maxWindows = daySpan <= 3 ? daySpan : Math.min(daySpan, 5);
-    const windows = buildChunkedRanges(syncStart, syncEnd, chunkDays).slice(0, maxWindows);
+    // Inverte as janelas para processar os dias MAIS RECENTES primeiro.
+    // Sem limite: o Vercel tem 60s e cada janela leva ~3-5s, então até 12 dias cabe.
+    const windows = buildChunkedRanges(syncStart, syncEnd, chunkDays).reverse();
 
     let totalFetched = 0;
     for (const windowRange of windows) {
