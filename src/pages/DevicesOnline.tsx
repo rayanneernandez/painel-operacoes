@@ -55,6 +55,17 @@ export function DevicesOnline() {
     }
   }, [isAdmin]);
 
+  // Dispara a sincronização de lojas/dispositivos via API para atualizar o status no banco
+  const triggerStoreSync = async (clientId: string) => {
+    try {
+      await fetch('/api/sync-analytics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ client_id: clientId, sync_stores: true }),
+      });
+    } catch {}
+  };
+
   const refresh = async () => {
     if (!activeClientId) {
       setStores([]);
@@ -154,8 +165,10 @@ export function DevicesOnline() {
 
     const run = async () => {
       if (!activeClientId) return;
-      await refresh();
+      // Sincroniza status dos dispositivos via API antes de ler do banco
+      await triggerStoreSync(activeClientId);
       if (cancelled) return;
+      await refresh();
     };
 
     void run();
@@ -165,12 +178,19 @@ export function DevicesOnline() {
   useEffect(() => {
     if (!activeClientId) return;
 
-    const id = window.setInterval(() => { void refresh(); }, 10000);
-    const onFocus = () => { void refresh(); };
+    // Atualiza o banco via API a cada 60s e lê o status a cada 10s
+    const dbPollId = window.setInterval(() => { void refresh(); }, 10000);
+    const apiSyncId = window.setInterval(() => {
+      void triggerStoreSync(activeClientId).then(() => refresh());
+    }, 60 * 1000);
+    const onFocus = () => {
+      void triggerStoreSync(activeClientId).then(() => refresh());
+    };
 
     window.addEventListener('focus', onFocus);
     return () => {
-      window.clearInterval(id);
+      window.clearInterval(dbPollId);
+      window.clearInterval(apiSyncId);
       window.removeEventListener('focus', onFocus);
     };
   }, [activeClientId]);
@@ -229,7 +249,7 @@ export function DevicesOnline() {
           )}
 
           <button
-            onClick={() => void refresh()}
+            onClick={() => { if (activeClientId) void triggerStoreSync(activeClientId).then(() => refresh()); }}
             disabled={loading || !activeClientId}
             className="h-[40px] w-[40px] flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors disabled:opacity-50"
             title="Atualizar agora"

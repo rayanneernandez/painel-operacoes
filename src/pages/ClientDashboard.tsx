@@ -114,8 +114,28 @@ export function ClientDashboard() {
     return () => clearTimeout(t);
   }, [syncMessage]);
 
-  // Auto-D1 (ontem)
+  // Auto-D1 (ontem) — restaura range salvo no localStorage se o usuário já havia selecionado um período
   useEffect(() => {
+    // Verifica se o usuário já havia selecionado um período customizado
+    try {
+      const saved = localStorage.getItem(`dash_range_${id}`);
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.start && parsed?.end) {
+          const s = new Date(parsed.start);
+          const e = new Date(parsed.end);
+          if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
+            autoTodayRef.current = false;
+            setSelectedStartDate(s);
+            setSelectedEndDate(e);
+            setDraftStartDate(s);
+            setDraftEndDate(e);
+            return; // não instala o intervalo de auto-reset
+          }
+        }
+      }
+    } catch {}
+
     const tick = () => {
       if (!autoTodayRef.current) return;
       const s = new Date(); s.setDate(s.getDate() - 1); s.setUTCHours(0, 0, 0, 0);
@@ -129,7 +149,7 @@ export function ClientDashboard() {
     const t = setInterval(tick, 60 * 1000);
     return () => clearInterval(t);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [id]);
 
   useEffect(() => {
     if (!showDatePicker) {
@@ -1241,6 +1261,8 @@ export function ClientDashboard() {
                             setSelectedStartDate(nextStart);
                             setSelectedEndDate(nextEnd);
                             setShowDatePicker(false);
+                            // Persiste o período selecionado para não resetar ao navegar
+                            try { localStorage.setItem(`dash_range_${id}`, JSON.stringify({ start: nextStart.toISOString(), end: nextEnd.toISOString() })); } catch {}
                           }}
                           className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md"
                         >
