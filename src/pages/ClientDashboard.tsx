@@ -74,6 +74,31 @@ function hasNestedMetricData(value: any): boolean {
   });
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`Timeout em ${label}`)), ms);
+    }),
+  ]);
+}
+
+async function fetchJsonWithTimeout<T = any>(input: RequestInfo | URL, init: RequestInit, ms: number, label: string): Promise<T | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ms);
+  try {
+    const resp = await fetch(input, { ...init, signal: controller.signal });
+    return resp.ok ? await resp.json() as T : null;
+  } catch (error: any) {
+    if (error?.name === 'AbortError') {
+      throw new Error(`Timeout em ${label}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function rollupMetadataScore(rollup: any): number {
   if (!rollup || typeof rollup !== 'object') return 0;
   let score = 0;
@@ -448,11 +473,10 @@ export function ClientDashboard() {
       // Mostra zeros se não houver dados — NÃO cai nos dados da rede global.
       if (deviceIds.length > 0) {
         try {
-          const resp = await fetch('/api/sync-analytics', {
+          const json = await fetchJsonWithTimeout('/api/sync-analytics', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
-          });
-          const json = resp.ok ? await resp.json() : null;
+          }, 15000, 'sync-analytics devices');
           if (!isCurrent()) return;
           if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
             applyRollup({
@@ -486,15 +510,19 @@ export function ClientDashboard() {
         Math.ceil((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1
       );
 
-      const { data: exactRollups } = await supabase
-        .from('visitor_analytics_rollups')
-        .select('*')
-        .eq('client_id', id)
-        .eq('start', startIso)
-        .eq('end', endIso)
-        .gt('total_visitors', 0)
-        .order('updated_at', { ascending: false })
-        .limit(1);
+      const { data: exactRollups } = await withTimeout(
+        supabase
+          .from('visitor_analytics_rollups')
+          .select('*')
+          .eq('client_id', id)
+          .eq('start', startIso)
+          .eq('end', endIso)
+          .gt('total_visitors', 0)
+          .order('updated_at', { ascending: false })
+          .limit(1),
+        10000,
+        'rollup exato'
+      );
 
       if (!isCurrent()) return;
 
@@ -519,15 +547,19 @@ export function ClientDashboard() {
         }
       }
 
-      const { data: allRollups } = await supabase
-        .from('visitor_analytics_rollups')
-        .select('*')
-        .eq('client_id', id)
-        .lte('start', endIso)
-        .gte('end', startIso)
-        .gt('total_visitors', 0)
-        .order('updated_at', { ascending: false })
-        .limit(50);
+      const { data: allRollups } = await withTimeout(
+        supabase
+          .from('visitor_analytics_rollups')
+          .select('*')
+          .eq('client_id', id)
+          .lte('start', endIso)
+          .gte('end', startIso)
+          .gt('total_visitors', 0)
+          .order('updated_at', { ascending: false })
+          .limit(50),
+        10000,
+        'rollups do periodo'
+      );
 
       if (!isCurrent()) return;
 
@@ -627,11 +659,10 @@ export function ClientDashboard() {
       _rebuilding.add(rebuildKey);
       setSyncMessage('Calculando dados...');
       try {
-        const resp = await fetch('/api/sync-analytics', {
+        const json = await fetchJsonWithTimeout('/api/sync-analytics', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
-        });
-        const json = resp.ok ? await resp.json() : null;
+        }, 20000, 'sync-analytics rebuild');
         if (!isCurrent()) return;
 
         if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
@@ -792,7 +823,11 @@ export function ClientDashboard() {
       if (storeId) attempts.push('store');
       attempts.push('none');
       for (const mode of attempts) {
-        const { data, error } = await applySalesFilter(supabase.from(table).select(`${dateCol},sales_count`).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso).range(0, 9999), mode);
+        const { data, error } = await withTimeout(
+          applySalesFilter(supabase.from(table).select(`${dateCol},sales_count`).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso).range(0, 9999), mode),
+          8000,
+          `${table}.${dateCol}.${mode}`
+        );
         if (error) { if (isNotFound(error)) return null; continue; }
         return ((data as any[]) || []).reduce((acc, r) => acc + (Number(r?.sales_count) || 0), 0);
       }
@@ -804,7 +839,11 @@ export function ClientDashboard() {
       if (storeId) attempts.push('store');
       attempts.push('none');
       for (const mode of attempts) {
-        const { count, error } = await applySalesFilter(supabase.from(table).select('*', { count: 'exact', head: true }).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso), mode);
+        const { count, error } = await withTimeout(
+          applySalesFilter(supabase.from(table).select('*', { count: 'exact', head: true }).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso), mode),
+          8000,
+          `${table}.${dateCol}.${mode}.count`
+        );
         if (error) { if (isNotFound(error)) return null; continue; }
         return Number(count) || 0;
       }
@@ -830,7 +869,14 @@ export function ClientDashboard() {
     let q = supabase.from('visitor_analytics').select('*', { count: 'exact', head: true })
       .eq('client_id', id).gte('timestamp', rangeStartIso).lte('timestamp', rangeEndIso);
     if (deviceIds.length > 0) q = q.in('device_id', deviceIds);
-    const { count, error } = await q;
+    let count = 0;
+    let error = null as any;
+    try {
+      ({ count, error } = await withTimeout(q, 8000, 'visitor_analytics trimestre'));
+    } catch (timeoutError) {
+      console.warn('[Dashboard] Timeout ao contar visitantes (trimestre):', timeoutError);
+      return 0;
+    }
     if (error) { console.warn('[Dashboard] Erro ao contar visitantes (trimestre):', error); return 0; }
     return Number(count) || 0;
   }, [id, deviceIds]);
@@ -848,14 +894,18 @@ export function ClientDashboard() {
       let rollupVisitorsPerDay: Record<string, number> | null = null;
 
       if (deviceIds.length === 0) {
-        const { data: rollups } = await supabase
-          .from('visitor_analytics_rollups')
-          .select('visitors_per_day, start, end, updated_at')
-          .eq('client_id', id)
-          .lte('start', quarterEnd)
-          .gte('end', quarterStart)
-          .order('updated_at', { ascending: false })
-          .limit(200);
+        const { data: rollups } = await withTimeout(
+          supabase
+            .from('visitor_analytics_rollups')
+            .select('visitors_per_day, start, end, updated_at')
+            .eq('client_id', id)
+            .lte('start', quarterEnd)
+            .gte('end', quarterStart)
+            .order('updated_at', { ascending: false })
+            .limit(200),
+          10000,
+          'rollups trimestre'
+        );
 
         if (rollups && rollups.length > 0) {
           const merged: Record<string, number> = {};
@@ -875,14 +925,13 @@ export function ClientDashboard() {
 
       if (!rollupVisitorsPerDay) {
         try {
-          const resp = await fetch('/api/sync-analytics', {
+          const json = await fetchJsonWithTimeout('/api/sync-analytics', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               client_id: id, start: quarterStart, end: quarterEnd, rebuild_rollup: true,
               ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
             }),
-          });
-          const json = resp.ok ? await resp.json() : null;
+          }, 20000, 'sync-analytics trimestre');
           if (json?.dashboard?.visitors_per_day) {
             const vpd = json.dashboard.visitors_per_day as Record<string, number>;
             rollupVisitorsPerDay = {};
@@ -934,31 +983,33 @@ export function ClientDashboard() {
       const prevEndIso   = prevEndAligned.toISOString();
 
       if (deviceIds.length === 0) {
-        const { data: rollups } = await supabase
-          .from('visitor_analytics_rollups')
-          .select('visitors_per_day')
-          .eq('client_id', id)
-          .eq('start', prevStartIso)
-          .eq('end', prevEndIso)
-          .order('updated_at', { ascending: false })
-          .limit(1);
+        const { data: rollups } = await withTimeout(
+          supabase
+            .from('visitor_analytics_rollups')
+            .select('visitors_per_day')
+            .eq('client_id', id)
+            .eq('start', prevStartIso)
+            .eq('end', prevEndIso)
+            .order('updated_at', { ascending: false })
+            .limit(1),
+          10000,
+          'rollup comparativo'
+        );
         const found = rollups?.[0] as any;
         if (found?.visitors_per_day) {
           setComparePrevVisitorsPerDay(found.visitors_per_day || {});
         } else {
-          const resp = await fetch('/api/sync-analytics', {
+          const json = await fetchJsonWithTimeout('/api/sync-analytics', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ client_id: id, start: prevStartIso, end: prevEndIso, rebuild_rollup: true }),
-          });
-          const json = resp.ok ? await resp.json() : null;
+          }, 20000, 'sync-analytics comparativo');
           setComparePrevVisitorsPerDay(json?.dashboard?.visitors_per_day || {});
         }
       } else {
-        const resp = await fetch('/api/sync-analytics', {
+        const json = await fetchJsonWithTimeout('/api/sync-analytics', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ client_id: id, start: prevStartIso, end: prevEndIso, rebuild_rollup: true, devices: deviceIds }),
-        });
-        const json = resp.ok ? await resp.json() : null;
+        }, 20000, 'sync-analytics comparativo devices');
         setComparePrevVisitorsPerDay(json?.dashboard?.visitors_per_day || {});
       }
     } catch (e) { console.warn('[Dashboard] Erro comparativo:', e); setComparePrevVisitorsPerDay({}); }
@@ -1096,53 +1147,71 @@ export function ClientDashboard() {
 
   const refreshClientAndStores = useCallback(async () => {
     if (!id) return;
-    const { data: client } = await supabase.from('clients').select('name, logo_url').eq('id', id).single();
-    if (client) {
-      setClientData({ name: client.name, logo: client.logo_url });
+    try {
+      const { data: client } = await withTimeout(
+        supabase.from('clients').select('name, logo_url').eq('id', id).single(),
+        10000,
+        'clients'
+      );
+      if (client) {
+        setClientData({ name: client.name, logo: client.logo_url });
 
-      const isPanvel = String(client.name || '').toLowerCase().includes('panvel');
-      if (isPanvel) {
-        useD2DefaultRef.current = true; // marca para usar D-2 no sync
+        const isPanvel = String(client.name || '').toLowerCase().includes('panvel');
+        if (isPanvel) {
+          useD2DefaultRef.current = true;
+        }
+        if (isPanvel && !didApplyD1DefaultRef.current && autoTodayRef.current) {
+          didApplyD1DefaultRef.current = true;
+          autoTodayRef.current = false;
+          const twoDaysAgo = new Date(); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
+          const s = new Date(twoDaysAgo); s.setUTCHours(0, 0, 0, 0);
+          const e = new Date(twoDaysAgo); e.setUTCHours(23, 59, 59, 999);
+          setSelectedStartDate(s);
+          setSelectedEndDate(e);
+          setDraftStartDate(s);
+          setDraftEndDate(e);
+        }
       }
-      if (isPanvel && !didApplyD1DefaultRef.current && autoTodayRef.current) {
-        didApplyD1DefaultRef.current = true;
-        autoTodayRef.current = false;
-        // Panvel: usa D-2 (2 dias atrás) como padrão, pois os dados do dia anterior
-        // ainda não estão processados — o sistema trabalha com D-2
-        const twoDaysAgo = new Date(); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-        const s = new Date(twoDaysAgo); s.setUTCHours(0, 0, 0, 0);
-        const e = new Date(twoDaysAgo); e.setUTCHours(23, 59, 59, 999);
-        setSelectedStartDate(s);
-        setSelectedEndDate(e);
-        setDraftStartDate(s);
-        setDraftEndDate(e);
-      }
-    }
-    const { data: storesData }  = await supabase.from('stores').select('id, name, city').eq('client_id', id);
-    // Busca apenas dispositivos das lojas deste cliente (via store_id IN)
-    const storeIds = (storesData || []).map((s: any) => s.id).filter(Boolean);
-    const { data: devicesData } = storeIds.length > 0
-      ? await supabase.from('devices').select('id, name, type, mac_address, status, store_id').in('store_id', storeIds)
-      : { data: [] };
-    const { data: apiCfg }      = await supabase.from('client_api_configs')
-      .select('api_endpoint, analytics_endpoint, api_key, custom_header_key, custom_header_value, collection_start, collection_end, collect_tracks, collect_face_quality, collect_glasses, collect_beard, collect_hair_color, collect_hair_type, collect_headwear')
-      .eq('client_id', id).single();
-    if (apiCfg) setApiConfig(apiCfg as ClientApiConfig);
-    if (storesData) {
-      const devicesByStore: Record<string, any[]> = {};
-      (devicesData || []).forEach((device: any) => {
-        if (!devicesByStore[device.store_id]) devicesByStore[device.store_id] = [];
-        devicesByStore[device.store_id].push({ id: device.id, name: device.name, status: device.status || 'offline', type: device.type || 'dome', resolution: '1080p', macAddress: device.mac_address });
-      });
-      const seen = new Set<string>();
-      const uniqueStores: StoreType[] = storesData
-        .filter((s: any) => { if (seen.has(String(s.id))) return false; seen.add(String(s.id)); return true; })
-        .map((store: any) => {
-          const cams = devicesByStore[store.id] || [];
-          const storeOnline = cams.some((c: any) => c.status === 'online');
-          return { id: store.id, name: store.name, address: '', city: store.city || '', status: (storeOnline ? 'online' : 'offline') as 'online' | 'offline', cameras: cams };
+
+      const { data: storesData } = await withTimeout(
+        supabase.from('stores').select('id, name, city').eq('client_id', id),
+        10000,
+        'stores'
+      );
+      const storeIds = (storesData || []).map((s: any) => s.id).filter(Boolean);
+      const { data: devicesData } = storeIds.length > 0
+        ? await withTimeout(
+            supabase.from('devices').select('id, name, type, mac_address, status, store_id').in('store_id', storeIds),
+            10000,
+            'devices'
+          )
+        : { data: [] };
+      const { data: apiCfg } = await withTimeout(
+        supabase.from('client_api_configs')
+          .select('api_endpoint, analytics_endpoint, api_key, custom_header_key, custom_header_value, collection_start, collection_end, collect_tracks, collect_face_quality, collect_glasses, collect_beard, collect_hair_color, collect_hair_type, collect_headwear')
+          .eq('client_id', id).single(),
+        10000,
+        'client_api_configs'
+      );
+      if (apiCfg) setApiConfig(apiCfg as ClientApiConfig);
+      if (storesData) {
+        const devicesByStore: Record<string, any[]> = {};
+        (devicesData || []).forEach((device: any) => {
+          if (!devicesByStore[device.store_id]) devicesByStore[device.store_id] = [];
+          devicesByStore[device.store_id].push({ id: device.id, name: device.name, status: device.status || 'offline', type: device.type || 'dome', resolution: '1080p', macAddress: device.mac_address });
         });
-      setStores(uniqueStores);
+        const seen = new Set<string>();
+        const uniqueStores: StoreType[] = storesData
+          .filter((s: any) => { if (seen.has(String(s.id))) return false; seen.add(String(s.id)); return true; })
+          .map((store: any) => {
+            const cams = devicesByStore[store.id] || [];
+            const storeOnline = cams.some((c: any) => c.status === 'online');
+            return { id: store.id, name: store.name, address: '', city: store.city || '', status: (storeOnline ? 'online' : 'offline') as 'online' | 'offline', cameras: cams };
+          });
+        setStores(uniqueStores);
+      }
+    } catch (error) {
+      console.warn('[Dashboard] Erro ao carregar cliente/lojas:', error);
     }
   }, [id]);
 
@@ -1244,9 +1313,16 @@ export function ClientDashboard() {
     (async () => {
       if (!id) return;
       const fetchConfig = async (scope: 'global' | 'client' | 'client_user') => {
-        const q = supabase.from('dashboard_configs').select('widgets_config, updated_at').eq('layout_name', scope).order('updated_at', { ascending: false }).limit(1);
-        const { data } = scope === 'global' ? await q.is('client_id', null) : await q.eq('client_id', id);
-        return data?.[0]?.widgets_config ?? null;
+        try {
+          const q = supabase.from('dashboard_configs').select('widgets_config, updated_at').eq('layout_name', scope).order('updated_at', { ascending: false }).limit(1);
+          const { data } = scope === 'global'
+            ? await withTimeout(q.is('client_id', null), 8000, `dashboard_configs.${scope}`)
+            : await withTimeout(q.eq('client_id', id), 8000, `dashboard_configs.${scope}`);
+          return data?.[0]?.widgets_config ?? null;
+        } catch (error) {
+          console.warn(`[Dashboard] Erro ao carregar config ${scope}:`, error);
+          return null;
+        }
       };
 
       // 1. Widgets permitidos pelo admin (layout 'client' ou 'global')
@@ -1286,8 +1362,19 @@ export function ClientDashboard() {
       const mergedLayout = { ...allowedResolved.widgetLayout, ...userResolved.widgetLayout };
 
       const active = activeIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
-      if (!cancelled) { setActiveWidgets(active); setWidgetLayout(mergedLayout); setIsLoadingConfig(false); }
-    })();
+      if (!cancelled) { setActiveWidgets(active); setWidgetLayout(mergedLayout); }
+    })()
+      .catch((error) => {
+        console.warn('[Dashboard] Erro ao resolver widgets, usando fallback padrao:', error);
+        if (!cancelled) {
+          const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+          setActiveWidgets(defaultIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[]);
+          setWidgetLayout({});
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setIsLoadingConfig(false);
+      });
     return () => { cancelled = true; };
   }, [id]);
 
