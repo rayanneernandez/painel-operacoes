@@ -1,5 +1,6 @@
 import React from 'react';
 import { Activity, Clock, Users } from 'lucide-react';
+import supabase from '../lib/supabase';
 
 // ── Chart.js helpers ─────────────────────────────────────────────────────────
 const CJ = {
@@ -667,10 +668,16 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
   const [loading, setLoading]   = React.useState(false);
   const [lastSync, setLastSync] = React.useState<string | null>(null);
 
-  const fetchData = React.useCallback(() => {
-    if (!clientId) return;
+  const fetchData = React.useCallback(async () => {
+    if (!clientId) {
+      setRows([]);
+      setLastSync(null);
+      setLoading(false);
+      return;
+    }
+
     setLoading(true);
-    import('../lib/supabase').then(({ default: supabase }) => {
+    try {
       let q = supabase
         .from('campaigns')
         .select('name,content_name,tipo_midia,loja,start_date,end_date,duration_days,display_count,visitors,avg_attention_sec,uploaded_at')
@@ -678,14 +685,27 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
         .order('start_date', { ascending: false })
         .limit(500);
       if (lojaFilter) q = (q as any).ilike('loja', `%${lojaFilter}%`);
-      q.then(({ data }: { data: any[] | null }) => {
-        setRows(data || []);
-        if (data && data.length > 0 && data[0].uploaded_at) {
-          setLastSync(new Date(data[0].uploaded_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }));
-        }
-        setLoading(false);
+
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error('Timeout ao carregar campanhas')), 10000);
       });
-    });
+      const result = await Promise.race([q, timeoutPromise]) as { data: any[] | null; error?: any };
+      if (result?.error) throw result.error;
+
+      const data = result?.data || [];
+      setRows(data);
+      if (data.length > 0 && data[0].uploaded_at) {
+        setLastSync(new Date(data[0].uploaded_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }));
+      } else {
+        setLastSync(null);
+      }
+    } catch (error) {
+      console.warn('[Campaigns] Erro ao carregar campanhas:', error);
+      setRows([]);
+      setLastSync(null);
+    } finally {
+      setLoading(false);
+    }
   }, [clientId, lojaFilter]);
 
   React.useEffect(() => { fetchData(); }, [fetchData]);
