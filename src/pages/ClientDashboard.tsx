@@ -385,6 +385,8 @@ export function ClientDashboard() {
       if (!isCurrent()) return;
 
       const exactRollup = exactRollups?.[0];
+      let exactRollupCandidate: any = null;
+      let exactRollupCandidateTotal = 0;
       if (exactRollup && !rangeTouchesToday) {
         const exactRollupDailyTotal = sumVisitorsPerDay(exactRollup.visitors_per_day);
         const exactRollupTotal = Number(exactRollup.total_visitors ?? 0);
@@ -398,9 +400,8 @@ export function ClientDashboard() {
             `[loadData] Ignorando rollup inconsistente ${exactRollupTotal} vs soma diária ${exactRollupDailyTotal} (${startDay}→${endDay})`
           );
         } else {
-        console.log(`[loadData] exact rollup: ${Number(exactRollup.total_visitors)}`);
-        applyRollup(exactRollup);
-        return;
+          exactRollupCandidate = exactRollup;
+          exactRollupCandidateTotal = exactRollupTotal;
         }
       }
 
@@ -441,6 +442,23 @@ export function ClientDashboard() {
         }
 
         if (mergedTotal > 0) {
+          const preferMergedOverExact =
+            !!exactRollupCandidate &&
+            Math.abs(mergedTotal - exactRollupCandidateTotal) >
+              Math.max(25, Math.ceil(Math.max(mergedTotal, exactRollupCandidateTotal) * 0.01));
+
+          if (exactRollupCandidate && !preferMergedOverExact) {
+            console.log(`[loadData] exact rollup: ${exactRollupCandidateTotal}`);
+            applyRollup(exactRollupCandidate);
+            return;
+          }
+
+          if (preferMergedOverExact) {
+            console.warn(
+              `[loadData] Ignorando rollup exato defasado ${exactRollupCandidateTotal} e usando soma diária ${mergedTotal} (${startDay}→${endDay})`
+            );
+          }
+
           const daysInPeriod = selectedDays;
           console.log(`[loadData] ✅ ${mergedTotal} visitantes (${startDay}→${endDay})`);
           applyRollup({
@@ -459,6 +477,12 @@ export function ClientDashboard() {
       }
 
       // ── Sem rollups úteis: tenta rebuild via backend ───────────────────
+      if (exactRollupCandidate) {
+        console.log(`[loadData] exact rollup fallback: ${exactRollupCandidateTotal}`);
+        applyRollup(exactRollupCandidate);
+        return;
+      }
+
       const rebuildKey = `${id}:${startDay}:${endDay}`;
       if (_rebuilding.has(rebuildKey)) {
         setIsLoadingData(false);
