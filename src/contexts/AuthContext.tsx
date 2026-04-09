@@ -13,6 +13,15 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function withTimeout<T>(promiseLike: PromiseLike<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    Promise.resolve(promiseLike),
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`Timeout em ${label}`)), ms);
+    }),
+  ]);
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -63,11 +72,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       }
 
       try {
-        const { data, error } = await supabase
-          .from('users')
-          .select('*')
-          .eq('id', parsed.id)
-          .single();
+        const { data, error } = await withTimeout<{ data: any; error: any }>(
+          supabase
+            .from('users')
+            .select('*')
+            .eq('id', parsed.id)
+            .single() as any,
+          8000,
+          'auth user bootstrap'
+        );
 
         if (!error && data) {
           const userPermissions = data.role === 'admin'
@@ -107,11 +120,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setIsLoading(true);
     try {
       // Check users table in Supabase
-      const { data, error } = await supabase
-        .from('users')
-        .select('*')
-        .eq('email', email)
-        .single();
+      const { data, error } = await withTimeout<{ data: any; error: any }>(
+        supabase
+          .from('users')
+          .select('*')
+          .eq('email', email)
+          .single() as any,
+        8000,
+        'auth login'
+      );
 
       if (error || !data) {
         throw new Error('Usuário não encontrado');
@@ -157,10 +174,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       localStorage.setItem('auth_user', JSON.stringify(newUser));
       
       // Update last login
-      await supabase
-        .from('users')
-        .update({ last_login: new Date().toISOString() })
-        .eq('id', data.id);
+      await withTimeout(
+        supabase
+          .from('users')
+          .update({ last_login: new Date().toISOString() })
+          .eq('id', data.id) as any,
+        8000,
+        'auth last_login'
+      );
 
       // Log Login Action
       await logService.logAction(

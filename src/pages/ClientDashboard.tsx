@@ -74,9 +74,9 @@ function hasNestedMetricData(value: any): boolean {
   });
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(promiseLike: PromiseLike<T>, ms: number, label: string): Promise<T> {
   return Promise.race([
-    promise,
+    Promise.resolve(promiseLike),
     new Promise<T>((_, reject) => {
       setTimeout(() => reject(new Error(`Timeout em ${label}`)), ms);
     }),
@@ -823,8 +823,8 @@ export function ClientDashboard() {
       if (storeId) attempts.push('store');
       attempts.push('none');
       for (const mode of attempts) {
-        const { data, error } = await withTimeout(
-          applySalesFilter(supabase.from(table).select(`${dateCol},sales_count`).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso).range(0, 9999), mode),
+        const { data, error } = await withTimeout<{ data: any[] | null; error: any }>(
+          applySalesFilter(supabase.from(table).select(`${dateCol},sales_count`).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso).range(0, 9999), mode) as any,
           8000,
           `${table}.${dateCol}.${mode}`
         );
@@ -839,8 +839,8 @@ export function ClientDashboard() {
       if (storeId) attempts.push('store');
       attempts.push('none');
       for (const mode of attempts) {
-        const { count, error } = await withTimeout(
-          applySalesFilter(supabase.from(table).select('*', { count: 'exact', head: true }).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso), mode),
+        const { count, error } = await withTimeout<{ count: number | null; error: any }>(
+          applySalesFilter(supabase.from(table).select('*', { count: 'exact', head: true }).eq('client_id', id).gte(dateCol, rangeStartIso).lte(dateCol, rangeEndIso), mode) as any,
           8000,
           `${table}.${dateCol}.${mode}.count`
         );
@@ -869,10 +869,10 @@ export function ClientDashboard() {
     let q = supabase.from('visitor_analytics').select('*', { count: 'exact', head: true })
       .eq('client_id', id).gte('timestamp', rangeStartIso).lte('timestamp', rangeEndIso);
     if (deviceIds.length > 0) q = q.in('device_id', deviceIds);
-    let count = 0;
+    let count: number | null = 0;
     let error = null as any;
     try {
-      ({ count, error } = await withTimeout(q, 8000, 'visitor_analytics trimestre'));
+      ({ count, error } = await withTimeout<{ count: number | null; error: any }>(q as any, 8000, 'visitor_analytics trimestre'));
     } catch (timeoutError) {
       console.warn('[Dashboard] Timeout ao contar visitantes (trimestre):', timeoutError);
       return 0;
