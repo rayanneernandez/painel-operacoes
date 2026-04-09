@@ -50,7 +50,11 @@ async function withRetry(label, fn, retries = 5) {
       const message = error?.message || String(error);
       console.warn(`[retry] ${label} attempt ${attempt}/${retries} failed: ${message}`);
       if (attempt < retries) {
-        await sleep(1000 * attempt);
+        const retryAfterMs = Number(error?.retryAfterMs);
+        const delayMs = Number.isFinite(retryAfterMs) && retryAfterMs > 0
+          ? retryAfterMs
+          : 1000 * attempt;
+        await sleep(delayMs);
       }
     }
   }
@@ -253,25 +257,32 @@ async function fetchDayVisits(cfg, startIso, endIso) {
 
   while (page < 500) {
     page += 1;
-    const resp = await withRetry(`fetch ${cfg.client_id} ${startIso.slice(0, 10)} offset ${offset}`, async () => {
+    const json = await withRetry(`fetch ${cfg.client_id} ${startIso.slice(0, 10)} offset ${offset}`, async () => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), isPanvel ? 120000 : 45000);
       try {
-        return await fetch(url, {
+        const resp = await fetch(url, {
           method: "POST",
           headers,
           body: JSON.stringify({ ...bodyBase, limit: pageLimit, offset }),
           signal: controller.signal,
         });
+
+        if (!resp.ok) {
+          const text = await resp.text();
+          const error = new Error(`API ${resp.status} ${text}`);
+          if (resp.status === 429) {
+            error.retryAfterMs = isPanvel ? 30000 : 10000;
+          }
+          throw error;
+        }
+
+        return await resp.json();
       } finally {
         clearTimeout(timeout);
       }
-    }, 3);
-    if (!resp.ok) {
-      throw new Error(`API ${resp.status} ${await resp.text()}`);
-    }
+    }, 5);
 
-    const json = await resp.json();
     const items = extractVisitorArray(json);
     if (apiTotal === null) {
       const totalNum = Number(json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? 0);
@@ -297,7 +308,7 @@ async function fetchDayVisits(cfg, startIso, endIso) {
     if (apiTotal !== null && offset + items.length >= apiTotal) break;
 
     offset += items.length;
-    await sleep(120);
+    await sleep(isPanvel ? 1500 : 120);
   }
 
   return { visits, apiTotal };
