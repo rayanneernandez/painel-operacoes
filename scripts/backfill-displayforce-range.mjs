@@ -22,6 +22,14 @@ function readEnvFile(filePath) {
   );
 }
 
+function loadEnv() {
+  const fromFile = fs.existsSync(".env") ? readEnvFile(".env") : {};
+  return {
+    ...fromFile,
+    ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value != null)),
+  };
+}
+
 function getArg(name, fallback = null) {
   const prefix = `--${name}=`;
   const hit = process.argv.find((arg) => arg.startsWith(prefix));
@@ -340,8 +348,14 @@ async function resolveConfigs(supabase, clientNames) {
 }
 
 async function main() {
-  const env = readEnvFile(".env");
-  const supabase = createClient(env.SUPABASE_URL || env.VITE_SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
+  const env = loadEnv();
+  const supabaseUrl = env.SUPABASE_URL || env.VITE_SUPABASE_URL;
+  const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY;
+  if (!supabaseUrl || !supabaseKey) {
+    throw new Error("SUPABASE_URL/VITE_SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY/SUPABASE_KEY sao obrigatorios");
+  }
+
+  const supabase = createClient(supabaseUrl, supabaseKey, {
     auth: { autoRefreshToken: false, persistSession: false },
   });
 

@@ -1,0 +1,47 @@
+name: Dashboard Sync - Panvel e Assai
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sync-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - client_key: panvel
+          - client_key: assai
+    concurrency:
+      group: dashboard-sync-${{ matrix.client_key }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Resolver datas do sync
+        shell: bash
+        run: |
+          echo "TODAY=$(TZ=America/Sao_Paulo date +%F)" >> "$GITHUB_ENV"
+          echo "YESTERDAY=$(TZ=America/Sao_Paulo date -d 'yesterday' +%F)" >> "$GITHUB_ENV"
+
+      - name: Sincronizar cliente no banco
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          node scripts/backfill-displayforce-range.mjs --start=${{ env.YESTERDAY }} --end=${{ env.TODAY }} --clients=${{ matrix.client_key }}

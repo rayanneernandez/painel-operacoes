@@ -1,4 +1,4 @@
-name: Auto-Import — DisplayForce Emails → Supabase
+name: Auto-Import - DisplayForce Emails to Supabase
 
 on:
   schedule:
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Baixar código
+      - name: Baixar codigo
         uses: actions/checkout@v4
 
       - name: Instalar Python 3.11
@@ -19,21 +19,17 @@ jobs:
         with:
           python-version: '3.11'
 
-<<<<<<< HEAD
-      - name: Instalar dependências (com suporte a Excel)
-=======
-      - name: Instalar dependências (leve — sem Playwright)
->>>>>>> deedbe4 (fix: importar_agora.py aceita .xlsx/.xls além de .csv dentro dos ZIPs)
+      - name: Instalar dependencias (leve, com suporte a Excel)
         run: pip install pandas requests imap-tools openpyxl xlrd
 
       - name: Importar e-mails da DisplayForce para o Supabase
         env:
-          IMAP_EMAIL:        ${{ secrets.IMAP_EMAIL }}
-          IMAP_PASSWORD:     ${{ secrets.IMAP_PASSWORD }}
-          IMAP_SERVER:       "imap.gmail.com"
-          IMAP_PORT:         "993"
-          SUPABASE_URL:      ${{ secrets.SUPABASE_URL }}
-          SUPABASE_KEY:      ${{ secrets.SUPABASE_KEY }}
+          IMAP_EMAIL: ${{ secrets.IMAP_EMAIL }}
+          IMAP_PASSWORD: ${{ secrets.IMAP_PASSWORD }}
+          IMAP_SERVER: "imap.gmail.com"
+          IMAP_PORT: "993"
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           CLIENTES_FALLBACK: "Panvel|c6999bd9-14c0-4e26-abb1-d4b852d34421,Assai|b1c05e4d-0417-4853-9af9-8c0725df1880"
         run: python importar_agora.py
 
