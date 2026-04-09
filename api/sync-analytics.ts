@@ -638,13 +638,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (devicesPayload.length > 0) await supabase.from("devices").upsert(devicesPayload);
 
       // Remove dispositivos de stores não sincronizadas (segurança adicional)
+      // Nota: PostgREST NOT IN não usa aspas simples nos valores — usar join sem aspas
       if (storeIds.length > 0) {
         const allSyncedMacs = devicesPayload.map(d => d.mac_address).filter(Boolean);
         if (allSyncedMacs.length > 0) {
           await supabase.from("devices")
             .delete()
             .in("store_id", storeIds)
-            .not("mac_address", "in", `(${allSyncedMacs.map(m => `'${m}'`).join(",")})`);
+            .not("mac_address", "in", `(${allSyncedMacs.join(",")})`);
         }
       }
 
