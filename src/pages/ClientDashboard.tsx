@@ -50,6 +50,22 @@ type ClientApiConfig = {
   collect_headwear?: boolean;
 };
 
+function alignUtcStartOfDay(value: Date | string) {
+  const d = value instanceof Date ? new Date(value) : new Date(value);
+  d.setUTCHours(0, 0, 0, 0);
+  return d;
+}
+
+function alignUtcEndOfDay(value: Date | string) {
+  const d = value instanceof Date ? new Date(value) : new Date(value);
+  d.setUTCHours(23, 59, 59, 999);
+  return d;
+}
+
+function sumVisitorsPerDay(vpd: Record<string, number> | null | undefined) {
+  return Object.values(vpd || {}).reduce((acc, value) => acc + (Number(value) || 0), 0);
+}
+
 export function ClientDashboard() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -122,8 +138,8 @@ export function ClientDashboard() {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (parsed?.start && parsed?.end) {
-          const s = new Date(parsed.start);
-          const e = new Date(parsed.end);
+          const s = alignUtcStartOfDay(parsed.start);
+          const e = alignUtcEndOfDay(parsed.end);
           if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
             autoTodayRef.current = false;
             setSelectedStartDate(s);
@@ -304,8 +320,10 @@ export function ClientDashboard() {
 
     setIsLoadingData(true);
     try {
-      const startIso = selectedStartDate.toISOString();
-      const endIso   = selectedEndDate.toISOString();
+      const startAligned = alignUtcStartOfDay(selectedStartDate);
+      const endAligned = alignUtcEndOfDay(selectedEndDate);
+      const startIso = startAligned.toISOString();
+      const endIso   = endAligned.toISOString();
       const startDay = startIso.slice(0, 10);
       const endDay   = endIso.slice(0, 10);
 
@@ -366,9 +384,22 @@ export function ClientDashboard() {
 
       const exactRollup = exactRollups?.[0];
       if (exactRollup) {
+        const exactRollupDailyTotal = sumVisitorsPerDay(exactRollup.visitors_per_day);
+        const exactRollupTotal = Number(exactRollup.total_visitors ?? 0);
+        const exactRollupLooksConsistent =
+          exactRollupTotal > 0 &&
+          exactRollupDailyTotal > 0 &&
+          Math.abs(exactRollupTotal - exactRollupDailyTotal) <= Math.max(5, Math.ceil(exactRollupTotal * 0.01));
+
+        if (!exactRollupLooksConsistent) {
+          console.warn(
+            `[loadData] Ignorando rollup inconsistente ${exactRollupTotal} vs soma diária ${exactRollupDailyTotal} (${startDay}→${endDay})`
+          );
+        } else {
         console.log(`[loadData] exact rollup: ${Number(exactRollup.total_visitors)}`);
         applyRollup(exactRollup);
         return;
+        }
       }
 
       if (selectedDays > 1) {
@@ -787,30 +818,19 @@ export function ClientDashboard() {
     if (!id) return;
 
     // ── Regra do gráfico/KPI "Média Visitantes" ───────────────────────────
-    // Até 7 dias selecionados: sempre usa os ÚLTIMOS 7 DIAS (rolling) até o fim selecionado.
-    // Mais de 7 dias: respeita o período selecionado.
+    // O gráfico e a média devem respeitar exatamente o período filtrado.
     const selectedDays = Math.max(
       1,
       Math.ceil((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1
     );
-    const useSelectedPeriod = selectedDays > 7;
+    const useSelectedPeriod = true;
 
-    let startIso: string, endIso: string, startDay: string, endDay: string;
-    if (useSelectedPeriod) {
-      const s = new Date(selectedStartDate); s.setUTCHours(0, 0, 0, 0);
-      const e = new Date(selectedEndDate);   e.setUTCHours(23, 59, 59, 999);
-      startIso = s.toISOString();
-      endIso   = e.toISOString();
-      startDay = s.toISOString().slice(0, 10);
-      endDay   = e.toISOString().slice(0, 10);
-    } else {
-      const e = new Date(selectedEndDate); e.setUTCHours(23, 59, 59, 999);
-      const s = new Date(e.getTime() - 6 * 86400000); s.setUTCHours(0, 0, 0, 0);
-      startIso = s.toISOString();
-      endIso   = e.toISOString();
-      startDay = s.toISOString().slice(0, 10);
-      endDay   = e.toISOString().slice(0, 10);
-    }
+    const s = alignUtcStartOfDay(selectedStartDate);
+    const e = alignUtcEndOfDay(selectedEndDate);
+    const startIso = s.toISOString();
+    const endIso   = e.toISOString();
+    const startDay = startIso.slice(0, 10);
+    const endDay   = endIso.slice(0, 10);
 
     // ── Agrega visitors_per_day por dia da semana (sempre SOMA) ───────────
     const toWeekDays = (vpd: Record<string, number>) => {
@@ -853,7 +873,7 @@ export function ClientDashboard() {
           if (Object.keys(mergedVpd).length > 0) {
             const weekDays = toWeekDays(mergedVpd);
             setDailyStats(weekDays);
-            if (!useSelectedPeriod) setAvgVisitorsPerDay(Math.round(weekDays.reduce((a, b) => a + b, 0) / 7));
+            setAvgVisitorsPerDay(Math.round(weekDays.reduce((a, b) => a + b, 0) / selectedDays));
             return;
           }
         }
@@ -883,13 +903,13 @@ export function ClientDashboard() {
           if (Object.keys(visPerDay).length > 0) {
             const weekDays = toWeekDays(visPerDay);
             setDailyStats(weekDays);
-            if (!useSelectedPeriod) setAvgVisitorsPerDay(Math.round(weekDays.reduce((a, b) => a + b, 0) / 7));
+            setAvgVisitorsPerDay(Math.round(weekDays.reduce((a, b) => a + b, 0) / selectedDays));
             return;
           }
         } catch (_) { /* ignora e cai no zero */ }
 
         setDailyStats([0, 0, 0, 0, 0, 0, 0]);
-        if (!useSelectedPeriod) setAvgVisitorsPerDay(0);
+        setAvgVisitorsPerDay(0);
         return;
       }
 
@@ -911,11 +931,11 @@ export function ClientDashboard() {
       }
 
       setDailyStats(days);
-      if (!useSelectedPeriod) setAvgVisitorsPerDay(Math.round(days.reduce((a, b) => a + b, 0) / 7));
+      setAvgVisitorsPerDay(Math.round(days.reduce((a, b) => a + b, 0) / selectedDays));
     } catch (e) {
       console.warn('[Dashboard] Erro semana:', e);
       setDailyStats([0, 0, 0, 0, 0, 0, 0]);
-      if (selectedDays <= 7) setAvgVisitorsPerDay(0);
+      setAvgVisitorsPerDay(0);
     }
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
