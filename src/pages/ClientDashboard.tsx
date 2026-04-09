@@ -404,61 +404,15 @@ export function ClientDashboard() {
         }
       }
 
-      if (selectedDays > 1) {
-        const rebuildKey = `${id}:${startDay}:${endDay}`;
-        if (_rebuilding.has(rebuildKey)) {
-          setIsLoadingData(false);
-          return;
-        }
-
-        _rebuilding.add(rebuildKey);
-        setSyncMessage('Calculando dados...');
-        try {
-          const resp = await fetch('/api/sync-analytics', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
-          });
-          const json = resp.ok ? await resp.json() : null;
-          if (!isCurrent()) return;
-
-          if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
-            applyRollup({
-              total_visitors:         json.dashboard.total_visitors,
-              avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
-              avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-              avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
-              visitors_per_day:       json.dashboard.visitors_per_day,
-              visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
-              gender_percent:         json.dashboard.gender_percent,
-              attributes_percent:     json.dashboard.attributes_percent,
-              age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-            });
-            setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes.`);
-          } else {
-            zeroAll();
-            setSyncMessage('');
-          }
-        } catch (e) {
-          console.warn('[loadData] exact rebuild failed:', e);
-          zeroAll();
-          setSyncMessage('');
-        } finally {
-          _rebuilding.delete(rebuildKey);
-        }
-        return;
-      }
-
-      const { data: allRollups } = rangeTouchesToday
-        ? { data: [] as any[] }
-        : await supabase
-            .from('visitor_analytics_rollups')
-            .select('*')
-            .eq('client_id', id)
-            .lte('start', endIso)
-            .gte('end', startIso)
-            .gt('total_visitors', 0)
-            .order('updated_at', { ascending: false })
-            .limit(20);
+      const { data: allRollups } = await supabase
+        .from('visitor_analytics_rollups')
+        .select('*')
+        .eq('client_id', id)
+        .lte('start', endIso)
+        .gte('end', startIso)
+        .gt('total_visitors', 0)
+        .order('updated_at', { ascending: false })
+        .limit(50);
 
       if (!isCurrent()) return;
 
