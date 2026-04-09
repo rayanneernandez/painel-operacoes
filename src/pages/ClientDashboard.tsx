@@ -99,6 +99,9 @@ export function ClientDashboard() {
   const autoTodayRef = useRef(true);
   const didApplyD1DefaultRef = useRef(false);
   const loadSeqRef = useRef(0);
+  const latestLoadDataRef = useRef<null | (() => Promise<void>)>(null);
+  const bgReloadTimeoutsRef = useRef<Array<ReturnType<typeof setTimeout>>>([]);
+  const activeFilterKeyRef = useRef('');
   // Flag para clientes que usam D-2 como data padrão (ex: Panvel)
   const useD2DefaultRef = useRef(false);
 
@@ -233,6 +236,18 @@ export function ClientDashboard() {
     }
     return [];
   }, [view, selectedStore, selectedCamera]);
+
+  useEffect(() => {
+    activeFilterKeyRef.current = [
+      id || '',
+      selectedStartDate.toISOString(),
+      selectedEndDate.toISOString(),
+      deviceIds.join(','),
+    ].join('|');
+
+    bgReloadTimeoutsRef.current.forEach(clearTimeout);
+    bgReloadTimeoutsRef.current = [];
+  }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
   function applyRollup(rollup: any) {
     if (!rollup) return false;
@@ -533,6 +548,10 @@ export function ClientDashboard() {
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
   // ── triggerBackgroundSync — dispara sync silencioso via background_sync ───
+  useEffect(() => {
+    latestLoadDataRef.current = loadData;
+  }, [loadData]);
+
   const triggerBackgroundSync = useCallback(async (force = false) => {
     if (!id || syncingRef.current) return;
     if (!force && !shouldSync(id)) return;
@@ -568,13 +587,22 @@ export function ClientDashboard() {
           // Recarrega dados após o sync processar — começa em 15s e tenta mais vezes
           const delays = [15_000, 30_000, 60_000, 120_000, 240_000];
           let loaded = false;
+          const scheduledFilterKey = activeFilterKeyRef.current;
+          bgReloadTimeoutsRef.current.forEach(clearTimeout);
+          bgReloadTimeoutsRef.current = [];
           delays.forEach((delay, idx) => {
-            setTimeout(async () => {
+            const timeoutId = setTimeout(async () => {
               if (loaded || document.visibilityState !== 'visible') return;
-              await loadData();
-              if (totalVisitors > 0) loaded = true;
+              if (scheduledFilterKey !== activeFilterKeyRef.current) {
+                console.log('[BgSync] Ignorando recarga antiga apÃ³s troca de filtro');
+                return;
+              }
+              await latestLoadDataRef.current?.();
+              if (scheduledFilterKey !== activeFilterKeyRef.current) return;
+              loaded = true;
               console.log(`[BgSync] Dados recarregados (tentativa ${idx + 1})`);
             }, delay);
+            bgReloadTimeoutsRef.current.push(timeoutId);
           });
         }
       }
@@ -1037,6 +1065,13 @@ export function ClientDashboard() {
   }, [id, loadData, refreshClientAndStores, syncStoresFromServer, triggerBackgroundSync]);
 
   // ── Config de widgets ────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      bgReloadTimeoutsRef.current.forEach(clearTimeout);
+      bgReloadTimeoutsRef.current = [];
+    };
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     const clampNum = (v: any, min: number, max: number, fallback: number) => {
