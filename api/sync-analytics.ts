@@ -652,12 +652,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         ? ((await supabase.from("stores").select("id", { count: "exact", head: true }).eq("client_id", client_id)).count ?? 0)
         : 0;
 
-      // Diagnóstico: mostra as chaves do primeiro dispositivo para ajudar a entender o parent_id
+      // Diagnóstico: verifica correspondência entre folder_id e device parent_id
       const diagDevice = devicesData[0];
       const diagKeys = diagDevice ? Object.keys(diagDevice) : [];
       const diagParentId = diagDevice?.parent_id ?? diagDevice?.folder_id ?? diagDevice?.group_id ?? 'N/A';
       const diagFolderIds = folders.slice(0, 3).map((f: any) => ({ id: f?.id, name: f?.name }));
-      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length, stores_total: storeIds.length, devices_total_api: devicesData.length, diag: { device_keys: diagKeys, device_parent_id_sample: diagParentId, folder_id_sample: diagFolderIds } });
+      const sampleFolderKeys = [...folderToStoreId.entries()].slice(0, 3).map(([fid, sid]) => ({ folderId: fid, storeId: sid, devicesFound: devicesByFolder.get(fid)?.length ?? 0 }));
+      const sampleDevParentIds = devicesData.slice(0, 3).map((d: any) => ({ parent_id: d?.parent_id, name: d?.name }));
+      const samplePayload = devicesPayload.slice(0, 3).map(d => ({ store_id: d.store_id, mac: d.mac_address, status: d.status }));
+      // Verifica no banco quantos dispositivos existem agora para esses store IDs
+      const { count: devCountAfter } = await supabase.from("devices").select("id", { count: "exact", head: true }).in("store_id", storeIds);
+      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length, stores_total: storeIds.length, devices_total_api: devicesData.length, devices_in_db_after: devCountAfter, diag: { device_keys: diagKeys, device_parent_id_sample: diagParentId, folder_id_sample: diagFolderIds, folder_device_match: sampleFolderKeys, device_parent_ids: sampleDevParentIds, payload_sample: samplePayload } });
     }
 
     const now        = new Date();
