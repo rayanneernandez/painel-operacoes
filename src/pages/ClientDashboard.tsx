@@ -139,6 +139,28 @@ function countPositiveMetricLeaves(value: any): number {
   return total;
 }
 
+function getPositiveMetricValues(value: any): number[] {
+  if (!value || typeof value !== 'object') return [];
+  const out: number[] = [];
+  for (const entry of Object.values(value)) {
+    if (entry && typeof entry === 'object') {
+      out.push(...getPositiveMetricValues(entry));
+      continue;
+    }
+    const numeric = Number(entry);
+    if (numeric > 0) out.push(numeric);
+  }
+  return out;
+}
+
+function dominantMetricShare(value: any): number {
+  const values = getPositiveMetricValues(value);
+  if (values.length === 0) return 0;
+  const total = values.reduce((acc, current) => acc + current, 0);
+  if (total <= 0) return 0;
+  return Math.max(...values) / total;
+}
+
 function mergeAttributeCategories(baseAttributes: any, fallbackAttributes: any) {
   const base = baseAttributes && typeof baseAttributes === 'object' ? baseAttributes : {};
   const fallback = fallbackAttributes && typeof fallbackAttributes === 'object' ? fallbackAttributes : {};
@@ -151,13 +173,20 @@ function mergeAttributeCategories(baseAttributes: any, fallbackAttributes: any) 
     const fallbackHasData = hasNestedMetricData(fallbackCategory);
     const baseRichness = countPositiveMetricLeaves(baseCategory);
     const fallbackRichness = countPositiveMetricLeaves(fallbackCategory);
+    const baseDominance = dominantMetricShare(baseCategory);
 
     const shouldPreferFallback =
       fallbackHasData &&
       (
         !baseHasData ||
         (baseRichness <= 1 && fallbackRichness > baseRichness) ||
-        (baseRichness > 0 && fallbackRichness >= baseRichness + 2)
+        (baseRichness > 0 && fallbackRichness >= baseRichness + 2) ||
+        (
+          category === 'glasses' &&
+          baseHasData &&
+          fallbackRichness >= 2 &&
+          baseDominance >= 0.985
+        )
       );
 
     merged[category] = shouldPreferFallback

@@ -397,21 +397,45 @@ function DonutLikeGender({
   const safe = (items || []).filter((x) => Number(x.value) > 0);
   const sum = safe.reduce((a, x) => a + (Number(x.value) || 0), 0) || 1;
   const isPct = sum <= 101;
-  const segments = safe
+  const rawSegments = safe
     .map((x) => {
-      const pct = isPct ? Math.round(Number(x.value) || 0) : Math.round(((Number(x.value) || 0) / sum) * 100);
+      const pct = isPct ? (Number(x.value) || 0) : (((Number(x.value) || 0) / sum) * 100);
       const count = x.count ?? (totalCount ? Math.round((pct / 100) * totalCount) : null);
       return { label: x.label, color: x.color, pct, count };
     })
     .filter((x) => x.pct > 0)
     .sort((a, b) => b.pct - a.pct);
 
+  const minVisiblePct = rawSegments.length > 1 ? 1 : 0;
+  const dominantIndex = rawSegments.findIndex((segment) => segment.pct === Math.max(...rawSegments.map((entry) => entry.pct), 0));
+  const boostedIndices = rawSegments
+    .map((segment, index) => ({ segment, index }))
+    .filter(({ segment }) => segment.pct > 0 && segment.pct < minVisiblePct)
+    .map(({ index }) => index);
+  const totalBoost = boostedIndices.reduce((acc, index) => acc + (minVisiblePct - rawSegments[index].pct), 0);
+  const segments = rawSegments.map((segment, index) => {
+    let drawPct = segment.pct;
+    if (boostedIndices.includes(index)) {
+      drawPct = minVisiblePct;
+    } else if (index === dominantIndex && totalBoost > 0) {
+      drawPct = Math.max(segment.pct - totalBoost, 0.5);
+    }
+    return { ...segment, drawPct };
+  });
+
+  const formatPct = (value: number) => {
+    if (!Number.isFinite(value)) return '0';
+    if (value >= 99 || value < 1) return value.toFixed(2).replace(/\.?0+$/, '');
+    if (value % 1 !== 0) return value.toFixed(1).replace(/\.0$/, '');
+    return String(Math.round(value));
+  };
+
   const radius = 40;
   const stroke = 15;
   const circ = 2 * Math.PI * radius;
   let arcOffset = 0;
   const arcs = segments.map((s) => {
-    const dash = (s.pct / 100) * circ;
+    const dash = (s.drawPct / 100) * circ;
     const arc = { ...s, dash, offset: arcOffset };
     arcOffset += dash;
     return arc;
@@ -441,7 +465,7 @@ function DonutLikeGender({
 
     let acc = 0;
     for (const s of segments) {
-      const span = (s.pct / 100) * 360;
+      const span = (s.drawPct / 100) * 360;
       if (angle >= acc && angle < acc + span) return { ...s, x, y };
       acc += span;
     }
@@ -491,7 +515,7 @@ function DonutLikeGender({
         </svg>
 
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-          <span className="text-2xl font-bold text-white leading-none">{segments[0]?.pct ?? 0}%</span>
+          <span className="text-2xl font-bold text-white leading-none">{formatPct(segments[0]?.pct ?? 0)}%</span>
           <span className="text-[11px] text-gray-400 mt-1 text-center px-1 truncate max-w-full">{segments[0]?.label ?? ''}</span>
         </div>
 
@@ -502,7 +526,7 @@ function DonutLikeGender({
           >
             <div className="font-semibold" style={{ color: hover.color }}>{hover.label}</div>
             <div className="text-gray-300">
-              {hover.pct}%{hover.count != null ? ` • ${hover.count.toLocaleString()} visitantes` : ''}
+              {formatPct(hover.pct)}%{hover.count != null ? ` • ${hover.count.toLocaleString()} visitantes` : ''}
             </div>
           </div>
         )}
@@ -514,7 +538,7 @@ function DonutLikeGender({
           <div key={i} className="group relative flex items-center gap-1 cursor-default min-w-0">
             <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.color }} />
             <span className="text-[10px] text-gray-400 truncate">{s.label}</span>
-            <span className="text-[10px] font-semibold flex-shrink-0" style={{ color: s.color }}>{s.pct}%</span>
+            <span className="text-[10px] font-semibold flex-shrink-0" style={{ color: s.color }}>{formatPct(s.pct)}%</span>
             {s.count != null && (
               <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-950 border border-gray-700 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
                 {s.count.toLocaleString()} visitantes
