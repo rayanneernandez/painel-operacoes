@@ -666,18 +666,16 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
 const cleanCampaignContentName = (raw?: string | null) => {
   const value = String(raw || '').trim();
   if (!value) return '';
+  const months = '(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)';
 
   let name = value
     .replace(/\.mp4$/i, '')
     .replace(/\s*\(\d+\)\s*$/i, '')
-    .replace(/\s*\([^)]*(?:vertical|horizontal|vert|horiz)[^)]*\)\s*$/i, '')
+    .replace(/\s*\([^)]*(?:vertical|horizontal|vert|horiz|ventical)[^)]*\)\s*$/i, '')
     .replace(/[_\s-]+v\d+\s*$/i, '')
-    .replace(/[_\-\s]*\d{3,4}\s*[xX]\s*\d{3,4}\s*$/i, '');
+    .replace(/[_\-\s]*\d{3,4}\s*[xX]\s*\d{3,4}.*$/i, '');
 
-  name = name.replace(
-    /(?:[_\-\s]+\d{1,2}(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)(?:[_\-]?\d{2,4})?){1,4}\s*$/i,
-    '',
-  );
+  name = name.replace(new RegExp(`[_\\-\\s]+\\d{1,2}${months}.*$`, 'i'), '');
 
   return name
     .replace(/[_\-]{2,}/g, '-')

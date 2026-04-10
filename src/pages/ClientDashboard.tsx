@@ -118,7 +118,7 @@ function rollupMetadataScore(rollup: any): number {
   let score = 0;
   if (hasNestedMetricData(rollup.gender_percent)) score += 10;
   if (hasNestedMetricData(rollup.age_pyramid_percent)) score += 10;
-  if (hasNestedMetricData(rollup.attributes_percent)) score += 20;
+  if (hasNestedMetricData(rollup.attributes_percent)) score += 20 + countPositiveMetricLeaves(rollup.attributes_percent) * 3;
   if (Number(rollup.avg_visit_time_seconds) > 0) score += 2;
   if (Number(rollup.avg_contact_time_seconds) > 0) score += 2;
   return score;
@@ -126,13 +126,43 @@ function rollupMetadataScore(rollup: any): number {
 
 const ATTRIBUTE_CATEGORIES = ['glasses', 'facial_hair', 'hair_color', 'hair_type', 'headwear'] as const;
 
+function countPositiveMetricLeaves(value: any): number {
+  if (!value || typeof value !== 'object') return 0;
+  let total = 0;
+  for (const entry of Object.values(value)) {
+    if (entry && typeof entry === 'object') {
+      total += countPositiveMetricLeaves(entry);
+      continue;
+    }
+    if (Number(entry) > 0) total += 1;
+  }
+  return total;
+}
+
 function mergeAttributeCategories(baseAttributes: any, fallbackAttributes: any) {
   const base = baseAttributes && typeof baseAttributes === 'object' ? baseAttributes : {};
   const fallback = fallbackAttributes && typeof fallbackAttributes === 'object' ? fallbackAttributes : {};
   const merged: Record<string, any> = { ...fallback, ...base };
 
   for (const category of ATTRIBUTE_CATEGORIES) {
-    merged[category] = hasNestedMetricData(base?.[category]) ? base[category] : (fallback?.[category] ?? {});
+    const baseCategory = base?.[category];
+    const fallbackCategory = fallback?.[category];
+    const baseHasData = hasNestedMetricData(baseCategory);
+    const fallbackHasData = hasNestedMetricData(fallbackCategory);
+    const baseRichness = countPositiveMetricLeaves(baseCategory);
+    const fallbackRichness = countPositiveMetricLeaves(fallbackCategory);
+
+    const shouldPreferFallback =
+      fallbackHasData &&
+      (
+        !baseHasData ||
+        (baseRichness <= 1 && fallbackRichness > baseRichness) ||
+        (baseRichness > 0 && fallbackRichness >= baseRichness + 2)
+      );
+
+    merged[category] = shouldPreferFallback
+      ? (fallbackCategory ?? {})
+      : (baseHasData ? baseCategory : (fallbackCategory ?? {}));
   }
 
   return merged;
@@ -602,7 +632,7 @@ export function ClientDashboard() {
           .filter(Boolean)
           .sort((a, b) => rollupMetadataScore(b) - rollupMetadataScore(a))[0] ?? null;
       const aggregatedAttributesFallback = aggregateAttributesFromRollups(
-        [exactRollupCandidate, ...(allRollups || [])].filter(Boolean),
+        [exactRollupCandidate, ...(allRollups || []), ...(metadataRollups || [])].filter(Boolean),
         startDay,
         endDay
       );
