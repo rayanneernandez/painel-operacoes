@@ -1233,6 +1233,48 @@ def _screenshot(page, nome: str, cliente: str):
         pass
 
 
+def _fill_input_react(page, locator, valor: str) -> bool:
+    """Preenche input controlado por React disparando input/change."""
+    try:
+        locator.click(timeout=2000)
+    except Exception:
+        pass
+
+    try:
+        locator.fill(valor, timeout=2000)
+    except Exception:
+        try:
+            locator.press_sequentially(valor, delay=40)
+        except Exception:
+            return False
+
+    try:
+        handle = locator.element_handle(timeout=2000)
+        if handle:
+            page.evaluate(
+                """([el, val]) => {
+                    const setter = Object.getOwnPropertyDescriptor(
+                      window.HTMLInputElement.prototype,
+                      'value'
+                    )?.set;
+                    if (setter) setter.call(el, val);
+                    else el.value = val;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new Event('blur', { bubbles: true }));
+                }""",
+                [handle, valor],
+            )
+    except Exception:
+        pass
+
+    try:
+        atual = (locator.input_value(timeout=2000) or "").strip()
+        return atual == valor
+    except Exception:
+        return False
+
+
 def fazer_login_displayforce(page) -> bool:
     """Realiza login na DisplayForce. Retorna True se bem-sucedido."""
     log.info("Acessando DisplayForce...")
@@ -1260,16 +1302,43 @@ def fazer_login_displayforce(page) -> bool:
             log.error("  ❌ Nenhum input visível na página de login")
             return False
 
-        log.info("  Usando primeiro input visível como campo de e-mail")
-        inputs_visiveis[0].click()
-        inputs_visiveis[0].fill(DISPLAYFORCE_EMAIL)
+        email_selectors = [
+            "input[type='email']:visible",
+            "input[name*='mail' i]:visible",
+            "input[placeholder*='mail' i]:visible",
+            "input[autocomplete='username']:visible",
+        ]
+        email_field = None
+        for sel in email_selectors:
+            try:
+                candidate = page.locator(sel).first
+                if candidate.count() > 0 and candidate.is_visible(timeout=1000):
+                    email_field = candidate
+                    break
+            except Exception:
+                continue
+
+        if email_field is None:
+            log.info("  Usando primeiro input visível como campo de e-mail")
+            email_field = inputs_visiveis[0]
+
+        if not _fill_input_react(page, email_field, DISPLAYFORCE_EMAIL):
+            log.error("  ❌ Não foi possível preencher o e-mail no login")
+            _screenshot(page, "login_01b_email_falhou", "login")
+            return False
+
+        try:
+            valor_email = email_field.input_value(timeout=1000)
+            log.info(f"  ✔ E-mail preenchido: '{valor_email}'")
+        except Exception:
+            log.info("  ✔ E-mail preenchido")
         page.wait_for_timeout(500)
 
         # ── Verifica se já tem campo de senha na mesma tela ───────────────
         senha_fields = page.locator("input[type='password']:visible").all()
         if senha_fields:
             log.info("  Login em 1 etapa: preenchendo senha diretamente")
-            senha_fields[0].fill(DISPLAYFORCE_PASS)
+            _fill_input_react(page, senha_fields[0], DISPLAYFORCE_PASS)
             page.wait_for_timeout(300)
         else:
             # ── Login em 2 etapas: clicar em "Próximo" primeiro ───────────
@@ -1293,7 +1362,8 @@ def fazer_login_displayforce(page) -> bool:
             try:
                 senha_field.wait_for(state="visible", timeout=20000)
                 log.info("  Campo de senha apareceu (step 2)")
-                senha_field.fill(DISPLAYFORCE_PASS)
+                if not _fill_input_react(page, senha_field, DISPLAYFORCE_PASS):
+                    raise RuntimeError("falha ao preencher senha")
                 page.wait_for_timeout(500)
             except Exception:
                 # Fallback: tenta preencher qualquer input vazio que não seja e-mail
@@ -1304,9 +1374,9 @@ def fazer_login_displayforce(page) -> bool:
                     tp = (inp.get_attribute("type") or "text").lower()
                     val = (inp.input_value() or "").strip()
                     if tp in ("password", "text") and val == "":
-                        inp.fill(DISPLAYFORCE_PASS)
-                        log.info(f"  Senha preenchida via fallback (type={tp})")
-                        break
+                        if _fill_input_react(page, inp, DISPLAYFORCE_PASS):
+                            log.info(f"  Senha preenchida via fallback (type={tp})")
+                            break
 
         # ── Botão de entrar ───────────────────────────────────────────────
         _screenshot(page, "login_04_pre_submit", "login")

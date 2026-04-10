@@ -663,6 +663,28 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
 };
 
 // ── WidgetCampaigns ──────────────────────────────────────────────────────────
+const cleanCampaignContentName = (raw?: string | null) => {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+
+  let name = value
+    .replace(/\.mp4$/i, '')
+    .replace(/\s*\(\d+\)\s*$/i, '')
+    .replace(/\s*\([^)]*(?:vertical|horizontal|vert|horiz)[^)]*\)\s*$/i, '')
+    .replace(/[_\s-]+v\d+\s*$/i, '')
+    .replace(/[_\-\s]*\d{3,4}\s*[xX]\s*\d{3,4}\s*$/i, '');
+
+  name = name.replace(
+    /(?:[_\-\s]+\d{1,2}(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)(?:[_\-]?\d{2,4})?){1,4}\s*$/i,
+    '',
+  );
+
+  return name
+    .replace(/[_\-]{2,}/g, '-')
+    .replace(/[\s_-]+$/g, '')
+    .trim();
+};
+
 export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clientId?: string; lojaFilter?: string | null }) => {
   const [rows, setRows]         = React.useState<any[]>([]);
   const [loading, setLoading]   = React.useState(false);
@@ -788,12 +810,14 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
             <tbody>
               {rows.map((r, i) => {
                 const status = getStatus(r.start_date, r.end_date);
+                const campaignTitle = cleanCampaignContentName(r.content_name) || r.content_name || r.name || '';
+                const campaignLabel = cleanCampaignContentName(r.content_name) || r.content_name || r.name || 'â€”';
                 return (
                 <tr
                   key={i}
                   className={`transition-colors hover:bg-gray-800/50 ${i % 2 === 0 ? 'bg-transparent' : 'bg-gray-800/20'}`}
                 >
-                  <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap max-w-[200px] truncate" title={r.content_name || r.name || ''}>{r.content_name || r.name || '—'}</td>
+                  <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap max-w-[200px] truncate" title={campaignTitle}>{campaignLabel}</td>
                   <td className="py-2 pr-4 text-gray-200 whitespace-nowrap">{r.loja || '—'}</td>
                   <td className="py-2 pr-4 text-cyan-400 whitespace-nowrap">{r.tipo_midia || '—'}</td>
                   <td className="py-2 pr-4 whitespace-nowrap">
