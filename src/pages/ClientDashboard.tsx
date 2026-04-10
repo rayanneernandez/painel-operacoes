@@ -283,33 +283,10 @@ export function ClientDashboard() {
     return () => clearTimeout(t);
   }, [syncMessage]);
 
-  // Auto-D1 (ontem) — restaura range salvo no localStorage se o usuário já havia selecionado um período
+  // Intervalo padrão do dashboard: sempre começa em "hoje".
+  // O filtro aplicado continua respeitado na sessão atual, mas um reload não deve
+  // reabrir a tela em um período antigo e mascarar o dia atual.
   useEffect(() => {
-    // Verifica se o usuário já havia selecionado um período customizado
-    try {
-      const saved = localStorage.getItem(`dash_range_${id}`);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        const savedAt = parsed?.savedAt ? new Date(parsed.savedAt) : null;
-        const savedToday =
-          savedAt &&
-          !Number.isNaN(savedAt.getTime()) &&
-          alignUtcStartOfDay(savedAt).getTime() === alignUtcStartOfDay(new Date()).getTime();
-        if (savedToday && parsed?.start && parsed?.end) {
-          const s = alignUtcStartOfDay(parsed.start);
-          const e = alignUtcEndOfDay(parsed.end);
-          if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
-            autoTodayRef.current = false;
-            setSelectedStartDate(s);
-            setSelectedEndDate(e);
-            setDraftStartDate(s);
-            setDraftEndDate(e);
-            return; // não instala o intervalo de auto-reset
-          }
-        }
-      }
-    } catch {}
-
     const tick = () => {
       if (!autoTodayRef.current) return;
       const s = new Date(); s.setUTCHours(0, 0, 0, 0);
@@ -1253,14 +1230,8 @@ export function ClientDashboard() {
       );
       if (client) {
         setClientData({ name: client.name, logo: client.logo_url });
-
-        const isPanvel = String(client.name || '').toLowerCase().includes('panvel');
-        if (isPanvel) {
-          useD2DefaultRef.current = true;
-        }
-        if (isPanvel && !didApplyD1DefaultRef.current) {
-          didApplyD1DefaultRef.current = true;
-        }
+        useD2DefaultRef.current = false;
+        didApplyD1DefaultRef.current = true;
       }
 
       const { data: storesData } = await withTimeout(

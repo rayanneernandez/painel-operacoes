@@ -895,7 +895,7 @@ export const WidgetSalesQuarter = ({
       <div className="flex gap-4 text-[10px] text-gray-500 mb-3 flex-none">
         <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: CJ.neutral }} />Visitantes <strong className="text-white ml-1">{loading ? '…' : totalV.toLocaleString('pt-BR')}</strong></span>
       </div>
-      <CanvasBox height="100%" minHeight={0} className="flex-1 min-h-0">
+      <CanvasBox height={CHART_H} minHeight={CHART_H} className="flex-none">
         {loading ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
           : data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados no trimestre</div>
           : <canvas ref={canvasRef} className="w-full h-full" />}
