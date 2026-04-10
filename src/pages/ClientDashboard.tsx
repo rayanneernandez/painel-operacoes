@@ -124,6 +124,20 @@ function rollupMetadataScore(rollup: any): number {
   return score;
 }
 
+const ATTRIBUTE_CATEGORIES = ['glasses', 'facial_hair', 'hair_color', 'hair_type', 'headwear'] as const;
+
+function mergeAttributeCategories(baseAttributes: any, fallbackAttributes: any) {
+  const base = baseAttributes && typeof baseAttributes === 'object' ? baseAttributes : {};
+  const fallback = fallbackAttributes && typeof fallbackAttributes === 'object' ? fallbackAttributes : {};
+  const merged: Record<string, any> = { ...fallback, ...base };
+
+  for (const category of ATTRIBUTE_CATEGORIES) {
+    merged[category] = hasNestedMetricData(base?.[category]) ? base[category] : (fallback?.[category] ?? {});
+  }
+
+  return merged;
+}
+
 function hydrateRollupMetadata(baseRollup: any, fallbackRollup: any) {
   if (!baseRollup || !fallbackRollup) return baseRollup;
   return {
@@ -131,7 +145,7 @@ function hydrateRollupMetadata(baseRollup: any, fallbackRollup: any) {
     ...baseRollup,
     gender_percent: hasNestedMetricData(baseRollup.gender_percent) ? baseRollup.gender_percent : (fallbackRollup.gender_percent ?? {}),
     age_pyramid_percent: hasNestedMetricData(baseRollup.age_pyramid_percent) ? baseRollup.age_pyramid_percent : (fallbackRollup.age_pyramid_percent ?? {}),
-    attributes_percent: hasNestedMetricData(baseRollup.attributes_percent) ? baseRollup.attributes_percent : (fallbackRollup.attributes_percent ?? {}),
+    attributes_percent: mergeAttributeCategories(baseRollup.attributes_percent, fallbackRollup.attributes_percent),
     avg_visit_time_seconds: Number(baseRollup.avg_visit_time_seconds) > 0 ? baseRollup.avg_visit_time_seconds : (fallbackRollup.avg_visit_time_seconds ?? baseRollup.avg_visit_time_seconds ?? null),
     avg_contact_time_seconds: Number(baseRollup.avg_contact_time_seconds) > 0 ? baseRollup.avg_contact_time_seconds : (fallbackRollup.avg_contact_time_seconds ?? baseRollup.avg_contact_time_seconds ?? null),
   };
@@ -212,21 +226,25 @@ export function ClientDashboard() {
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
   const [selectedStartDate, setSelectedStartDate] = useState<Date>(() => {
-    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setUTCHours(0, 0, 0, 0); return yesterday;
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    return today;
   });
   const [selectedEndDate, setSelectedEndDate] = useState<Date>(() => {
-    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setUTCHours(23, 59, 59, 999); return yesterday;
+    const today = new Date();
+    today.setUTCHours(23, 59, 59, 999);
+    return today;
   });
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [draftStartDate, setDraftStartDate] = useState<Date>(() => {
-    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setUTCHours(0, 0, 0, 0); return yesterday;
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    return today;
   });
   const [draftEndDate, setDraftEndDate] = useState<Date>(() => {
-    const yesterday = new Date(); yesterday.setDate(yesterday.getDate() - 1);
-    yesterday.setUTCHours(23, 59, 59, 999); return yesterday;
+    const today = new Date();
+    today.setUTCHours(23, 59, 59, 999);
+    return today;
   });
   const autoTodayRef = useRef(true);
   const didApplyD1DefaultRef = useRef(false);
@@ -272,7 +290,12 @@ export function ClientDashboard() {
       const saved = localStorage.getItem(`dash_range_${id}`);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed?.start && parsed?.end) {
+        const savedAt = parsed?.savedAt ? new Date(parsed.savedAt) : null;
+        const savedToday =
+          savedAt &&
+          !Number.isNaN(savedAt.getTime()) &&
+          alignUtcStartOfDay(savedAt).getTime() === alignUtcStartOfDay(new Date()).getTime();
+        if (savedToday && parsed?.start && parsed?.end) {
           const s = alignUtcStartOfDay(parsed.start);
           const e = alignUtcEndOfDay(parsed.end);
           if (!isNaN(s.getTime()) && !isNaN(e.getTime())) {
@@ -289,8 +312,8 @@ export function ClientDashboard() {
 
     const tick = () => {
       if (!autoTodayRef.current) return;
-      const s = new Date(); s.setDate(s.getDate() - 1); s.setUTCHours(0, 0, 0, 0);
-      const e = new Date(); e.setDate(e.getDate() - 1); e.setUTCHours(23, 59, 59, 999);
+      const s = new Date(); s.setUTCHours(0, 0, 0, 0);
+      const e = new Date(); e.setUTCHours(23, 59, 59, 999);
       if (selectedStartDate.getTime() !== s.getTime()) setSelectedStartDate(s);
       if (selectedEndDate.getTime() !== e.getTime()) setSelectedEndDate(e);
       setDraftStartDate(s);
@@ -583,8 +606,22 @@ export function ClientDashboard() {
 
       if (!isCurrent()) return;
 
+      const { data: metadataRollups } = await withTimeout(
+        supabase
+          .from('visitor_analytics_rollups')
+          .select('*')
+          .eq('client_id', id)
+          .gt('total_visitors', 0)
+          .order('updated_at', { ascending: false })
+          .limit(20),
+        10000,
+        'rollups metadata fallback'
+      );
+
+      if (!isCurrent()) return;
+
       const metadataFallbackRollup =
-        [exactRollupCandidate, ...(allRollups || [])]
+        [exactRollupCandidate, ...(allRollups || []), ...(metadataRollups || [])]
           .filter(Boolean)
           .sort((a, b) => rollupMetadataScore(b) - rollupMetadataScore(a))[0] ?? null;
       const aggregatedAttributesFallback = aggregateAttributesFromRollups(
@@ -595,12 +632,12 @@ export function ClientDashboard() {
       const hydrateForApply = (rollup: any) => {
         const hydrated = hydrateRollupMetadata(rollup, metadataFallbackRollup);
         if (!hydrated) return hydrated;
-        if (hasNestedMetricData(hydrated.attributes_percent) || !hasNestedMetricData(aggregatedAttributesFallback)) {
+        if (!hasNestedMetricData(aggregatedAttributesFallback)) {
           return hydrated;
         }
         return {
           ...hydrated,
-          attributes_percent: aggregatedAttributesFallback,
+          attributes_percent: mergeAttributeCategories(hydrated.attributes_percent, aggregatedAttributesFallback),
         };
       };
 
@@ -1221,16 +1258,8 @@ export function ClientDashboard() {
         if (isPanvel) {
           useD2DefaultRef.current = true;
         }
-        if (isPanvel && !didApplyD1DefaultRef.current && autoTodayRef.current) {
+        if (isPanvel && !didApplyD1DefaultRef.current) {
           didApplyD1DefaultRef.current = true;
-          autoTodayRef.current = false;
-          const twoDaysAgo = new Date(); twoDaysAgo.setDate(twoDaysAgo.getDate() - 2);
-          const s = new Date(twoDaysAgo); s.setUTCHours(0, 0, 0, 0);
-          const e = new Date(twoDaysAgo); e.setUTCHours(23, 59, 59, 999);
-          setSelectedStartDate(s);
-          setSelectedEndDate(e);
-          setDraftStartDate(s);
-          setDraftEndDate(e);
         }
       }
 
@@ -1654,7 +1683,7 @@ export function ClientDashboard() {
                             setSelectedEndDate(nextEnd);
                             setShowDatePicker(false);
                             // Persiste o período selecionado para não resetar ao navegar
-                            try { localStorage.setItem(`dash_range_${id}`, JSON.stringify({ start: nextStart.toISOString(), end: nextEnd.toISOString() })); } catch {}
+                            try { localStorage.setItem(`dash_range_${id}`, JSON.stringify({ start: nextStart.toISOString(), end: nextEnd.toISOString(), savedAt: new Date().toISOString() })); } catch {}
                           }}
                           className="w-full sm:w-auto px-3 py-2 bg-emerald-600 text-white rounded-md"
                         >
