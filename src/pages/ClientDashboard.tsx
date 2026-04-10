@@ -62,6 +62,20 @@ function alignUtcEndOfDay(value: Date | string) {
   return d;
 }
 
+function alignUtcStartOfWeek(value: Date | string) {
+  const d = alignUtcStartOfDay(value);
+  const utcDay = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() - utcDay + 1);
+  return d;
+}
+
+function alignUtcEndOfWeek(value: Date | string) {
+  const d = alignUtcStartOfWeek(value);
+  d.setUTCDate(d.getUTCDate() + 6);
+  d.setUTCHours(23, 59, 59, 999);
+  return d;
+}
+
 function sumVisitorsPerDay(vpd: Record<string, number> | null | undefined) {
   return Object.values(vpd || {}).reduce((acc, value) => acc + (Number(value) || 0), 0);
 }
@@ -367,7 +381,7 @@ export function ClientDashboard() {
     bgReloadTimeoutsRef.current = [];
   }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
-  function applyRollup(rollup: any) {
+  function applyRollup(rollup: any, options?: { updatedAt?: string | Date | null }) {
     if (!rollup) return false;
     setTotalVisitors(rollup.total_visitors ?? 0);
     setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
@@ -439,7 +453,13 @@ export function ClientDashboard() {
         .map((age) => ({ age, m: ageMap[age]?.m ?? 0, f: ageMap[age]?.f ?? 0 }))
         .filter((age) => hasDisplayforceAgeBuckets || age.m > 0 || age.f > 0 || orderedAges.length === LEGACY_AGE_ORDER.length)
     );
-    setLastUpdate(new Date());
+    const updatedAtRaw = options?.updatedAt ?? rollup?.updated_at ?? null;
+    if (updatedAtRaw) {
+      const updatedAt = updatedAtRaw instanceof Date ? updatedAtRaw : new Date(updatedAtRaw);
+      if (!Number.isNaN(updatedAt.getTime())) {
+        setLastUpdate(updatedAt);
+      }
+    }
     return true;
   }
 
@@ -489,7 +509,7 @@ export function ClientDashboard() {
               gender_percent:         json.dashboard.gender_percent,
               attributes_percent:     json.dashboard.attributes_percent,
               age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-            });
+            }, { updatedAt: json?.dashboard?.updated_at ?? null });
           } else {
             // Sem dados para esses dispositivos no período → exibe zeros
             console.log('[loadData] Sem dados para os dispositivos da loja:', deviceIds);
@@ -616,7 +636,7 @@ export function ClientDashboard() {
 
           if (exactRollupCandidate && !preferMergedOverExact) {
             console.log(`[loadData] exact rollup: ${exactRollupCandidateTotal}`);
-            applyRollup(hydrateForApply(exactRollupCandidate));
+            applyRollup(hydrateForApply(exactRollupCandidate), { updatedAt: exactRollupCandidate.updated_at ?? null });
             return;
           }
 
@@ -628,12 +648,13 @@ export function ClientDashboard() {
 
           const daysInPeriod = selectedDays;
           console.log(`[loadData] ✅ ${mergedTotal} visitantes (${startDay}→${endDay})`);
-          applyRollup(hydrateForApply({
+          const mergedRollup = hydrateForApply({
             ...metaRollup,
             total_visitors:       mergedTotal,
             avg_visitors_per_day: Math.round(mergedTotal / daysInPeriod),
             visitors_per_day:     mergedVpd,
-          }));
+          });
+          applyRollup(mergedRollup, { updatedAt: metaRollup?.updated_at ?? exactRollupCandidate?.updated_at ?? null });
           return;
         }
 
@@ -646,7 +667,7 @@ export function ClientDashboard() {
       // ── Sem rollups úteis: tenta rebuild via backend ───────────────────
       if (exactRollupCandidate) {
         console.log(`[loadData] exact rollup fallback: ${exactRollupCandidateTotal}`);
-        applyRollup(hydrateForApply(exactRollupCandidate));
+        applyRollup(hydrateForApply(exactRollupCandidate), { updatedAt: exactRollupCandidate.updated_at ?? null });
         return;
       }
 
@@ -677,7 +698,7 @@ export function ClientDashboard() {
             gender_percent:         json.dashboard.gender_percent,
             attributes_percent:     json.dashboard.attributes_percent,
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-          });
+          }, { updatedAt: json?.dashboard?.updated_at ?? null });
           setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes.`);
         } else {
           zeroAll();
@@ -806,6 +827,45 @@ export function ClientDashboard() {
     if (explicitMonths.length === 3) return explicitMonths;
     return lastQuarterMonths(alignUtcEndOfDay(rangeEnd));
   }, [lastQuarterMonths, selectedCalendarMonths]);
+
+  const refreshLastUpdate = useCallback(async () => {
+    if (!id) return;
+    try {
+      const { data: syncState } = await withTimeout<{ data: { last_synced_at: string | null } | null }>(
+        supabase
+          .from('client_sync_state')
+          .select('last_synced_at')
+          .eq('client_id', id)
+          .maybeSingle() as any,
+        5000,
+        'ultimo sync'
+      );
+
+      const syncedAt = syncState?.last_synced_at ? new Date(syncState.last_synced_at) : null;
+      if (syncedAt && !Number.isNaN(syncedAt.getTime())) {
+        setLastUpdate(syncedAt);
+        return;
+      }
+
+      const { data: latestRollups } = await withTimeout<{ data: Array<{ updated_at: string | null }> | null }>(
+        supabase
+          .from('visitor_analytics_rollups')
+          .select('updated_at')
+          .eq('client_id', id)
+          .order('updated_at', { ascending: false })
+          .limit(1) as any,
+        5000,
+        'ultimo rollup atualizado'
+      );
+
+      const fallbackAt = latestRollups?.[0]?.updated_at ? new Date(latestRollups[0].updated_at) : null;
+      if (fallbackAt && !Number.isNaN(fallbackAt.getTime())) {
+        setLastUpdate(fallbackAt);
+      }
+    } catch (error) {
+      console.warn('[Dashboard] Erro ao carregar timestamp de atualização:', error);
+    }
+  }, [id]);
 
   const fetchSalesFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
     if (!id) return 0;
@@ -945,16 +1005,26 @@ export function ClientDashboard() {
       const rows: { label: string; visitors: number; sales: number }[] = [];
       for (const month of months) {
         let visitors = 0;
+        let coveredDays = 0;
         if (rollupVisitorsPerDay) {
           const mStart = month.startIso.slice(0, 10);
           const mEnd   = month.endIso.slice(0, 10);
           for (const [dateStr, count] of Object.entries(rollupVisitorsPerDay)) {
-            if (dateStr >= mStart && dateStr <= mEnd) visitors += Number(count) || 0;
+            if (dateStr >= mStart && dateStr <= mEnd) {
+              visitors += Number(count) || 0;
+              coveredDays += 1;
+            }
           }
-        } else {
+        }
+        if (!rollupVisitorsPerDay || coveredDays === 0) {
           visitors = await fetchVisitorsFromDb(month.startIso, month.endIso);
         }
-        const sales = await fetchSalesFromDb(month.startIso, month.endIso);
+        let sales = 0;
+        try {
+          sales = await fetchSalesFromDb(month.startIso, month.endIso);
+        } catch (salesError) {
+          console.warn(`[Quarter] Erro ao carregar vendas de ${month.label}:`, salesError);
+        }
         rows.push({ label: month.label, visitors, sales });
       }
 
@@ -1021,14 +1091,9 @@ export function ClientDashboard() {
 
     // ── Regra do gráfico/KPI "Média Visitantes" ───────────────────────────
     // O gráfico e a média devem respeitar exatamente o período filtrado.
-    const selectedDays = Math.max(
-      1,
-      Math.ceil((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1
-    );
-    const useSelectedPeriod = true;
-
-    const s = alignUtcStartOfDay(selectedStartDate);
-    const e = alignUtcEndOfDay(selectedEndDate);
+    const weekAnchor = alignUtcStartOfDay(selectedEndDate);
+    const s = alignUtcStartOfWeek(weekAnchor);
+    const e = alignUtcEndOfWeek(weekAnchor);
     const startIso = s.toISOString();
     const endIso   = e.toISOString();
     const startDay = startIso.slice(0, 10);
@@ -1059,7 +1124,7 @@ export function ClientDashboard() {
           .gte('end', startIso)
           .gt('total_visitors', 0)
           .order('updated_at', { ascending: false })
-          .limit(useSelectedPeriod ? 30 : 10);
+          .limit(30);
 
         if (rollups && rollups.length > 0) {
           const mergedVpd: Record<string, number> = {};
@@ -1075,7 +1140,6 @@ export function ClientDashboard() {
           if (Object.keys(mergedVpd).length > 0) {
             const weekDays = toWeekDays(mergedVpd);
             setDailyStats(weekDays);
-            setAvgVisitorsPerDay(Math.round(weekDays.reduce((a, b) => a + b, 0) / selectedDays));
             return;
           }
         }
@@ -1105,13 +1169,11 @@ export function ClientDashboard() {
           if (Object.keys(visPerDay).length > 0) {
             const weekDays = toWeekDays(visPerDay);
             setDailyStats(weekDays);
-            setAvgVisitorsPerDay(Math.round(weekDays.reduce((a, b) => a + b, 0) / selectedDays));
             return;
           }
         } catch (_) { /* ignora e cai no zero */ }
 
         setDailyStats([0, 0, 0, 0, 0, 0, 0]);
-        setAvgVisitorsPerDay(0);
         return;
       }
 
@@ -1133,17 +1195,16 @@ export function ClientDashboard() {
       }
 
       setDailyStats(days);
-      setAvgVisitorsPerDay(Math.round(days.reduce((a, b) => a + b, 0) / selectedDays));
     } catch (e) {
       console.warn('[Dashboard] Erro semana:', e);
       setDailyStats([0, 0, 0, 0, 0, 0, 0]);
-      setAvgVisitorsPerDay(0);
     }
-  }, [id, selectedStartDate, selectedEndDate, deviceIds]);
+  }, [id, selectedEndDate, deviceIds]);
 
   useEffect(() => { loadWeekFlowData(); }, [loadWeekFlowData]);
   useEffect(() => { loadQuarterData(); }, [loadQuarterData]);
   useEffect(() => { loadCompareData(); }, [loadCompareData]);
+  useEffect(() => { refreshLastUpdate(); }, [refreshLastUpdate]);
 
   const refreshClientAndStores = useCallback(async () => {
     if (!id) return;
