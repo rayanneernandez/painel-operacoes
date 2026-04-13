@@ -65,7 +65,18 @@ def _carregar_env_arquivo(path: str = ".env") -> None:
                 if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
                     v = v[1:-1]
 
-                if k not in os.environ:
+                atual = os.environ.get(k, "")
+                atual_lower = atual.lower()
+                deve_sobrescrever = (
+                    not atual
+                    or atual_lower.startswith("seu-")
+                    or atual_lower.startswith("your-")
+                    or "seu-projeto" in atual_lower
+                    or "your-project" in atual_lower
+                    or "example" in atual_lower
+                    or atual.endswith("@...")
+                )
+                if deve_sobrescrever:
                     os.environ[k] = v
     except Exception:
         return
@@ -79,7 +90,8 @@ def _env(key: str, default: str) -> str:
     return os.environ.get(key, default)
 
 # DisplayForce
-DISPLAYFORCE_URL   = "https://id.displayforce.ai/#/platforms"
+DISPLAYFORCE_LOGIN_URL = _env("DISPLAYFORCE_LOGIN_URL", "https://id.displayforce.ai/#/login")
+DISPLAYFORCE_URL       = _env("DISPLAYFORCE_URL", "https://id.displayforce.ai/#/platforms")
 DISPLAYFORCE_EMAIL = _env("DISPLAYFORCE_EMAIL", "")
 DISPLAYFORCE_PASS  = _env("DISPLAYFORCE_PASS",  "")
 RELATORIO_EMAIL    = _env("RELATORIO_EMAIL",    "")
@@ -92,9 +104,9 @@ IMAP_PASSWORD = _env("IMAP_PASSWORD", "")
 
 # Supabase
 SUPABASE_URL = _env("SUPABASE_URL", "")
-SUPABASE_KEY = _env("SUPABASE_KEY", "")
+SUPABASE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY", "")
 if not SUPABASE_KEY:
-    SUPABASE_KEY = _env("SUPABASE_SERVICE_ROLE_KEY", "")
+    SUPABASE_KEY = _env("SUPABASE_KEY", "")
 
 
 # Configurações gerais
@@ -136,6 +148,15 @@ def _sb_post(table: str, payload: list | dict, on_conflict: str | None = None) -
         prefer = f"resolution=merge-duplicates,{prefer}"
     headers = {**_sb_headers(), "Prefer": prefer}
     r = _requests.post(url, headers=headers, params=params, json=payload, timeout=15)
+    r.raise_for_status()
+    return r.json() if r.text else []
+
+
+def _sb_patch(table: str, row_id: str, payload: dict) -> list:
+    """PATCH (update) na REST API do Supabase usando requests."""
+    url = f"{SUPABASE_URL}/rest/v1/{table}"
+    headers = {**_sb_headers(), "Prefer": "return=representation"}
+    r = _requests.patch(url, headers=headers, params={"id": f"eq.{row_id}"}, json=payload, timeout=20)
     r.raise_for_status()
     return r.json() if r.text else []
 
@@ -276,42 +297,83 @@ def upsert_campanhas(registros: list[dict]) -> int:
 
     import json as _json
 
-    def _drop_keys(rows: list[dict], keys: set) -> list[dict]:
-        if not keys:
-            return rows
-        return [{k: v for k, v in r.items() if k not in keys} for r in rows]
+    def _norm_text(value):
+        text = str(value or "").strip()
+        return text or None
 
-    tentativas = [
-        ("client_id,name,content_name,tipo_midia,loja", set()),
-        ("client_id,name,tipo_midia,loja", set()),
-        ("client_id,name,start_date,end_date", set()),
-        ("client_id,name", set()),
-        ("client_id,name,tipo_midia,loja", {"uploaded_at"}),
-        ("client_id,name", {"uploaded_at", "tipo_midia", "loja"}),
-    ]
+    def _campaign_match_variants(registro: dict) -> list[dict]:
+        client_id = _norm_text(registro.get("client_id"))
+        name = _norm_text(registro.get("name"))
+        content_name = _norm_text(registro.get("content_name"))
+        loja = _norm_text(registro.get("loja"))
+        tipo_midia = _norm_text(registro.get("tipo_midia"))
+        start_date = _norm_text(registro.get("start_date"))
 
-    for on_conflict, drop_keys in tentativas:
+        variants: list[dict] = []
+        seen: set[tuple] = set()
+
+        def push(**kwargs):
+            candidate = {"client_id": client_id}
+            for key, value in kwargs.items():
+                if value:
+                    candidate[key] = value
+            if len(candidate) <= 1:
+                return
+            marker = tuple(sorted(candidate.items()))
+            if marker in seen:
+                return
+            seen.add(marker)
+            variants.append(candidate)
+
+        push(name=name, content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
+        push(content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
+        push(name=name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
+        push(name=name, content_name=content_name, loja=loja, tipo_midia=tipo_midia)
+        push(content_name=content_name, loja=loja, tipo_midia=tipo_midia)
+        push(name=name, loja=loja, tipo_midia=tipo_midia)
+        if not loja and not tipo_midia:
+            push(name=name, start_date=start_date)
+            push(content_name=content_name, start_date=start_date)
+            push(name=name, content_name=content_name)
+        return variants
+
+    def _find_existing_campaign(registro: dict) -> dict | None:
+        for variant in _campaign_match_variants(registro):
+            params = {"select": "id,uploaded_at", "order": "uploaded_at.desc", "limit": "1"}
+            for key, value in variant.items():
+                params[key] = f"eq.{value}"
+            try:
+                data = _sb_get("campaigns", params)
+                if data:
+                    return data[0]
+            except Exception as exc:
+                log.warning(f"  Falha ao procurar campanha existente ({variant}): {exc}")
+        return None
+
+    def _save_campaign_record(registro: dict) -> int:
+        existente = _find_existing_campaign(registro)
+        if existente and existente.get("id"):
+            _sb_patch("campaigns", existente["id"], registro)
+            return 1
+        _sb_post("campaigns", registro)
+        return 1
+
+    salvos = 0
+    for registro in registros:
         try:
-            payload = _drop_keys(registros, drop_keys)
-            resultado = _sb_post("campaigns", payload, on_conflict=on_conflict)
-            count = len(resultado) if resultado else len(payload)
-            log.info(f"  ✅ {count} campanhas salvas no Supabase (on_conflict={on_conflict})")
-            return count
-        except Exception as e:
-            log.warning(f"  Falha no upsert (on_conflict={on_conflict}): {e}")
+            salvos += _save_campaign_record(registro)
+        except Exception as exc:
+            log.warning(f"  Falha ao salvar campanha '{registro.get('content_name') or registro.get('name')}': {exc}")
 
-    # Fallback INSERT simples sem on_conflict
-    try:
-        resultado2 = _sb_post("campaigns", registros)
-        count2 = len(resultado2) if resultado2 else len(registros)
-        log.info(f"  ✅ {count2} campanhas inseridas via fallback INSERT")
-        return count2
-    except Exception as e2:
-        log.error(f"  ❌ Supabase indisponível — salvando dados localmente para reenvio posterior")
-        pendente = DOWNLOAD_DIR / f"pendente_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        pendente.write_text(_json.dumps(registros, ensure_ascii=False, default=str), encoding="utf-8")
-        log.warning(f"  💾 Dados salvos em: {pendente} — serão reenviados na próxima execução")
-        return 0
+    if salvos > 0:
+        log.info(f"  ✅ {salvos} campanhas salvas/atualizadas no Supabase")
+        return salvos
+
+    log.error(f"  ❌ Supabase indisponível — salvando dados localmente para reenvio posterior")
+    pendente = DOWNLOAD_DIR / f"pendente_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    pendente.write_text(_json.dumps(registros, ensure_ascii=False, default=str), encoding="utf-8")
+    log.warning(f"  💾 Dados salvos em: {pendente} — serão reenviados na próxima execução")
+    return 0
 
 
 def _reenviar_pendentes() -> None:
@@ -745,6 +807,29 @@ def _obter_ultimo_uid() -> int:
         return 0
 
 
+def _discover_mailboxes(imap) -> tuple[str, str | None, list[str]]:
+    inbox = "INBOX"
+    all_mail = None
+    spam_boxes: list[str] = []
+    try:
+        status, boxes = imap.list()
+        if status != "OK" or not boxes:
+            return inbox, all_mail, spam_boxes
+        for raw in boxes:
+            line = raw.decode("utf-8", errors="replace")
+            lower = line.lower()
+            name = line.rsplit(' "/" ', 1)[-1].strip().strip('"')
+            if name.upper() == "INBOX":
+                inbox = name
+            if "\\all" in lower or "todos os e-mails" in lower or "all mail" in lower:
+                all_mail = name
+            if "\\junk" in lower or "spam" in lower or "lixo eletr" in lower:
+                spam_boxes.append(name)
+    except Exception:
+        pass
+    return inbox, all_mail, spam_boxes
+
+
 def _extrair_link_download(msg) -> str | None:
     """
     Varre o corpo HTML/texto do e-mail em busca do link de download.
@@ -1044,7 +1129,8 @@ def _verificar_email_displayforce(apos_uid: int, nome_cliente: str = "") -> list
     """
     with imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT) as imap:
         imap.login(IMAP_EMAIL, IMAP_PASSWORD)
-        imap.select("INBOX")
+        inbox_name, all_mail_name, spam_boxes = _discover_mailboxes(imap)
+        imap.select(inbox_name)
 
         # ── Estratégia 1: UIDs reais novos via uid('search') ─────────────
         # CORREÇÃO: usa imap.uid() para trabalhar com UIDs reais (não seq numbers)
@@ -1181,9 +1267,9 @@ def _verificar_email_displayforce(apos_uid: int, nome_cliente: str = "") -> list
                     except Exception as e:
                         log.warning(f"  Erro na estratégia 3 UID {uid}: {e}")
 
-        # ── Estratégia 4: verifica pasta Spam ────────────────────────────
-        for pasta_spam in ["[Gmail]/Spam", "[Gmail]/Lixo eletrônico", "Spam", "Junk", "SPAM",
-                           "[Gmail]/Lixo Eletr\u00f4nico"]:
+        # Estrategia 4: verifica All Mail e Spam reais da conta
+        pastas_extra = [p for p in [all_mail_name, *spam_boxes] if p]
+        for pasta_spam in pastas_extra:
             resultado = _buscar_em_pasta(imap, pasta_spam, apos_uid, nome_cliente=nome_cliente)
             if resultado:
                 log.warning(f"  ⚠️  E-mail encontrado na pasta SPAM! Mova para INBOX para evitar isso.")
@@ -1233,198 +1319,161 @@ def _screenshot(page, nome: str, cliente: str):
         pass
 
 
-def _fill_input_react(page, locator, valor: str) -> bool:
-    """Preenche input controlado por React disparando input/change."""
-    try:
-        locator.click(timeout=2000)
-    except Exception:
-        pass
-
-    try:
-        locator.fill(valor, timeout=2000)
-    except Exception:
-        try:
-            locator.press_sequentially(valor, delay=40)
-        except Exception:
-            return False
-
-    try:
-        handle = locator.element_handle(timeout=2000)
-        if handle:
-            page.evaluate(
-                """([el, val]) => {
-                    const setter = Object.getOwnPropertyDescriptor(
-                      window.HTMLInputElement.prototype,
-                      'value'
-                    )?.set;
-                    if (setter) setter.call(el, val);
-                    else el.value = val;
-                    el.dispatchEvent(new Event('input', { bubbles: true }));
-                    el.dispatchEvent(new Event('change', { bubbles: true }));
-                    el.dispatchEvent(new Event('blur', { bubbles: true }));
-                }""",
-                [handle, valor],
-            )
-    except Exception:
-        pass
-
-    try:
-        atual = (locator.input_value(timeout=2000) or "").strip()
-        return atual == valor
-    except Exception:
+def _fill_input_react(page, locator, valor: str, *, field_name: str = "campo", sensitive: bool = False) -> bool:
+    """Preenche input controlado por React disparando input/change com retries."""
+    valor = str(valor or "")
+    if not valor:
         return False
+
+    def _log_fill_ok(actual: str) -> None:
+        if sensitive:
+            log.info(f"  ✔ {field_name} preenchido (len={len(actual)})")
+        else:
+            log.info(f"  ✔ {field_name} preenchido: '{actual}'")
+
+    for attempt in range(1, 4):
+        try:
+            locator.click(timeout=2000)
+        except Exception:
+            pass
+
+        try:
+            locator.press("Control+A", timeout=1000)
+            locator.press("Backspace", timeout=1000)
+        except Exception:
+            pass
+
+        try:
+            locator.fill("", timeout=1500)
+        except Exception:
+            pass
+
+        handle = None
+        try:
+            handle = locator.element_handle(timeout=2000)
+        except Exception:
+            handle = None
+
+        try:
+            if attempt == 1:
+                locator.fill(valor, timeout=2500)
+            else:
+                locator.press_sequentially(valor, delay=35)
+        except Exception:
+            pass
+
+        try:
+            if handle:
+                page.evaluate(
+                    """([el, val]) => {
+                        const setter = Object.getOwnPropertyDescriptor(
+                          window.HTMLInputElement.prototype,
+                          'value'
+                        )?.set;
+                        if (setter) setter.call(el, val);
+                        else el.value = val;
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    }""",
+                    [handle, valor],
+                )
+        except Exception:
+            pass
+
+        try:
+            if handle:
+                page.evaluate(
+                    """(el) => {
+                        el.dispatchEvent(new Event('input', { bubbles: true }));
+                        el.dispatchEvent(new Event('change', { bubbles: true }));
+                        el.dispatchEvent(new Event('blur', { bubbles: true }));
+                    }""",
+                    handle,
+                )
+        except Exception:
+            pass
+
+        page.wait_for_timeout(250)
+
+        try:
+            atual = (locator.input_value(timeout=2000) or "").strip()
+            if atual == valor:
+                _log_fill_ok(atual)
+                return True
+            if sensitive and handle:
+                try:
+                    atual_dom = page.evaluate("(el) => el.value", handle) or ""
+                    if atual_dom == valor:
+                        _log_fill_ok(atual_dom)
+                        return True
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    log.warning(f"  Falha ao preencher {field_name}")
+    return False
 
 
 def fazer_login_displayforce(page) -> bool:
     """Realiza login na DisplayForce. Retorna True se bem-sucedido."""
     log.info("Acessando DisplayForce...")
-    page.goto(DISPLAYFORCE_URL)
-    page.wait_for_load_state("networkidle", timeout=30000)
-    page.wait_for_timeout(5000)
-
-    url_atual = page.url
-    log.info(f"  URL atual: {url_atual}")
-
-    # Se já estiver logado
-    if "login" not in url_atual.lower() and "platforms" in url_atual.lower():
-        log.info("  ✅ Já logado")
-        return True
-
     try:
-        # ── Aguarda página de login carregar completamente ────────────────
-        page.wait_for_load_state("networkidle", timeout=20000)
-        page.wait_for_timeout(2000)
-        _screenshot(page, "login_01_inicial", "login")
-
-        # ── Campo de e-mail ───────────────────────────────────────────────
-        inputs_visiveis = page.locator("input:visible").all()
-        if not inputs_visiveis:
-            log.error("  ❌ Nenhum input visível na página de login")
-            return False
-
-        email_selectors = [
-            "input[type='email']:visible",
-            "input[name*='mail' i]:visible",
-            "input[placeholder*='mail' i]:visible",
-            "input[autocomplete='username']:visible",
-        ]
-        email_field = None
-        for sel in email_selectors:
-            try:
-                candidate = page.locator(sel).first
-                if candidate.count() > 0 and candidate.is_visible(timeout=1000):
-                    email_field = candidate
-                    break
-            except Exception:
-                continue
-
-        if email_field is None:
-            log.info("  Usando primeiro input visível como campo de e-mail")
-            email_field = inputs_visiveis[0]
-
-        if not _fill_input_react(page, email_field, DISPLAYFORCE_EMAIL):
-            log.error("  ❌ Não foi possível preencher o e-mail no login")
-            _screenshot(page, "login_01b_email_falhou", "login")
-            return False
-
-        try:
-            valor_email = email_field.input_value(timeout=1000)
-            log.info(f"  ✔ E-mail preenchido: '{valor_email}'")
-        except Exception:
-            log.info("  ✔ E-mail preenchido")
-        page.wait_for_timeout(500)
-
-        # ── Verifica se já tem campo de senha na mesma tela ───────────────
-        senha_fields = page.locator("input[type='password']:visible").all()
-        if senha_fields:
-            log.info("  Login em 1 etapa: preenchendo senha diretamente")
-            _fill_input_react(page, senha_fields[0], DISPLAYFORCE_PASS)
-            page.wait_for_timeout(300)
-        else:
-            # ── Login em 2 etapas: clicar em "Próximo" primeiro ───────────
-            log.info("  Login em 2 etapas: procurando botão Próximo/Continuar...")
-            btn_proximo = page.locator("button:visible").filter(
-                has_text=re.compile(r"próximo|proximo|next|continuar|continue|avançar", re.I)
-            ).first
-            btn_proximo.click(timeout=5000)
-            log.info("  Botão 'próximo' clicado")
-
-            # Aguarda transição da página (networkidle ou campo de senha)
-            try:
-                page.wait_for_load_state("networkidle", timeout=10000)
-            except Exception:
-                pass
-            page.wait_for_timeout(3000)
-            _screenshot(page, "login_02_apos_proximo", "login")
-
-            # Tenta localizar o campo de senha com timeout generoso
-            senha_field = page.locator("input[type='password']:visible").first
-            try:
-                senha_field.wait_for(state="visible", timeout=20000)
-                log.info("  Campo de senha apareceu (step 2)")
-                if not _fill_input_react(page, senha_field, DISPLAYFORCE_PASS):
-                    raise RuntimeError("falha ao preencher senha")
-                page.wait_for_timeout(500)
-            except Exception:
-                # Fallback: tenta preencher qualquer input vazio que não seja e-mail
-                log.warning("  Campo senha não encontrado pelo tipo — tentando fallback")
-                _screenshot(page, "login_03_sem_senha", "login")
-                todos_inputs = page.locator("input:visible").all()
-                for inp in todos_inputs:
-                    tp = (inp.get_attribute("type") or "text").lower()
-                    val = (inp.input_value() or "").strip()
-                    if tp in ("password", "text") and val == "":
-                        if _fill_input_react(page, inp, DISPLAYFORCE_PASS):
-                            log.info(f"  Senha preenchida via fallback (type={tp})")
-                            break
-
-        # ── Botão de entrar ───────────────────────────────────────────────
-        _screenshot(page, "login_04_pre_submit", "login")
-        clicou_login = False
-        # Tenta vários padrões de texto para o botão de login
-        padroes_login = [
-            r"entrar|login|sign.?in|acessar|confirmar",
-            r"continuar|continue|next|próximo",
-            r"submit|enviar",
-        ]
-        for padrao in padroes_login:
-            try:
-                btn_login = page.locator("button:visible").filter(
-                    has_text=re.compile(padrao, re.I)
-                ).first
-                if btn_login.is_visible(timeout=2000):
-                    btn_login.click(timeout=3000)
-                    clicou_login = True
-                    log.info(f"  ✔ Botão de login clicado (padrão: '{padrao}')")
-                    break
-            except Exception:
-                continue
-        if not clicou_login:
-            # Fallback: tenta qualquer button:visible ou pressiona Enter
-            try:
-                btns = page.locator("button:visible").all()
-                if btns:
-                    btns[-1].click(timeout=2000)
-                    clicou_login = True
-                    log.info("  ✔ Botão de login clicado (último botão visível)")
-            except Exception:
-                pass
-        if not clicou_login:
-            page.keyboard.press("Enter")
-            log.info("  ✔ Enter pressionado como fallback de login")
-
-        page.wait_for_load_state("networkidle", timeout=20000)
+        page.goto(DISPLAYFORCE_LOGIN_URL, wait_until="domcontentloaded", timeout=60000)
         page.wait_for_timeout(3000)
 
+        url_atual = page.url
+        log.info(f"  URL atual: {url_atual}")
+
+        if "login" not in url_atual.lower() and "platforms" in url_atual.lower():
+            log.info("  ✅ Já logado")
+            return True
+
+        _screenshot(page, "login_01_inicial", "login")
+
+        email_field = page.locator("input").first
+        email_field.fill(DISPLAYFORCE_EMAIL, timeout=5000)
+        page.wait_for_timeout(400)
+        log.info(f"  ✔ e-mail preenchido: '{email_field.input_value()}'")
+
+        btn_proximo = page.locator(
+            "button:has-text('CONTINUAR'), button:has-text('Continuar'), button:has-text('CONTINUE')"
+        ).first
+        btn_proximo.click(timeout=5000)
+        log.info("  Botão 'próximo' clicado")
+        page.wait_for_timeout(4000)
+        _screenshot(page, "login_02_apos_proximo", "login")
+
+        senha_field = page.locator("input[type='password']").first
+        senha_field.wait_for(state="visible", timeout=20000)
+        log.info("  Campo de senha apareceu")
+        senha_field.fill(DISPLAYFORCE_PASS, timeout=5000)
+        page.wait_for_timeout(500)
+        log.info(f"  ✔ senha preenchida (len={len(senha_field.input_value() or '')})")
+
+        _screenshot(page, "login_04_pre_submit", "login")
+        btn_login = page.locator(
+            "button:has-text('ENTRAR'), button:has-text('Entrar'), button:has-text('LOGIN'), button:has-text('Login')"
+        ).first
+        btn_login.click(timeout=5000)
+        log.info("  ✔ Botão de login clicado")
+
+        page.wait_for_timeout(6000)
         url_pos = page.url
         log.info(f"  URL após login: {url_pos}")
 
-        if "login" not in url_pos.lower() or "platforms" in url_pos.lower():
+        if "login" not in url_pos.lower() and "platforms" in url_pos.lower():
             log.info("  ✅ Login realizado com sucesso")
             return True
-        else:
-            log.error("  ❌ Login falhou — verifique as credenciais")
-            return False
+
+        texto = ""
+        try:
+            texto = page.locator("body").inner_text(timeout=3000) or ""
+        except Exception:
+            pass
+        log.error(f"  ❌ Login falhou — tela atual: {texto[:300]}")
+        return False
 
     except PlaywrightTimeout as e:
         log.error(f"  ❌ Timeout ao fazer login: {e}")
@@ -1432,6 +1481,36 @@ def fazer_login_displayforce(page) -> bool:
     except Exception as e:
         log.error(f"  ❌ Erro inesperado no login: {e}")
         return False
+
+
+def fazer_login_displayforce_retry(page, tentativas: int = 3) -> bool:
+    """Tenta login novamente em falhas transitórias de sessão/autenticação."""
+    for tentativa in range(1, max(1, tentativas) + 1):
+        ok = fazer_login_displayforce(page)
+        if ok:
+            return True
+
+        texto = ""
+        try:
+            texto = (page.locator("body").inner_text(timeout=2000) or "").lower()
+        except Exception:
+            texto = ""
+
+        log.warning(f"  Login falhou na tentativa {tentativa}/{tentativas}: {texto[:250]}")
+        if tentativa >= tentativas:
+            break
+
+        try:
+            if "login" in (page.url or "").lower():
+                page.reload(wait_until="networkidle")
+            else:
+                page.goto(DISPLAYFORCE_LOGIN_URL)
+                page.wait_for_load_state("networkidle", timeout=30000)
+        except Exception:
+            pass
+        page.wait_for_timeout(2500)
+
+    return False
 
 
 def exportar_relatorio_cliente(page, nome_cliente: str, data_inicio: str, data_fim: str) -> bool:
@@ -1825,7 +1904,7 @@ def executar_bot():
             ctx     = browser.new_context(accept_downloads=True)
             page    = ctx.new_page()
 
-            if not fazer_login_displayforce(page):
+            if not fazer_login_displayforce_retry(page):
                 log.error("Falha no login — abortando rodada")
                 browser.close()
                 return

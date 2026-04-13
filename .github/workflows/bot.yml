@@ -1,19 +1,20 @@
-name: Bot DisplayForce — Atualização Diária
+name: Bot DisplayForce - Atualizacao Continua
 
 on:
-  # Roda todo dia às 10:00 horário de Brasília (13:00 UTC)
   schedule:
-    - cron: '0 10 * * *'
-
-  # Permite rodar manualmente pelo botão no GitHub quando precisar
+    - cron: '*/30 * * * *'
   workflow_dispatch:
+
+concurrency:
+  group: bot-displayforce
+  cancel-in-progress: false
 
 jobs:
   rodar-bot:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - name: Baixar código do repositório
+      - name: Baixar codigo do repositorio
         uses: actions/checkout@v4
 
       - name: Instalar Python 3.11
@@ -21,17 +22,14 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Instalar dependências Python
+      - name: Instalar dependencias Python
         run: pip install -r requirements.txt
 
       - name: Instalar Chromium (Playwright)
         run: |
-          # Ubuntu 24.04: libasound2 foi renomeado para libasound2t64
           sudo apt-get install -y libasound2t64
-          # Instalar Chromium
           playwright install chromium
-          # Instalar demais dependências (ignorar erro do libasound2 renomeado)
-          playwright install-deps chromium || echo "Aviso: libasound2 não encontrado (libasound2t64 já instalado)"
+          playwright install-deps chromium || echo "Aviso: libasound2 nao encontrado (libasound2t64 ja instalado)"
 
       - name: Rodar o bot
         env:
@@ -43,7 +41,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           HEADLESS: "true"
-          HORARIO_EXECUCAO: "10:00"
+          TIMEOUT_EMAIL_SEG: "300"
         run: python bot_displayforce.py --once
 
       - name: Salvar logs em caso de erro

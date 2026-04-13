@@ -1,0 +1,5 @@
+[33m872636a[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m fix: reverter quebras do Codex no sync automático e dashboard
+[33m0224b40[m[33m ([m[1;31morigin/main[m[33m)[m Fix dashboard date filter apply behavior
+[33m06e4d1a[m Persist automatic sync raw analytics
+[33m3a9df2f[m Enable frequent automatic analytics sync
+[33mbe2987e[m Improve analytics sync backfill windows

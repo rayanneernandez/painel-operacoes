@@ -37,6 +37,23 @@ function parseDate(val: any): string | null {
   return null;
 }
 
+function cleanViewsContentName(raw: string): string {
+  const value = String(raw || '').trim();
+  if (!value) return '';
+  const months = '(?:jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)';
+
+  return value
+    .replace(/\.mp4$/i, '')
+    .replace(/\s*\(\d+\)\s*$/i, '')
+    .replace(/\s*\([^)]*(?:vertical|horizontal|vert|horiz|ventical)[^)]*\)\s*$/i, '')
+    .replace(/[_\s-]+v\d+\s*$/i, '')
+    .replace(/[_\-\s]*\d{3,4}\s*[xX]\s*\d{3,4}.*$/i, '')
+    .replace(new RegExp(`[_\\-\\s]+\\d{1,2}${months}.*$`, 'i'), '')
+    .replace(/[_\-]{2,}/g, '-')
+    .replace(/[\s_-]+$/g, '')
+    .trim();
+}
+
 // ── Mapeia colunas do Excel (formato resumo) para campos internos ─────────────
 const COL_MAP: Record<string, string> = {
   midiavalidada: 'name', midiavalidada2: 'name', campanha: 'name', nome: 'name', midia: 'name',
@@ -135,6 +152,7 @@ function parseViewsCsv(csvText: string): any[] {
   };
 
   const iCampaign   = find('Campaign', 'Campanha');
+  const iContent    = find('Content', 'Conteúdo', 'Conteudo');
   const iDevice     = find('Device', 'Dispositivo');
   const iVisitor    = find('Visitor ID', 'VisitorID');
   const iContactId  = find('Contact ID', 'ContactID');
@@ -150,6 +168,7 @@ function parseViewsCsv(csvText: string): any[] {
     contactIds: Map<string, number>;
     startDates: Date[];
     endDates: Date[];
+    displayCount: number;
   }>();
 
   for (let i = headerLine + 1; i < lines.length; i++) {
@@ -160,9 +179,11 @@ function parseViewsCsv(csvText: string): any[] {
     const device   = row[iDevice]?.trim();
     if (!campaign || !device) continue;
 
-    const key = `${campaign}|||${device}`;
-    if (!map.has(key)) map.set(key, { visitors: new Set(), contactIds: new Map(), startDates: [], endDates: [] });
+    const content = iContent >= 0 ? cleanViewsContentName(row[iContent]?.trim() || '') : '';
+    const key = `${campaign}|||${content}|||${device}`;
+    if (!map.has(key)) map.set(key, { visitors: new Set(), contactIds: new Map(), startDates: [], endDates: [], displayCount: 0 });
     const agg = map.get(key)!;
+    agg.displayCount += 1;
 
     const visId = iVisitor >= 0 ? row[iVisitor]?.trim() : null;
     if (visId) agg.visitors.add(visId);
@@ -185,7 +206,7 @@ function parseViewsCsv(csvText: string): any[] {
 
   const results: any[] = [];
   for (const [key, agg] of map) {
-    const [campaign, device] = key.split('|||');
+    const [campaign, content_name, device] = key.split('|||');
 
     // Extrai loja e tipo_midia do device (formato: "Loja Name - TipoMidia" ou "Loja: Name - TipoMidia")
     let loja = device;
@@ -225,7 +246,19 @@ function parseViewsCsv(csvText: string): any[] {
       duration_hms = `${hh}:${String(mm).padStart(2,'0')}:${String(ss).padStart(2,'0')}`;
     }
 
-    results.push({ name: campaign, tipo_midia, loja, start_date, end_date, duration_days, duration_hms, visitors, avg_attention_sec });
+    results.push({
+      name: campaign,
+      content_name: content_name || null,
+      tipo_midia,
+      loja,
+      start_date,
+      end_date,
+      duration_days,
+      duration_hms,
+      display_count: agg.displayCount,
+      visitors,
+      avg_attention_sec,
+    });
   }
 
   return results;
@@ -247,8 +280,110 @@ async function extractZip(buf: ArrayBuffer): Promise<{name: string; bytes: Uint8
   });
 }
 
+function processWorkbookBytes(bytes: Uint8Array | ArrayBuffer): any[] {
+  const wb = XLSX.read(bytes, { type: 'array', cellDates: false });
+  const prioritizedSheets = [
+    ...wb.SheetNames.filter((sheetName) => /views of visitors/i.test(sheetName)),
+    ...wb.SheetNames.filter((sheetName) => !/views of visitors/i.test(sheetName)),
+  ];
+
+  for (const sheetName of prioritizedSheets) {
+    const rows = parseRowsExcel(wb.Sheets[sheetName]);
+    if (rows.length > 0) return rows;
+  }
+
+  return [];
+}
+
+function buildCampaignMatchVariants(record: any) {
+  const norm = (value: any) => String(value || '').trim() || null;
+  const clientId = norm(record.client_id);
+  const name = norm(record.name);
+  const contentName = norm(record.content_name);
+  const loja = norm(record.loja);
+  const tipoMidia = norm(record.tipo_midia);
+  const startDate = norm(record.start_date);
+  const variants: Record<string, string>[] = [];
+  const seen = new Set<string>();
+
+  const push = (candidate: Record<string, string | null>) => {
+    const normalized = Object.fromEntries(
+      Object.entries(candidate).filter(([, value]) => value)
+    ) as Record<string, string>;
+    if (!clientId) return;
+    normalized.client_id = clientId;
+    if (Object.keys(normalized).length <= 1) return;
+    const marker = JSON.stringify(Object.entries(normalized).sort(([a], [b]) => a.localeCompare(b)));
+    if (seen.has(marker)) return;
+    seen.add(marker);
+    variants.push(normalized);
+  };
+
+  push({ name, content_name: contentName, loja, tipo_midia: tipoMidia, start_date: startDate });
+  push({ content_name: contentName, loja, tipo_midia: tipoMidia, start_date: startDate });
+  push({ name, loja, tipo_midia: tipoMidia, start_date: startDate });
+  push({ name, content_name: contentName, loja, tipo_midia: tipoMidia });
+  push({ content_name: contentName, loja, tipo_midia: tipoMidia });
+  push({ name, loja, tipo_midia: tipoMidia });
+  if (!loja && !tipoMidia) {
+    push({ name, start_date: startDate });
+    push({ content_name: contentName, start_date: startDate });
+    push({ name, content_name: contentName });
+  }
+
+  return variants;
+}
+
+async function findExistingCampaignId(record: any) {
+  for (const variant of buildCampaignMatchVariants(record)) {
+    let query: any = supabase
+      .from('campaigns')
+      .select('id, uploaded_at')
+      .order('uploaded_at', { ascending: false })
+      .limit(1);
+
+    for (const [key, value] of Object.entries(variant)) {
+      query = query.eq(key, value);
+    }
+
+    const { data, error } = await query;
+    if (!error && data && data.length > 0) {
+      return data[0].id as string;
+    }
+  }
+
+  return null;
+}
+
+async function saveCampaignRows(rows: any[]) {
+  let saved = 0;
+
+  for (const row of rows) {
+    const existingId = await findExistingCampaignId(row);
+    if (existingId) {
+      const { error } = await supabase
+        .from('campaigns')
+        .update(row)
+        .eq('id', existingId);
+      if (error) throw error;
+      saved += 1;
+      continue;
+    }
+
+    const { error } = await supabase.from('campaigns').insert(row);
+    if (error) throw error;
+    saved += 1;
+  }
+
+  return saved;
+}
+
+function isViewsSource(name: string, rows: any[]) {
+  return /views of visitors|views/i.test(name.toLowerCase()) && rows.length > 0 && rows.some((row) => row.display_count != null);
+}
+
 // ── Processa um arquivo (bytes + nome) → linhas para Supabase ─────────────────
-function processFileBytes(name: string, bytes: Uint8Array): any[] {
+function processFileBytes(name: string, bytes: Uint8Array): { rows: any[]; source: 'views' | 'summary' } {
   const lowerName = name.toLowerCase();
 
   if (lowerName.endsWith('.csv')) {
@@ -256,19 +391,17 @@ function processFileBytes(name: string, bytes: Uint8Array): any[] {
     const firstLine = text.split('\n')[0] || '';
     const headers = firstLine.split(/[,;]/).map(h => h.trim().replace(/^"|"$/g, ''));
     if (isViewsCsvFormat(headers)) {
-      return parseViewsCsv(text);
+      return { rows: parseViewsCsv(text), source: 'views' };
     }
     // CSV resumo → converte para sheet e usa parseRowsExcel
-    const wb = XLSX.read(bytes, { type: 'array' });
-    return parseRowsExcel(wb.Sheets[wb.SheetNames[0]]);
+    return { rows: processWorkbookBytes(bytes), source: 'summary' };
   }
 
   if (lowerName.endsWith('.xlsx') || lowerName.endsWith('.xls')) {
-    const wb = XLSX.read(bytes, { type: 'array', cellDates: false });
-    return parseRowsExcel(wb.Sheets[wb.SheetNames[0]]);
+    return { rows: processWorkbookBytes(bytes), source: 'summary' };
   }
 
-  return [];
+  return { rows: [], source: 'summary' };
 }
 
 // ── Componente principal ──────────────────────────────────────────────────────
@@ -300,10 +433,17 @@ export function CampaignUpload() {
           setMessage('ZIP não contém arquivos .csv, .xlsx ou .xls reconhecíveis.');
           return;
         }
+        const viewsRows: any[] = [];
+        const summaryRows: any[] = [];
         for (const f of procFiles) {
-          const rows = processFileBytes(f.name, f.bytes);
-          allRows = allRows.concat(rows);
+          const parsed = processFileBytes(f.name, f.bytes);
+          if (parsed.source === 'views' || isViewsSource(f.name, parsed.rows)) {
+            viewsRows.push(...parsed.rows);
+          } else {
+            summaryRows.push(...parsed.rows);
+          }
         }
+        allRows = viewsRows.length > 0 ? viewsRows : summaryRows;
       } else if (lowerName.endsWith('.csv')) {
         const text = new TextDecoder('utf-8').decode(new Uint8Array(buf));
         const firstLine = text.split('\n')[0] || '';
@@ -311,12 +451,10 @@ export function CampaignUpload() {
         if (isViewsCsvFormat(headers)) {
           allRows = parseViewsCsv(text);
         } else {
-          const wb = XLSX.read(buf, { type: 'array' });
-          allRows = parseRowsExcel(wb.Sheets[wb.SheetNames[0]]);
+          allRows = processWorkbookBytes(buf);
         }
       } else {
-        const wb = XLSX.read(buf, { type: 'array', cellDates: false });
-        allRows = parseRowsExcel(wb.Sheets[wb.SheetNames[0]]);
+        allRows = processWorkbookBytes(buf);
       }
 
       if (allRows.length === 0) {
@@ -335,25 +473,7 @@ export function CampaignUpload() {
         uploaded_at: new Date().toISOString(),
       }));
 
-      let saved = 0;
-      for (let i = 0; i < payload.length; i += 100) {
-        const chunk = payload.slice(i, i + 100);
-        const { error, data } = await supabase
-          .from('campaigns')
-          .upsert(chunk, { onConflict: 'client_id,name,start_date', ignoreDuplicates: false })
-          .select('id');
-        if (error) {
-          // Tenta sem start_date no conflict
-          const { error: e2, data: d2 } = await supabase
-            .from('campaigns')
-            .upsert(chunk, { onConflict: 'client_id,name', ignoreDuplicates: false })
-            .select('id');
-          if (e2) throw e2;
-          saved += d2?.length ?? chunk.length;
-        } else {
-          saved += data?.length ?? chunk.length;
-        }
-      }
+      const saved = await saveCampaignRows(payload);
 
       setUpserted(saved);
       setStatus('done');

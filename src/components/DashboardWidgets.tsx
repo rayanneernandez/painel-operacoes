@@ -1,5 +1,5 @@
 import React from 'react';
-import { Activity, Clock, Users } from 'lucide-react';
+import { Activity, Clock, SlidersHorizontal, Users } from 'lucide-react';
 import supabase from '../lib/supabase';
 
 // ── Chart.js helpers ─────────────────────────────────────────────────────────
@@ -707,10 +707,55 @@ const cleanCampaignContentName = (raw?: string | null) => {
     .trim();
 };
 
+const CAMPAIGN_REFRESH_MS = 2 * 60 * 1000;
+
+function getCampaignStatusMeta(start?: string | null, end?: string | null, uploadedAt?: string | null, explicitStatus?: string | null) {
+  const normalizedStatus = String(explicitStatus || '').trim().toLowerCase();
+  if (normalizedStatus === 'ativa') {
+    return { label: 'Ativa', color: 'text-emerald-400', order: 0 };
+  }
+  if (normalizedStatus === 'agendada') {
+    return { label: 'Agendada', color: 'text-yellow-400', order: 1 };
+  }
+  if (normalizedStatus === 'encerrada') {
+    return { label: 'Encerrada', color: 'text-red-400', order: 2 };
+  }
+
+  const now = Date.now();
+  const freshWindowMs = 36 * 60 * 60 * 1000;
+  const startMs = start ? Date.parse(start) : Number.NaN;
+  const endMs = end ? Date.parse(end) : Number.NaN;
+  const uploadedMs = uploadedAt ? Date.parse(uploadedAt) : Number.NaN;
+
+  if (Number.isFinite(startMs) && startMs > now + 60 * 60 * 1000) {
+    return { label: 'Agendada', color: 'text-yellow-400', order: 1 };
+  }
+
+  // Relatorios "Views of visitors" nao trazem a data real de encerramento da campanha,
+  // apenas o ultimo evento visto ate o momento. Se o upload e recente, a campanha segue ativa.
+  if (Number.isFinite(uploadedMs) && now - uploadedMs <= freshWindowMs) {
+    return { label: 'Ativa', color: 'text-emerald-400', order: 0 };
+  }
+
+  if (Number.isFinite(endMs) && endMs < now - freshWindowMs) {
+    return { label: 'Encerrada', color: 'text-red-400', order: 2 };
+  }
+
+  if (Number.isFinite(startMs) && startMs <= now) {
+    return { label: 'Ativa', color: 'text-emerald-400', order: 0 };
+  }
+
+  return { label: '—', color: 'text-gray-500', order: 3 };
+}
+
 export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clientId?: string; lojaFilter?: string | null }) => {
-  const [rows, setRows]         = React.useState<any[]>([]);
-  const [loading, setLoading]   = React.useState(false);
-  const [lastSync, setLastSync] = React.useState<string | null>(null);
+  const [rows, setRows]                 = React.useState<any[]>([]);
+  const [loading, setLoading]           = React.useState(false);
+  const [lastSync, setLastSync]         = React.useState<string | null>(null);
+  const [campaignFilter, setCampaignFilter] = React.useState('all');
+  const [branchFilter, setBranchFilter]     = React.useState('all');
+  const [statusFilter, setStatusFilter]     = React.useState('all');
+  const [showFilters, setShowFilters]       = React.useState(false);
 
   const fetchData = React.useCallback(async () => {
     if (!clientId) {
@@ -722,18 +767,39 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
 
     setLoading(true);
     try {
-      let q = supabase
-        .from('campaigns')
-        .select('name,content_name,tipo_midia,loja,start_date,end_date,duration_days,display_count,visitors,avg_attention_sec,uploaded_at')
-        .eq('client_id', clientId)
-        .order('start_date', { ascending: false })
-        .limit(500);
-      if (lojaFilter) q = (q as any).ilike('loja', `%${lojaFilter}%`);
-
       const timeoutPromise = new Promise<never>((_, reject) => {
         setTimeout(() => reject(new Error('Timeout ao carregar campanhas')), 10000);
       });
-      const result = await Promise.race([q, timeoutPromise]) as { data: any[] | null; error?: any };
+
+      const buildViewQuery = () => {
+        let query = supabase
+          .from('campaigns_dashboard_vw')
+          .select('name,content_name,tipo_midia,loja,start_date,end_date,duration_days,display_count,visitors,avg_attention_sec,uploaded_at,status,last_seen_at,first_seen_at')
+          .eq('client_id', clientId)
+          .order('last_seen_at', { ascending: false })
+          .order('uploaded_at', { ascending: false })
+          .limit(2000);
+        if (lojaFilter) query = (query as any).ilike('loja', `%${lojaFilter}%`);
+        return query;
+      };
+
+      const buildTableQuery = () => {
+        let query = supabase
+          .from('campaigns')
+          .select('name,content_name,tipo_midia,loja,start_date,end_date,duration_days,display_count,visitors,avg_attention_sec,uploaded_at,status,last_seen_at,first_seen_at')
+          .eq('client_id', clientId)
+          .order('uploaded_at', { ascending: false })
+          .order('start_date', { ascending: false })
+          .limit(2000);
+        if (lojaFilter) query = (query as any).ilike('loja', `%${lojaFilter}%`);
+        return query;
+      };
+
+      let result = await Promise.race([buildViewQuery(), timeoutPromise]) as { data: any[] | null; error?: any };
+      if (result?.error) {
+        console.warn('[Campaigns] campaigns_dashboard_vw indisponível, usando tabela campaigns:', result.error);
+        result = await Promise.race([buildTableQuery(), timeoutPromise]) as { data: any[] | null; error?: any };
+      }
       if (result?.error) throw result.error;
 
       const data = result?.data || [];
@@ -752,7 +818,11 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
     }
   }, [clientId, lojaFilter]);
 
-  React.useEffect(() => { fetchData(); }, [fetchData]);
+  React.useEffect(() => {
+    fetchData();
+    const intervalId = window.setInterval(fetchData, CAMPAIGN_REFRESH_MS);
+    return () => window.clearInterval(intervalId);
+  }, [fetchData]);
 
   const fmtAtencao = (s: number) => {
     if (!s || s === 0) return '—';
@@ -764,15 +834,85 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
     return `${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
   };
 
-  const getStatus = (start: string | null, end: string | null): { label: string; color: string } => {
-    const now = new Date();
-    if (!start && !end) return { label: '—', color: 'text-gray-500' };
-    if (end && new Date(end) < now) return { label: 'Encerrada', color: 'text-red-400' };
-    if (start && new Date(start) > now) return { label: 'Agendada', color: 'text-yellow-400' };
-    return { label: 'Ativa', color: 'text-emerald-400' };
-  };
+  const normalizedRows = React.useMemo(() => {
+    const deduped = new Map<string, any>();
 
-  const totalVisitantes = rows.reduce((acc, r) => acc + (Number(r.visitors) || 0), 0);
+    for (const rawRow of rows) {
+      const campaignLabel = cleanCampaignContentName(rawRow.content_name) || cleanCampaignContentName(rawRow.name) || rawRow.content_name || rawRow.name || '—';
+      const status = getCampaignStatusMeta(rawRow.start_date, rawRow.end_date, rawRow.uploaded_at, rawRow.status);
+      const normalizedRow = {
+        ...rawRow,
+        _campaignLabel: campaignLabel,
+        _campaignTitle: rawRow.content_name || rawRow.name || campaignLabel,
+        _status: status,
+      };
+      const key = [
+        String(campaignLabel || '').trim().toLowerCase(),
+        String(rawRow.loja || '').trim().toLowerCase(),
+        String(rawRow.tipo_midia || '').trim().toLowerCase(),
+      ].join('||');
+      const existing = deduped.get(key);
+      const rowScore = Math.max(
+        Date.parse(rawRow.uploaded_at || '') || 0,
+        Date.parse(rawRow.start_date || '') || 0,
+        Date.parse(rawRow.end_date || '') || 0,
+      );
+      const existingScore = existing
+        ? Math.max(
+            Date.parse(existing.uploaded_at || '') || 0,
+            Date.parse(existing.start_date || '') || 0,
+            Date.parse(existing.end_date || '') || 0,
+          )
+        : -1;
+      if (!existing || rowScore >= existingScore) {
+        deduped.set(key, normalizedRow);
+      }
+    }
+
+    return Array.from(deduped.values()).sort((a, b) => {
+      const statusDiff = (a._status?.order ?? 99) - (b._status?.order ?? 99);
+      if (statusDiff !== 0) return statusDiff;
+      const uploadedDiff = (Date.parse(b.uploaded_at || '') || 0) - (Date.parse(a.uploaded_at || '') || 0);
+      if (uploadedDiff !== 0) return uploadedDiff;
+      const startDiff = (Date.parse(b.start_date || '') || 0) - (Date.parse(a.start_date || '') || 0);
+      if (startDiff !== 0) return startDiff;
+      return (Number(b.visitors) || 0) - (Number(a.visitors) || 0);
+    });
+  }, [rows]);
+
+  const campaignOptions = React.useMemo(
+    () => Array.from(new Set(normalizedRows.map((row) => row._campaignLabel).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'pt-BR')),
+    [normalizedRows]
+  );
+  const branchOptions = React.useMemo(
+    () => Array.from(new Set(normalizedRows.map((row) => row.loja).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'pt-BR')),
+    [normalizedRows]
+  );
+
+  React.useEffect(() => {
+    if (campaignFilter !== 'all' && !campaignOptions.includes(campaignFilter)) {
+      setCampaignFilter('all');
+    }
+  }, [campaignFilter, campaignOptions]);
+
+  React.useEffect(() => {
+    if (branchFilter !== 'all' && !branchOptions.includes(branchFilter)) {
+      setBranchFilter('all');
+    }
+  }, [branchFilter, branchOptions]);
+
+  const filteredRows = React.useMemo(() => {
+    return normalizedRows.filter((row) => {
+      if (campaignFilter !== 'all' && row._campaignLabel !== campaignFilter) return false;
+      if (branchFilter !== 'all' && row.loja !== branchFilter) return false;
+      if (statusFilter !== 'all' && row._status?.label !== statusFilter) return false;
+      return true;
+    });
+  }, [normalizedRows, campaignFilter, branchFilter, statusFilter]);
+
+  const totalVisitantes = filteredRows.reduce((acc, row) => acc + (Number(row.visitors) || 0), 0);
+  const totalExibicoes = filteredRows.reduce((acc, row) => acc + (Number(row.display_count) || 0), 0);
+  const activeFilterCount = [campaignFilter, branchFilter, statusFilter].filter((value) => value !== 'all').length;
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col" style={{ minHeight: '320px' }}>
@@ -782,13 +922,26 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
           <Activity size={14} className="text-emerald-500" />
           Engajamento em Campanhas
-          {rows.length > 0 && (
+          {normalizedRows.length > 0 && (
             <span className="text-[10px] font-normal text-gray-500 normal-case tracking-normal">
-              ({rows.length} {rows.length === 1 ? 'registro' : 'registros'})
+              ({filteredRows.length}/{normalizedRows.length} {normalizedRows.length === 1 ? 'registro' : 'registros'})
             </span>
           )}
         </h3>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowFilters((prev) => !prev)}
+            className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] transition-colors ${
+              showFilters || activeFilterCount > 0
+                ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
+                : 'border-gray-800 bg-gray-950 text-gray-500 hover:text-gray-300'
+            }`}
+            title="Filtrar campanhas"
+          >
+            <SlidersHorizontal size={11} />
+            Filtros
+            {activeFilterCount > 0 && <span className="font-semibold">{activeFilterCount}</span>}
+          </button>
           {lastSync && <span className="text-[10px] text-gray-600 hidden sm:block">Sync: {lastSync}</span>}
           <button
             onClick={fetchData}
@@ -803,13 +956,46 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
         </div>
       </div>
 
+      <div className={`mb-3 grid grid-cols-1 gap-2 md:grid-cols-3 flex-shrink-0 ${showFilters ? '' : 'hidden'}`}>
+        <select
+          value={campaignFilter}
+          onChange={(e) => setCampaignFilter(e.target.value)}
+          className="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-[11px] text-gray-200 focus:outline-none focus:border-emerald-500"
+        >
+          <option value="all">Todas as campanhas</option>
+          {campaignOptions.map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+        <select
+          value={branchFilter}
+          onChange={(e) => setBranchFilter(e.target.value)}
+          className="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-[11px] text-gray-200 focus:outline-none focus:border-emerald-500"
+        >
+          <option value="all">Todas as filiais</option>
+          {branchOptions.map((option) => (
+            <option key={option} value={option}>{option}</option>
+          ))}
+        </select>
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-[11px] text-gray-200 focus:outline-none focus:border-emerald-500"
+        >
+          <option value="all">Todos os status</option>
+          <option value="Ativa">Ativas</option>
+          <option value="Agendada">Agendadas</option>
+          <option value="Encerrada">Encerradas</option>
+        </select>
+      </div>
+
       {/* Body */}
       {loading ? (
         <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
           <svg className="animate-spin mr-2" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
           Carregando...
         </div>
-      ) : rows.length === 0 ? (
+      ) : filteredRows.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
           <p>{lojaFilter ? `Nenhuma campanha para a loja "${lojaFilter}".` : 'Nenhuma campanha disponível.'}</p>
           {!lojaFilter && <p className="text-xs text-gray-600">Aguardando sincronização automática pelo bot.</p>}
@@ -830,13 +1016,13 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
               </tr>
             </thead>
             <tbody>
-              {rows.map((r, i) => {
-                const status = getStatus(r.start_date, r.end_date);
-                const campaignTitle = cleanCampaignContentName(r.content_name) || r.content_name || r.name || '';
-                const campaignLabel = cleanCampaignContentName(r.content_name) || r.content_name || r.name || 'â€”';
+              {filteredRows.map((r, i) => {
+                const status = r._status || getCampaignStatusMeta(r.start_date, r.end_date, r.uploaded_at, r.status);
+                const campaignTitle = r._campaignTitle || r.content_name || r.name || '';
+                const campaignLabel = r._campaignLabel || r.content_name || r.name || '—';
                 return (
                 <tr
-                  key={i}
+                  key={`${campaignLabel}-${r.loja || 'loja'}-${r.tipo_midia || 'device'}-${i}`}
                   className={`transition-colors hover:bg-gray-800/50 ${i % 2 === 0 ? 'bg-transparent' : 'bg-gray-800/20'}`}
                 >
                   <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap max-w-[200px] truncate" title={campaignTitle}>{campaignLabel}</td>
@@ -845,7 +1031,7 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
                   <td className="py-2 pr-4 whitespace-nowrap">
                     <span className={`font-semibold ${status.color}`}>{status.label}</span>
                   </td>
-                  <td className="py-2 pr-4 text-orange-400 text-right font-mono">{r.display_count != null ? Number(r.display_count).toLocaleString('pt-BR') : '—'}</td>
+                  <td className="py-2 pr-4 text-orange-400 text-right font-mono">{Number(r.display_count || 0).toLocaleString('pt-BR')}</td>
                   <td className="py-2 pr-4 text-yellow-400 text-right font-mono">{r.duration_days != null ? Number(r.duration_days).toFixed(2) : '—'}</td>
                   <td className="py-2 pr-4 text-emerald-400 text-right font-bold">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
                   <td className="py-2 text-blue-400 text-right font-bold">{fmtAtencao(r.avg_attention_sec)}</td>
@@ -853,10 +1039,12 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
                 );
               })}
             </tbody>
-            {rows.length > 1 && (
+            {filteredRows.length > 0 && (
               <tfoot>
                 <tr className="border-t border-gray-700">
-                  <td colSpan={6} className="pt-2 pr-4 text-gray-500 text-xs font-medium uppercase tracking-wider">Total</td>
+                  <td colSpan={4} className="pt-2 pr-4 text-gray-500 text-xs font-medium uppercase tracking-wider">Total</td>
+                  <td className="pt-2 pr-4 text-orange-300 text-right font-bold text-xs">{totalExibicoes.toLocaleString('pt-BR')}</td>
+                  <td className="pt-2 pr-4 text-gray-600 text-right text-xs">—</td>
                   <td className="pt-2 pr-4 text-emerald-300 text-right font-bold text-xs">{totalVisitantes.toLocaleString('pt-BR')}</td>
                   <td className="pt-2 text-gray-600 text-right text-xs">—</td>
                 </tr>
