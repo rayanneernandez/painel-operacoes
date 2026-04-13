@@ -71,6 +71,11 @@ def _carregar_env_arquivo(path: str = ".env") -> None:
                     not atual
                     or atual_lower.startswith("seu-")
                     or atual_lower.startswith("your-")
+                    or atual_lower.startswith("sua-")
+                    or atual_lower.startswith("senha-")
+                    or "sua-senha" in atual_lower
+                    or "senha-ou-app-password" in atual_lower
+                    or "app-password" in atual_lower
                     or "seu-projeto" in atual_lower
                     or "your-project" in atual_lower
                     or "example" in atual_lower
