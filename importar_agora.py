@@ -340,7 +340,9 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
                 duration_hms = f"{hh}:{mm:02d}:{ss:02d}"
             except Exception: pass
 
-        registros.append({"client_id": client_id, "name": camp,
+        display_name = content_val if content_val else camp
+
+        registros.append({"client_id": client_id, "name": display_name,
             "content_name": content_val if content_val else None,
             "tipo_midia": tipo_midia, "loja": loja,
             "start_date": start_date, "end_date": end_date,

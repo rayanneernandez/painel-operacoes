@@ -171,9 +171,11 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
             except Exception:
                 pass
 
+        display_name = content_val if content_val else camp
+
         registros.append({
             "client_id":         client_id,
-            "name":              camp,
+            "name":              display_name,
             "content_name":      content_val if content_val else None,
             "tipo_midia":        tipo_midia,
             "loja":              loja,

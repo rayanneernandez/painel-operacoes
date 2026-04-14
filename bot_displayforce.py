@@ -772,9 +772,11 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
         # Quantidade de exibições (total de linhas no grupo = nº de interações de exibição)
         display_count = len(grupo)
 
+        display_name = content_val if content_val else campaign_val
+
         reg = {
             "client_id":         client_id,
-            "name":              campaign_val,
+            "name":              display_name,
             "content_name":      content_val if content_val else None,
             "tipo_midia":        tipo_midia,
             "loja":              loja,
@@ -789,7 +791,7 @@ def processar_views_csv(caminho_arquivo: str, client_id: str) -> list[dict]:
         }
         registros.append(reg)
         log.info(
-            f"    → '{campaign_val}' | content='{content_val}' | loja='{loja}' | tipo='{tipo_midia}' "
+            f"    → campaign_raw='{campaign_val}' | name='{display_name}' | content='{content_val}' | loja='{loja}' | tipo='{tipo_midia}' "
             f"| exibições={display_count} | visitantes={visitantes} | atenção={avg_attention}s"
         )
 

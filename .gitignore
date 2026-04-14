@@ -28,3 +28,6 @@ dist-ssr
 
 # Claude Code worktrees (não subir para o repositório)
 .claude/worktrees/
+__pycache__/
+*.pyc
+downloads_displayforce/
