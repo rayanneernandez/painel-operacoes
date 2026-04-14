@@ -201,115 +201,73 @@ export function Clients() {
   const handleTestConnection = async () => {
     setApiStatus('testing');
     setConnectionSuccess(false);
-    
+
     try {
       if (!apiConfig.token) {
         throw new Error('Token de API é obrigatório');
       }
 
       const tokenTrim = apiConfig.token.trim();
-      // ✅ Só envia X-API-Token. Não envia Authorization: Bearer.
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'X-API-Token': tokenTrim,
-      };
+      const endpoint  = (apiConfig.endpoint || 'https://api.displayforce.ai').trim();
 
-      const isDisplayForce = apiConfig.endpoint.includes('displayforce.ai');
-      const isDev = typeof window !== 'undefined' && /^(localhost|127\.0\.0\.1)$/.test(window.location.hostname);
-      const baseUrl = isDisplayForce
-        ? (isDev ? '/api-proxy' : 'https://api.displayforce.ai')
-        : apiConfig.endpoint;
-
-      const folderUrl = `${baseUrl}${apiConfig.folderEndpoint}`;
-      const folderBody = { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 };
-
-      let foldersResponse = await fetch(`${folderUrl}?recursive=true&limit=100&offset=0`, {
-        method: 'GET',
-        headers: headers
-      });
-
-      if (!foldersResponse.ok) {
-        foldersResponse = await fetch(folderUrl, {
+      /**
+       * callProxy — envia a requisição através do /api/proxy server-side,
+       * evitando erros de CORS ao chamar api.displayforce.ai diretamente
+       * do browser.
+       */
+      const callProxy = async (path: string, method: 'GET' | 'POST', body?: object): Promise<any> => {
+        const resp = await fetch('/api/proxy', {
           method: 'POST',
-          headers: headers,
-          body: JSON.stringify(folderBody)
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ endpoint, path, method, token: tokenTrim, body }),
         });
-      }
-      
-      if (!foldersResponse.ok) {
-        const errorText = await foldersResponse.text();
-        throw new Error(`Erro ao buscar pastas: ${foldersResponse.status} - ${errorText}`);
-      }
-      
-      const foldersData = await foldersResponse.json();
-      const folders = foldersData.data || [];
-
-      const deviceUrl = `${baseUrl}${apiConfig.deviceEndpoint}`;
-      const deviceBody = {
-        id: [], name: [], parent_ids: [], recursive: true,
-        params: ["id", "name", "parent_id", "parent_ids", "tags"],
-        limit: 100, offset: 0
+        if (!resp.ok) {
+          const txt = await resp.text().catch(() => '');
+          throw new Error(`${resp.status} — ${txt.slice(0, 300)}`);
+        }
+        return resp.json();
       };
 
-      let devicesResponse = await fetch(`${deviceUrl}?recursive=true&limit=100&offset=0`, {
-        method: 'GET',
-        headers: headers
-      });
-
-      if (!devicesResponse.ok) {
-        devicesResponse = await fetch(deviceUrl, {
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify(deviceBody)
-        });
-      }
-      
-      if (!devicesResponse.ok) {
-        const errorText = await devicesResponse.text();
-        throw new Error(`Erro ao buscar dispositivos: ${devicesResponse.status} - ${errorText}`);
-      }
-
-      const devicesData = await devicesResponse.json();
-      const devices = devicesData.data || [];
-
-      // Analytics
-      const analyticsUrl = `${baseUrl}${apiConfig.analyticsEndpoint}`;
-      const now = new Date();
-      const startDate = new Date('2024-01-01T00:00:00Z');
-      const analyticsBody = {
-        start: startDate.toISOString(),
-        end: now.toISOString(),
-        tracks: true,
-        face_quality: true,
-        glasses: true,
-        facial_hair: true,
-        hair_color: true,
-        hair_type: true,
-        headwear: true,
-        additional_attributes: ["smile", "pitch", "yaw", "x", "y", "height"]
-      };
-
+      // 1. Pastas (stores)
+      let foldersData: any;
       try {
-        let analyticsResponse = await fetch(analyticsUrl, { 
-          method: 'POST',
-          headers: headers,
-          body: JSON.stringify(analyticsBody)
+        foldersData = await callProxy(apiConfig.folderEndpoint, 'GET');
+      } catch {
+        foldersData = await callProxy(
+          apiConfig.folderEndpoint, 'POST',
+          { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 }
+        );
+      }
+      const folders = foldersData?.data || foldersData?.items || foldersData?.results || (Array.isArray(foldersData) ? foldersData : []);
+      if (folders.length === 0) throw new Error('Nenhuma pasta/loja encontrada. Verifique o token.');
+
+      // 2. Dispositivos
+      let devicesData: any;
+      try {
+        devicesData = await callProxy(apiConfig.deviceEndpoint, 'GET');
+      } catch {
+        devicesData = await callProxy(
+          apiConfig.deviceEndpoint, 'POST',
+          { id: [], name: [], parent_ids: [], recursive: true, params: ['id', 'name', 'parent_id', 'parent_ids', 'tags'], limit: 100, offset: 0 }
+        );
+      }
+      const devices = devicesData?.data || devicesData?.items || devicesData?.results || (Array.isArray(devicesData) ? devicesData : []);
+
+      // 3. Analytics (amostra — não lança erro se falhar)
+      try {
+        const now = new Date();
+        const analyticsData = await callProxy(apiConfig.analyticsEndpoint, 'POST', {
+          start: '2024-01-01T00:00:00Z',
+          end: now.toISOString(),
+          tracks: true, face_quality: true, glasses: true, facial_hair: true,
+          hair_color: true, hair_type: true, headwear: true,
+          additional_attributes: ['smile', 'pitch', 'yaw', 'x', 'y', 'height'],
         });
-
-        if (!analyticsResponse.ok) {
-          const qp = new URLSearchParams({ start: analyticsBody.start, end: analyticsBody.end, limit: '1000', offset: '0' });
-          analyticsResponse = await fetch(`${analyticsUrl}?${qp.toString()}`, { method: 'GET', headers });
-        }
-
-        if (analyticsResponse.ok) {
-          const analyticsData = await analyticsResponse.json();
-          const rows = analyticsData.payload || analyticsData.data || [];
-          setFetchedAnalytics(Array.isArray(rows) ? rows : []);
-        } else {
-          setFetchedAnalytics([]);
-        }
-      } catch (error) {
-        console.warn('Erro ao buscar analytics:', error);
+        const rows = analyticsData?.payload || analyticsData?.data || [];
+        setFetchedAnalytics(Array.isArray(rows) ? rows : []);
+      } catch (err) {
+        console.warn('Analytics sample failed (non-fatal):', err);
+        setFetchedAnalytics([]);
       }
 
       const newStores: Store[] = folders.map((folder: any) => {
