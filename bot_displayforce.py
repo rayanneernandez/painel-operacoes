@@ -330,16 +330,23 @@ def upsert_campanhas(registros: list[dict]) -> int:
             seen.add(marker)
             variants.append(candidate)
 
-        push(name=name, content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
-        push(content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
-        push(name=name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
-        push(name=name, content_name=content_name, loja=loja, tipo_midia=tipo_midia)
-        push(content_name=content_name, loja=loja, tipo_midia=tipo_midia)
-        push(name=name, loja=loja, tipo_midia=tipo_midia)
-        if not loja and not tipo_midia:
-            push(name=name, start_date=start_date)
-            push(content_name=content_name, start_date=start_date)
-            push(name=name, content_name=content_name)
+        # No relatório "Views of visitors", a coluna Campaign costuma vir como
+        # nome da filial/device, enquanto o nome real da campanha vem em Content.
+        # Se aceitarmos match só por `name + loja + tipo_midia`, uma campanha nova
+        # sobrescreve a anterior do mesmo device e o dashboard acaba mostrando só
+        # a última. Por isso, quando existe `content_name`, o match precisa ser
+        # ancorado nele.
+        if content_name:
+            push(content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
+            push(content_name=content_name, loja=loja, tipo_midia=tipo_midia)
+            if not loja and not tipo_midia:
+                push(content_name=content_name, start_date=start_date)
+                push(content_name=content_name, name=name)
+        else:
+            push(name=name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
+            push(name=name, loja=loja, tipo_midia=tipo_midia)
+            if not loja and not tipo_midia:
+                push(name=name, start_date=start_date)
         return variants
 
     def _find_existing_campaign(registro: dict) -> dict | None:

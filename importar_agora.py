@@ -125,16 +125,17 @@ def _campaign_match_variants(registro):
         seen.add(marker)
         variants.append(candidate)
 
-    push(name=name, content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
-    push(content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
-    push(name=name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
-    push(name=name, content_name=content_name, loja=loja, tipo_midia=tipo_midia)
-    push(content_name=content_name, loja=loja, tipo_midia=tipo_midia)
-    push(name=name, loja=loja, tipo_midia=tipo_midia)
-    if not loja and not tipo_midia:
-        push(name=name, start_date=start_date)
-        push(content_name=content_name, start_date=start_date)
-        push(name=name, content_name=content_name)
+    if content_name:
+        push(content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
+        push(content_name=content_name, loja=loja, tipo_midia=tipo_midia)
+        if not loja and not tipo_midia:
+            push(content_name=content_name, start_date=start_date)
+            push(content_name=content_name, name=name)
+    else:
+        push(name=name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
+        push(name=name, loja=loja, tipo_midia=tipo_midia)
+        if not loja and not tipo_midia:
+            push(name=name, start_date=start_date)
     return variants
 
 def _discover_mailboxes(imap):
