@@ -35,19 +35,56 @@ export function Dashboard() {
           .from('users')
           .select('id', { count: 'exact', head: true });
 
-        // 3. Fetch APIs Connected Count (clients with non-null api_key in client_api_configs)
-        // Since we can't easily join in one count query without foreign keys setup perfectly, 
-        // we'll fetch the config table.
+        // 3. Fetch APIs Connected Count
         const { count: apisCount } = await supabase
           .from('client_api_configs')
           .select('client_id', { count: 'exact', head: true })
           .not('api_key', 'is', null)
           .neq('api_key', '');
 
-        // 4. Process Chart Data (Clients per Month)
-        const monthsData: { y: number; m: number; label: string; count: number }[] = [];
+        // 4. Maior Média de Visitantes do mês atual — por cliente
         const now = new Date();
-        const currentYear = now.getUTCFullYear();
+        const mesInicioISO = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+        const mesFimISO    = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString();
+
+        const { data: campaignRows } = await supabase
+          .from('campaigns')
+          .select('client_id, visitors')
+          .gte('uploaded_at', mesInicioISO)
+          .lte('uploaded_at', mesFimISO)
+          .not('visitors', 'is', null);
+
+        // Agrupa por client_id e soma visitantes
+        let maiorClienteNome = '-';
+        let maiorClienteTrend = '-';
+
+        if (campaignRows && campaignRows.length > 0) {
+          const totaisPorCliente: Record<string, number> = {};
+          for (const row of campaignRows) {
+            if (row.client_id) {
+              totaisPorCliente[row.client_id] = (totaisPorCliente[row.client_id] || 0) + (row.visitors || 0);
+            }
+          }
+
+          // Encontra o client_id com mais visitantes
+          const maiorClienteId = Object.entries(totaisPorCliente)
+            .sort((a, b) => b[1] - a[1])[0]?.[0];
+
+          if (maiorClienteId) {
+            const totalMaior = totaisPorCliente[maiorClienteId];
+
+            // Busca o nome do cliente
+            const clienteEncontrado = clientsData?.find(c => c.id === maiorClienteId);
+            if (clienteEncontrado) {
+              maiorClienteNome  = clienteEncontrado.name;
+              maiorClienteTrend = totalMaior.toLocaleString('pt-BR') + ' visit.';
+            }
+          }
+        }
+
+        // 5. Process Chart Data (Clients per Month)
+        const monthsData: { y: number; m: number; label: string; count: number }[] = [];
+        const currentYear  = now.getUTCFullYear();
         const currentMonth = now.getUTCMonth();
 
         for (let i = 11; i >= 0; i--) {
@@ -57,13 +94,9 @@ export function Dashboard() {
                 m += 12;
                 y -= 1;
             }
-            
             const d = new Date(Date.UTC(y, m, 1));
             const monthName = d.toLocaleString('pt-BR', { month: 'short', timeZone: 'UTC' });
-            
-            monthsData.push({
-                y, m, label: monthName, count: 0
-            });
+            monthsData.push({ y, m, label: monthName, count: 0 });
         }
 
         if (clientsData) {
@@ -73,15 +106,8 @@ export function Dashboard() {
                     const d = new Date(dateStr);
                     const y = d.getUTCFullYear();
                     const m = d.getUTCMonth();
-                    
-                    // Ajuste para fuso horário se necessário (caso a data venha como string simples YYYY-MM-DD)
-                    // Mas como usamos ISO, o UTC deve funcionar.
-                    // Vamos garantir que o mês bata com o label gerado.
-
                     const match = monthsData.find(item => item.y === y && item.m === m);
-                    if (match) {
-                        match.count++;
-                    }
+                    if (match) match.count++;
                 }
             });
             setRecentClients(clientsData.slice(0, 5));
@@ -92,10 +118,10 @@ export function Dashboard() {
 
         // Update Stats
         setStats([
-            { label: 'Total de Clientes', value: clientsCount?.toString() || '0', trend: '+12%', trendUp: true, icon: Users, color: 'text-blue-400', bg: 'bg-blue-500/10' },
-            { label: 'APIs Conectadas', value: apisCount?.toString() || '0', trend: '100%', trendUp: true, icon: Globe, color: 'text-purple-400', bg: 'bg-purple-500/10' },
-            { label: 'Usuários Cadastrados', value: usersCount?.toString() || '0', trend: '+5%', trendUp: true, icon: ShieldCheck, color: 'text-indigo-400', bg: 'bg-indigo-500/10' },
-            { label: 'Maior Média Visitantes', value: '-', trend: '-', trendUp: true, icon: BarChart2, color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+            { label: 'Total de Clientes',     value: clientsCount?.toString() || '0', trend: '+12%',          trendUp: true, icon: Users,       color: 'text-blue-400',    bg: 'bg-blue-500/10' },
+            { label: 'APIs Conectadas',        value: apisCount?.toString()    || '0', trend: '100%',          trendUp: true, icon: Globe,       color: 'text-purple-400',  bg: 'bg-purple-500/10' },
+            { label: 'Usuários Cadastrados',   value: usersCount?.toString()   || '0', trend: '+5%',           trendUp: true, icon: ShieldCheck, color: 'text-indigo-400',  bg: 'bg-indigo-500/10' },
+            { label: 'Maior Média Visitantes', value: maiorClienteNome,                trend: maiorClienteTrend, trendUp: true, icon: BarChart2,   color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
         ]);
 
       } catch (error) {
@@ -133,7 +159,9 @@ export function Dashboard() {
               </div>
             </div>
             <div>
-               <p className="text-3xl font-bold text-white mb-1">{stat.value}</p>
+               <p className={`font-bold text-white mb-1 leading-tight ${stat.value.length > 8 ? 'text-xl' : 'text-3xl'}`}>
+                 {stat.value}
+               </p>
                <p className="text-sm text-gray-500 font-medium">{stat.label}</p>
             </div>
           </div>

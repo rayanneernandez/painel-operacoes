@@ -19,8 +19,12 @@ set "STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 :: Nome do atalho
 set "ATALHO=%STARTUP%\BotDisplayForce.bat"
 
-:: Copia o bat para a pasta de startup
-copy /Y "%BOT_PATH%" "%ATALHO%" >nul
+:: Cria um wrapper na pasta Startup que chama o bat pelo caminho COMPLETO.
+:: (Nao copiar diretamente — senao %~dp0 aponta para Startup e o bot nao acha os arquivos)
+(
+    echo @echo off
+    echo call "%BOT_PATH%"
+) > "%ATALHO%"
 
 if %ERRORLEVEL% EQU 0 (
     echo  [OK] Bot configurado para iniciar automaticamente!
@@ -28,20 +32,25 @@ if %ERRORLEVEL% EQU 0 (
     echo  O bot vai iniciar sozinho toda vez que
     echo  o Windows ligar.
     echo.
-    echo  Arquivo copiado para:
+    echo  Wrapper criado em:
     echo  %ATALHO%
     echo.
+    echo  (O wrapper chama: %BOT_PATH%^)
+    echo.
     echo  Para REMOVER o inicio automatico, delete o arquivo:
-    echo  BotDisplayForce.bat  dentro da pasta:
+    echo  BotDisplayForce.bat  na pasta:
     echo  %STARTUP%
     echo.
     echo  Iniciando o bot agora pela primeira vez...
     echo.
     start "Bot DisplayForce" "%BOT_PATH%"
 ) else (
-    echo  [ERRO] Nao foi possivel copiar o arquivo.
-    echo  Tente manualmente: copie iniciar_bot.bat para:
+    echo  [ERRO] Nao foi possivel criar o wrapper.
+    echo  Tente manualmente: crie um arquivo BotDisplayForce.bat em:
     echo  %STARTUP%
+    echo  Com o conteudo:
+    echo    @echo off
+    echo    call "%BOT_PATH%"
     echo.
 )
 
