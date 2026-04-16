@@ -707,7 +707,7 @@ const cleanCampaignContentName = (raw?: string | null) => {
     .trim();
 };
 
-const CAMPAIGN_REFRESH_MS = 2 * 60 * 1000;
+const CAMPAIGN_REFRESH_MS = 10 * 60 * 1000;
 
 function getCampaignStatusMeta(start?: string | null, end?: string | null, uploadedAt?: string | null, explicitStatus?: string | null) {
   const normalizedStatus = String(explicitStatus || '').trim().toLowerCase();
