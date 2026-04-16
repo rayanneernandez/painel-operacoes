@@ -1087,7 +1087,7 @@ export const WidgetSalesQuarter = ({
     if (data.length === 0) return null;
     return {
       type: 'bar',
-      data: { labels: data.map(d=>d.label), datasets: [{ label:'Visitantes', data: visitorArr, backgroundColor: CJ.neutral, borderRadius:4, borderSkipped:false, hoverBackgroundColor:'#34d399' }] },
+      data: { labels: data.map((d) => d.label), datasets: [{ label:'Visitantes', data: visitorArr, backgroundColor: CJ.neutral, borderRadius:4, borderSkipped:false, hoverBackgroundColor:'#34d399' }] },
       options: {
         responsive: true, maintainAspectRatio: false,
         plugins: { legend: { display: false }, tooltip: { backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth:1, padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont, callbacks: { title:(i:any[])=>i[0]?.label??'', label:(ctx:any)=>{ const v=Number(ctx.raw); return `  Visitantes: ${v>=1000?`${(v/1000).toFixed(1)}k`:v.toLocaleString('pt-BR')}`; } } } },
@@ -1097,7 +1097,7 @@ export const WidgetSalesQuarter = ({
         },
       },
     };
-  }, [JSON.stringify(visitorArr)]);
+  }, [JSON.stringify(data)]);
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
@@ -1106,9 +1106,10 @@ export const WidgetSalesQuarter = ({
         <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: CJ.neutral }} />Visitantes <strong className="text-white ml-1">{loading ? '…' : totalV.toLocaleString('pt-BR')}</strong></span>
       </div>
       <CanvasBox height={CHART_H} minHeight={CHART_H} className="flex-none">
+        <canvas ref={canvasRef} className="w-full h-full" />
         {loading ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
           : data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados no trimestre</div>
-          : <canvas ref={canvasRef} className="w-full h-full" />}
+          : null}
       </CanvasBox>
     </div>
   );
