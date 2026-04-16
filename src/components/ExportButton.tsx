@@ -4,10 +4,13 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Download, FileSpreadsheet, FileText, Image, X, Loader2 } from 'lucide-react';
 import * as XLSX from 'xlsx';
+import supabase from '../lib/supabase';
 
 // ── Tipos ────────────────────────────────────────────────────────────────────
 type ExportData = {
+  clientId: string;
   clientName: string;
+  lojaFilter?: string | null;
   period: { start: Date; end: Date };
   kpis: {
     totalVisitors: number;
@@ -25,6 +28,17 @@ type ExportData = {
   visitorsPerDayMap: Record<string, number>;
   quarterBars: { label: string; visitors: number; sales: number }[];
   dashboardRef: React.RefObject<HTMLDivElement>;
+};
+
+type CampaignExportRow = {
+  campaign: string;
+  store: string;
+  device: string;
+  status: string;
+  displays: number;
+  daysActive: number | null;
+  visitors: number;
+  avgAttention: string;
 };
 
 type Props = {
@@ -46,6 +60,42 @@ const fmtDuration = (s: number) => {
 };
 
 const DAY_LABELS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+
+const campaignStatusLabel = (row: any) => {
+  const now = Date.now();
+  const start = Date.parse(row?.start_date || '');
+  const end = Date.parse(row?.end_date || '');
+  if (Number.isFinite(end) && end < now) return 'Encerrada';
+  if (Number.isFinite(start) && start > now) return 'Agendada';
+  if (Number.isFinite(start) && start <= now) return 'Ativa';
+  return String(row?.status || '—');
+};
+
+async function fetchCampaignExportRows(clientId: string, lojaFilter?: string | null): Promise<CampaignExportRow[]> {
+  const build = (table: 'campaigns_dashboard_vw' | 'campaigns') => {
+    let q = supabase
+      .from(table)
+      .select('name,content_name,tipo_midia,loja,start_date,end_date,duration_days,display_count,visitors,avg_attention_sec,uploaded_at,status')
+      .eq('client_id', clientId)
+      .order('uploaded_at', { ascending: false })
+      .limit(5000);
+    if (lojaFilter) q = (q as any).ilike('loja', `%${lojaFilter}%`);
+    return q;
+  };
+  let result: any = await build('campaigns_dashboard_vw');
+  if (result?.error) result = await build('campaigns');
+  if (result?.error) throw result.error;
+  return (result?.data || []).map((row: any) => ({
+    campaign: row.content_name || row.name || '—',
+    store: row.loja || '—',
+    device: row.tipo_midia || '—',
+    status: campaignStatusLabel(row),
+    displays: Number(row.display_count) || 0,
+    daysActive: row.duration_days == null ? null : Number(row.duration_days),
+    visitors: Number(row.visitors) || 0,
+    avgAttention: fmtDuration(Number(row.avg_attention_sec) || 0),
+  }));
+}
 
 // ── Estilos das células Excel ────────────────────────────────────────────────
 const STYLES = {
@@ -93,7 +143,7 @@ const cell = (v: any, s?: any): XLSX.CellObject => ({ v, t: typeof v === 'number
 const blank = (s?: any): XLSX.CellObject => ({ v: '', t: 's', s });
 
 // ── Gerador Excel ─────────────────────────────────────────────────────────────
-function generateExcel(data: ExportData) {
+function generateExcel(data: ExportData, campaigns: CampaignExportRow[]) {
   const wb = XLSX.utils.book_new();
 
   // ── Aba 1: Resumo ──────────────────────────────────────────────────────────
@@ -253,6 +303,29 @@ function generateExcel(data: ExportData) {
   wsDemo['!rows'] = demoRows.map(() => ({ hpt: 22 }));
   XLSX.utils.book_append_sheet(wb, wsDemo, 'Dados Demográficos');
 
+  const campaignRows: XLSX.CellObject[][] = [
+    [cell('ENGAJAMENTO EM CAMPANHAS', STYLES.sectionHeader), blank(STYLES.sectionHeader), blank(STYLES.sectionHeader), blank(STYLES.sectionHeader), blank(STYLES.sectionHeader), blank(STYLES.sectionHeader), blank(STYLES.sectionHeader)],
+    [cell('Campanha', STYLES.colHeader), cell('Loja', STYLES.colHeader), cell('Device', STYLES.colHeader), cell('Status', STYLES.colHeader), cell('Exibições', STYLES.colHeader), cell('Visitantes', STYLES.colHeader), cell('Atenção Média', STYLES.colHeader)],
+    ...campaigns.map((c, i) => [
+      cell(c.campaign, i % 2 === 0 ? STYLES.labelLeft : { ...STYLES.labelLeft, fill: { fgColor: { rgb: 'F9FAFB' } } }),
+      cell(c.store, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
+      cell(c.device, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
+      cell(c.status, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
+      cell(c.displays, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
+      cell(c.visitors, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
+      cell(c.avgAttention, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
+    ]),
+  ];
+  const wsCampaigns = XLSX.utils.aoa_to_sheet(campaignRows.map(r => r.map(c => c.v)));
+  campaignRows.forEach((row, ri) => row.forEach((c, ci) => {
+    const addr = XLSX.utils.encode_cell({ r: ri, c: ci });
+    if (!wsCampaigns[addr]) wsCampaigns[addr] = {};
+    Object.assign(wsCampaigns[addr], c);
+  }));
+  wsCampaigns['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 6 } }];
+  wsCampaigns['!cols'] = [{ wch: 36 }, { wch: 24 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }];
+  XLSX.utils.book_append_sheet(wb, wsCampaigns, 'Campanhas');
+
   return wb;
 }
 
@@ -275,7 +348,8 @@ export const ExportButton: React.FC<Props> = ({ data }) => {
   const handleExcel = async () => {
     setLoading('excel');
     try {
-      const wb = generateExcel(data);
+      const campaigns = await fetchCampaignExportRows(data.clientId, data.lojaFilter);
+      const wb = generateExcel(data, campaigns);
       const fileName = `Relatorio_${data.clientName.replace(/\s+/g, '_')}_${data.period.start.toISOString().slice(0, 10)}.xlsx`;
       XLSX.writeFile(wb, fileName);
     } catch (err) {
@@ -403,6 +477,15 @@ export const ExportButton: React.FC<Props> = ({ data }) => {
         dailyEntries.forEach(([date, count], i) => {
           const d = new Date(date + 'T00:00:00Z').toLocaleDateString('pt-BR', { timeZone: 'UTC' });
           row(d, Number(count).toLocaleString('pt-BR'), i % 2 !== 0);
+        });
+        y += 6;
+      }
+
+      const campaigns = await fetchCampaignExportRows(data.clientId, data.lojaFilter);
+      if (campaigns.length) {
+        section('ENGAJAMENTO EM CAMPANHAS');
+        campaigns.forEach((c, i) => {
+          row(`${c.campaign} • ${c.store}`, `Vis: ${c.visitors.toLocaleString('pt-BR')} | Exib: ${c.displays.toLocaleString('pt-BR')} | At: ${c.avgAttention}`, i % 2 !== 0);
         });
         y += 6;
       }

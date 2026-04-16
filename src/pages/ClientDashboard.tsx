@@ -1660,7 +1660,9 @@ export function ClientDashboard() {
               {/* Export */}
               <ExportButton
                 data={{
+                  clientId: id ?? '',
                   clientName,
+                  lojaFilter: selectedStore?.name ?? null,
                   period: { start: selectedStartDate, end: selectedEndDate },
                   kpis: { totalVisitors, avgVisitorsPerDay, avgVisitSeconds, avgAttentionSeconds },
                   dailyStats, hourlyStats, genderStats, ageStats, attributeStats,
