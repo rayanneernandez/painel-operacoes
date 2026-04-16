@@ -68,7 +68,7 @@ if not SUPA_URL or not SUPA_KEY:
 
 # ── Mapeamento de clientes ────────────────────────────────────────────────────
 
-def _parse_clientes() -> dict:
+def _parse_clientes_fallback() -> dict:
     """Retorna {nome_lower: client_uuid} a partir de CLIENTES_FALLBACK."""
     raw = os.environ.get("CLIENTES_FALLBACK", "")
     result = {}
@@ -76,11 +76,40 @@ def _parse_clientes() -> dict:
         part = part.strip()
         if "|" in part:
             nome, uid = part.split("|", 1)
-            result[nome.strip().lower()] = uid.strip()
+            nome = nome.strip().lower()
+            uid = uid.strip()
+            if nome and uid:
+                result[nome] = uid
     return result
 
-CLIENTES = _parse_clientes()
-log.info(f"Clientes configurados: {list(CLIENTES.keys())}")
+
+def _load_active_clients() -> dict:
+    try:
+        from supabase import create_client
+        sb = create_client(SUPA_URL, SUPA_KEY)
+        for status in ("active", "ativo"):
+            res = sb.table("clients").select("id,name,status").eq("status", status).execute()
+            rows = res.data or []
+            if rows:
+                mapped = {str(r.get("name", "")).strip().lower(): str(r.get("id", "")).strip() for r in rows if r.get("id") and r.get("name")}
+                if mapped:
+                    log.info(f"Clientes ativos carregados do Supabase: {list(mapped.keys())}")
+                    return mapped
+
+        res = sb.table("clients").select("id,name,status").execute()
+        rows = res.data or []
+        mapped = {str(r.get("name", "")).strip().lower(): str(r.get("id", "")).strip() for r in rows if r.get("id") and r.get("name")}
+        if mapped:
+            log.warning(f"Nenhum cliente com status ativo/ativo. Usando clientes existentes no Supabase: {list(mapped.keys())}")
+            return mapped
+    except Exception as e:
+        log.warning(f"Não foi possível carregar clientes do Supabase: {e}")
+
+    fallback = _parse_clientes_fallback()
+    log.warning(f"Usando CLIENTES_FALLBACK: {list(fallback.keys())}")
+    return fallback
+
+CLIENTES = _load_active_clients()
 
 
 # ── Helpers da API Displayforce ───────────────────────────────────────────────
@@ -254,8 +283,11 @@ def _calc_duration(start_str: str | None, end_str: str | None):
 def sincronizar(days: int = 30):
     now       = datetime.now(timezone.utc)
     start_dt  = now - timedelta(days=days)
+    end_dt    = now
+    if start_dt > end_dt:
+        start_dt, end_dt = end_dt, start_dt
     start_iso = start_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-    end_iso   = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    end_iso   = end_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     log.info(f"Período: {start_iso} → {end_iso}")
 
     # ── 1. Mapa de dispositivos ──────────────────────────────────────────────

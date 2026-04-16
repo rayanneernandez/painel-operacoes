@@ -80,6 +80,18 @@ function endOfUtcDay(dateLike) {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 23, 59, 59, 999));
 }
 
+function normalizeUtcRange(startLike, endLike) {
+  let start = startOfUtcDay(startLike);
+  let end = endOfUtcDay(endLike);
+  if (start.getTime() > end.getTime()) {
+    const originalStart = start;
+    start = startOfUtcDay(endLike);
+    end = endOfUtcDay(originalStart);
+    console.warn(`[range] Datas invertidas detectadas; ajustando para ${start.toISOString()} → ${end.toISOString()}`);
+  }
+  return { start, end };
+}
+
 function addUtcDays(dateLike, days) {
   const d = new Date(dateLike);
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + days, d.getUTCHours(), d.getUTCMinutes(), d.getUTCSeconds(), d.getUTCMilliseconds()));
@@ -376,8 +388,10 @@ async function main() {
   const clientNames = clientArg.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
   const configs = await resolveConfigs(supabase, clientNames);
 
-  const rangeStart = startOfUtcDay(`${startArg}T00:00:00.000Z`);
-  const rangeEnd = endOfUtcDay(`${endArg}T00:00:00.000Z`);
+  const { start: rangeStart, end: rangeEnd } = normalizeUtcRange(
+    `${startArg}T00:00:00.000Z`,
+    `${endArg}T00:00:00.000Z`
+  );
   const days = [];
   for (let cursor = new Date(rangeStart); cursor <= rangeEnd; cursor = addUtcDays(cursor, 1)) {
     days.push(new Date(cursor));
