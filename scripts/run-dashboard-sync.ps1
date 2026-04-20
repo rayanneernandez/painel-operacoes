@@ -11,15 +11,19 @@ $envFiles = @(
   (Join-Path $repoRoot '.env')
 )
 
+$loadedEnvKeys = @{}
 foreach ($envFile in $envFiles) {
   if (-not (Test-Path $envFile)) { continue }
   Get-Content $envFile | ForEach-Object {
     if ($_ -match '^\s*([^#=]+)=(.*)$') {
       $name = $matches[1].Trim()
+      $normalizedName = $name.ToUpperInvariant()
       $value = $matches[2].Trim()
       if ($value.StartsWith('"') -and $value.EndsWith('"') -and $value.Length -ge 2) {
         $value = $value.Substring(1, $value.Length - 2)
       }
+      if ($loadedEnvKeys.ContainsKey($normalizedName)) { return }
+      $loadedEnvKeys[$normalizedName] = $true
       Set-Item -Path "Env:$name" -Value $value
     }
   }
@@ -43,15 +47,15 @@ try {
   $stdoutFile = Join-Path $logsDir "dashboard-sync.$runId.stdout.log"
   $stderrFile = Join-Path $logsDir "dashboard-sync.$runId.stderr.log"
 
-  $proc = Start-Process `
-    -FilePath 'C:\Program Files\nodejs\node.exe' `
-    -ArgumentList @('scripts/backfill-displayforce-range.mjs', "--start=$start", "--end=$end", '--clients=panvel,assai') `
-    -WorkingDirectory $repoRoot `
-    -NoNewWindow `
-    -Wait `
-    -PassThru `
-    -RedirectStandardOutput $stdoutFile `
-    -RedirectStandardError $stderrFile
+  & 'C:\Program Files\nodejs\node.exe' `
+    'scripts/backfill-displayforce-range.mjs' `
+    "--start=$start" `
+    "--end=$end" `
+    '--clients=panvel,assai' `
+    "--env-file=$((Join-Path $repoRoot '.env.production.local'))" `
+    1> $stdoutFile `
+    2> $stderrFile
+  $exitCode = $LASTEXITCODE
 
   if (Test-Path $stdoutFile) {
     Get-Content $stdoutFile | Tee-Object -FilePath $logFile -Append
@@ -64,8 +68,8 @@ try {
     }
   }
 
-  if ($proc.ExitCode -ne 0) {
-    throw "Sync falhou com exit code $($proc.ExitCode)"
+  if ($exitCode -ne 0) {
+    throw "Sync falhou com exit code $exitCode"
   }
 
   "[$((Get-Date).ToString('s'))] Sync finalizado" | Out-File -FilePath $logFile -Append -Encoding utf8

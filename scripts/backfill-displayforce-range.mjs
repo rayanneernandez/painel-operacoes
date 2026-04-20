@@ -8,6 +8,12 @@ const CLIENT_IDS = {
   panvel: "c6999bd9-14c0-4e26-abb1-d4b852d34421",
 };
 
+const DEFAULT_ENV_FILES = [
+  ".env",
+  ".env.local",
+  ".env.production.local",
+];
+
 function readEnvFile(filePath) {
   const text = fs.readFileSync(filePath, "utf8");
   return Object.fromEntries(
@@ -22,18 +28,70 @@ function readEnvFile(filePath) {
   );
 }
 
+function stripWrappingQuotes(value) {
+  if (typeof value !== "string") return value;
+  if (
+    value.length >= 2 &&
+    ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))
+  ) {
+    return value.slice(1, -1);
+  }
+  return value;
+}
+
+function isPlaceholderEnvValue(name, value) {
+  if (typeof value !== "string") return false;
+  const normalizedName = name.toUpperCase();
+  const normalizedValue = value.trim().toLowerCase();
+  if (!normalizedValue) return false;
+
+  if (normalizedName.includes("SUPABASE") && normalizedValue.includes("seu-projeto.supabase.co")) return true;
+  if (normalizedName.includes("SUPABASE") && normalizedValue.includes("your-project.supabase.co")) return true;
+  if (normalizedName.includes("SUPABASE") && normalizedValue.includes("sua-chave")) return true;
+  if (normalizedName.includes("SUPABASE") && normalizedValue.includes("your-key")) return true;
+  if (normalizedName.includes("SUPABASE") && normalizedValue.includes("example")) return true;
+
+  return false;
+}
+
 function loadEnv() {
-  const fromFile = fs.existsSync(".env") ? readEnvFile(".env") : {};
-  return {
-    ...fromFile,
-    ...Object.fromEntries(Object.entries(process.env).filter(([, value]) => value != null)),
-  };
+  const requestedEnvFile = getArg("env-file", null);
+  const envFiles = requestedEnvFile ? [requestedEnvFile] : DEFAULT_ENV_FILES;
+  const merged = {};
+
+  for (const envFile of envFiles) {
+    if (!fs.existsSync(envFile)) continue;
+    const fileValues = readEnvFile(envFile);
+    for (const [name, rawValue] of Object.entries(fileValues)) {
+      merged[name] = stripWrappingQuotes(rawValue);
+    }
+  }
+
+  for (const [name, rawValue] of Object.entries(process.env)) {
+    if (rawValue == null) continue;
+    const value = stripWrappingQuotes(rawValue);
+    if (isPlaceholderEnvValue(name, value)) continue;
+    merged[name] = value;
+  }
+
+  return merged;
 }
 
 function getArg(name, fallback = null) {
   const prefix = `--${name}=`;
   const hit = process.argv.find((arg) => arg.startsWith(prefix));
   return hit ? hit.slice(prefix.length) : fallback;
+}
+
+function hasFlag(name) {
+  return process.argv.includes(`--${name}`);
+}
+
+function getNumberArg(name, fallback = null) {
+  const value = getArg(name, null);
+  if (value == null || value === "") return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function sleep(ms) {
@@ -247,7 +305,20 @@ async function fetchDayVisits(cfg, startIso, endIso) {
   else throw new Error(`Sem credencial da API para ${cfg.client_id}`);
 
   const isPanvel = cfg.client_id === CLIENT_IDS.panvel;
-  const pageLimit = isPanvel ? 20 : 1000;
+  const requestedPageLimit = getNumberArg("page-limit", null);
+  const requestedMaxPages = getNumberArg("max-pages", 500);
+  const requestedPanvelRetryMs = getNumberArg("panvel-retry-ms", null);
+  const requestedPanvelDelayMs = getNumberArg("panvel-delay-ms", null);
+  const pageLimit = requestedPageLimit && requestedPageLimit > 0
+    ? requestedPageLimit
+    : (isPanvel ? 500 : 1000);
+  const maxPages = requestedMaxPages && requestedMaxPages > 0 ? requestedMaxPages : 500;
+  const retryAfterMs = isPanvel
+    ? (requestedPanvelRetryMs && requestedPanvelRetryMs > 0 ? requestedPanvelRetryMs : 30000)
+    : 10000;
+  const pageDelayMs = isPanvel
+    ? (requestedPanvelDelayMs && requestedPanvelDelayMs > 0 ? requestedPanvelDelayMs : 1500)
+    : 120;
   const bodyBase = {
     start: startIso,
     end: endIso,
@@ -267,7 +338,7 @@ async function fetchDayVisits(cfg, startIso, endIso) {
   let apiTotal = null;
   let lastSig = null;
 
-  while (page < 500) {
+  while (page < maxPages) {
     page += 1;
     const json = await withRetry(`fetch ${cfg.client_id} ${startIso.slice(0, 10)} offset ${offset}`, async () => {
       const controller = new AbortController();
@@ -284,7 +355,7 @@ async function fetchDayVisits(cfg, startIso, endIso) {
           const text = await resp.text();
           const error = new Error(`API ${resp.status} ${text}`);
           if (resp.status === 429) {
-            error.retryAfterMs = isPanvel ? 30000 : 10000;
+            error.retryAfterMs = retryAfterMs;
           }
           throw error;
         }
@@ -320,7 +391,7 @@ async function fetchDayVisits(cfg, startIso, endIso) {
     if (apiTotal !== null && offset + items.length >= apiTotal) break;
 
     offset += items.length;
-    await sleep(isPanvel ? 1500 : 120);
+    await sleep(pageDelayMs);
   }
 
   return { visits, apiTotal };
@@ -385,13 +456,28 @@ async function main() {
   const startArg = getArg("start", "2026-04-01");
   const endArg = getArg("end", "2026-04-09");
   const clientArg = getArg("clients", DEFAULT_CLIENTS.join(","));
+  const excludeToday = hasFlag("exclude-today");
   const clientNames = clientArg.split(",").map((value) => value.trim().toLowerCase()).filter(Boolean);
   const configs = await resolveConfigs(supabase, clientNames);
 
-  const { start: rangeStart, end: rangeEnd } = normalizeUtcRange(
+  let { start: rangeStart, end: rangeEnd } = normalizeUtcRange(
     `${startArg}T00:00:00.000Z`,
     `${endArg}T00:00:00.000Z`
   );
+
+  if (excludeToday) {
+    const todayStart = startOfUtcDay(new Date());
+    if (rangeEnd.getTime() >= todayStart.getTime()) {
+      rangeEnd = endOfUtcDay(addUtcDays(todayStart, -1));
+      console.log(`[range] Excluindo dia atual do backfill: ${todayStart.toISOString().slice(0, 10)}`);
+    }
+  }
+
+  if (rangeStart.getTime() > rangeEnd.getTime()) {
+    console.log("[range] Nenhum dia historico restante apos excluir o dia atual.");
+    return;
+  }
+
   const days = [];
   for (let cursor = new Date(rangeStart); cursor <= rangeEnd; cursor = addUtcDays(cursor, 1)) {
     days.push(new Date(cursor));
