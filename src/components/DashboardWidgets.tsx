@@ -146,6 +146,8 @@ function mapHairData(raw: { label: string; value: number }[] | undefined, mapDic
 export type WidgetType = { id: string; title: string; type: 'chart' | 'table' | 'kpi'; size: 'full' | 'half' | 'third' | 'quarter' | '2/3'; description: string; };
 
 export const AVAILABLE_WIDGETS: WidgetType[] = [
+  { id: 'chart_facial_expressions', title: 'Expressoes Faciais', type: 'chart', size: 'half', description: 'Serie temporal de expressoes faciais quando disponivel' },
+  { id: 'chart_device_flow', title: 'Fluxo e Audiencia Device', type: 'chart', size: 'half', description: 'Resumo visual de fluxo, devices e tracking quando disponivel' },
   { id: 'kpi_flow_stats',      title: 'Resumo de Fluxo',               type: 'kpi',   size: 'full',  description: 'Total Visitantes, Média Dia, Tempo Médio' },
   { id: 'flow_trend',          title: 'Média Visitantes por Dia',       type: 'chart', size: 'half',  description: 'Gráfico de linha com fluxo diário da semana' },
   { id: 'hourly_flow',         title: 'Fluxo por Hora',                 type: 'chart', size: 'half',  description: 'Gráfico de linha por gênero (Masculino/Feminino)' },
@@ -1116,9 +1118,252 @@ export const WidgetSalesQuarter = ({
 };
 
 // ── WIDGET_MAP ───────────────────────────────────────────────────────────────
+type FacialExpressionSeries = {
+  label: string;
+  values: number[];
+  color: string;
+};
+
+function buildPreviewDateLabels(startDate?: Date | string, endDate?: Date | string) {
+  const fallback = Array.from({ length: 7 }, (_, index) => {
+    const d = new Date();
+    d.setDate(d.getDate() - (6 - index));
+    return d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+  });
+
+  if (!startDate || !endDate) return fallback;
+
+  const start = new Date(startDate);
+  const end = new Date(endDate);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) return fallback;
+
+  const labels: string[] = [];
+  const cursor = new Date(start);
+  cursor.setHours(0, 0, 0, 0);
+  const last = new Date(end);
+  last.setHours(0, 0, 0, 0);
+
+  while (cursor <= last && labels.length < 31) {
+    labels.push(cursor.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }));
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return labels.length > 0 ? labels : fallback;
+}
+
+export const WidgetFacialExpressions = ({
+  startDate,
+  endDate,
+  labels,
+  series,
+}: {
+  startDate?: Date | string;
+  endDate?: Date | string;
+  labels?: string[];
+  series?: FacialExpressionSeries[];
+}) => {
+  const canvasRef = React.useRef<HTMLCanvasElement>(null);
+  const chartLabels = labels && labels.length > 0 ? labels : buildPreviewDateLabels(startDate, endDate);
+  const palette: FacialExpressionSeries[] = [
+    { label: 'Neutro', values: [], color: '#9ca3af' },
+    { label: 'Felicidade', values: [], color: '#fbbf24' },
+    { label: 'Surpresa', values: [], color: '#22c55e' },
+    { label: 'Raiva', values: [], color: '#fb7185' },
+  ];
+  const resolvedSeries = palette.map((defaultSeries) => {
+    const match = (series || []).find((entry) => String(entry.label).toLowerCase() === defaultSeries.label.toLowerCase());
+    const values = Array.from({ length: chartLabels.length }, (_, index) => Number(match?.values?.[index]) || 0);
+    return { ...defaultSeries, ...match, values };
+  });
+  const hasAnyData = resolvedSeries.some((entry) => entry.values.some((value) => value > 0));
+
+  useChartJs(canvasRef, () => ({
+    type: 'line',
+    data: {
+      labels: chartLabels,
+      datasets: resolvedSeries.map((entry) => ({
+        label: entry.label,
+        data: entry.values,
+        borderColor: entry.color,
+        backgroundColor: 'transparent',
+        borderWidth: 2,
+        pointRadius: 2.5,
+        pointHoverRadius: 5,
+        pointBackgroundColor: entry.color,
+        tension: 0.35,
+      })),
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: CJ.bg,
+          borderColor: 'rgba(255,255,255,0.12)',
+          borderWidth: 1,
+          padding: CJ.tooltipPadding,
+          titleFont: CJ.titleFont,
+          bodyFont: CJ.bodyFont,
+          callbacks: {
+            label: (ctx: any) => `  ${ctx.dataset.label}: ${Number(ctx.raw).toLocaleString('pt-BR')}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { color: CJ.grid },
+          ticks: { color: CJ.label, font: { size: 10 }, maxTicksLimit: 8 },
+        },
+        y: {
+          beginAtZero: true,
+          grid: { color: CJ.grid },
+          ticks: {
+            color: CJ.label,
+            font: { size: 11 },
+            callback: (value: number) => value >= 1000 ? `${(value / 1000).toFixed(0)}k` : String(value),
+          },
+          title: { display: true, text: 'Numero', color: CJ.label, font: { size: 11 } },
+        },
+      },
+    },
+  }), [JSON.stringify(chartLabels), JSON.stringify(resolvedSeries)]);
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <div className="flex items-center justify-between mb-3 flex-none gap-3">
+        <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
+          <Activity size={14} className="text-pink-400" />
+          Expressoes Faciais
+        </h3>
+        <div className="flex gap-3 text-[10px] text-gray-400 flex-wrap justify-end">
+          {resolvedSeries.map((entry) => (
+            <span key={entry.label} className="flex items-center gap-1">
+              <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ background: entry.color }} />
+              {entry.label}
+            </span>
+          ))}
+        </div>
+      </div>
+      <CanvasBox className="flex-1 min-h-[220px]">
+        <canvas ref={canvasRef} />
+        {!hasAnyData && (
+          <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm bg-gray-900/55">
+            Sem dados de expressoes faciais neste periodo.
+          </div>
+        )}
+      </CanvasBox>
+    </div>
+  );
+};
+
+type DeviceAudienceItem = {
+  label: string;
+  value: number;
+  color?: string;
+};
+
+export const WidgetDeviceFlow = ({
+  visitors,
+  passersby,
+  deviceAudience,
+  trackingData,
+}: {
+  visitors?: number;
+  passersby?: number | null;
+  deviceAudience?: DeviceAudienceItem[];
+  trackingData?: DeviceAudienceItem[];
+}) => {
+  const safeVisitors = Math.max(0, Number(visitors) || 0);
+  const safePassersby = Math.max(0, Number(passersby) || 0);
+  const hasFlowRatio = safePassersby > 0;
+  const flowPct = hasFlowRatio ? Math.min(100, (safeVisitors / safePassersby) * 100) : null;
+  const audiencePalette = ['#ef4444', '#d946ef', '#1d4ed8', '#f59e0b'];
+  const trackingPalette = ['#f3d8c7', '#efc0a3', '#eea67a', '#c45a16'];
+  const audienceRows = (deviceAudience || []).map((entry, index) => ({
+    ...entry,
+    color: entry.color || audiencePalette[index % audiencePalette.length],
+  }));
+  const trackingRows = (trackingData || []).map((entry, index) => ({
+    ...entry,
+    color: entry.color || trackingPalette[index % trackingPalette.length],
+  }));
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col gap-5 overflow-hidden">
+      <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
+        <Users size={14} className="text-fuchsia-400" />
+        Fluxo e Audiencia Device
+      </h3>
+
+      <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Fluxo</span>
+          <span className="text-[11px] text-gray-400 text-right">
+            {safeVisitors.toLocaleString('pt-BR')} visitantes
+            {hasFlowRatio ? `  •  ${safePassersby.toLocaleString('pt-BR')} passantes` : ''}
+          </span>
+        </div>
+        <div className="h-14 rounded-md bg-gray-800 overflow-hidden border border-gray-800">
+          <div
+            className="h-full bg-emerald-500 text-white font-bold text-2xl flex items-center justify-end pr-5 transition-all duration-500"
+            style={{ width: `${flowPct ?? (safeVisitors > 0 ? 100 : 0)}%` }}
+          >
+            {hasFlowRatio ? `${flowPct!.toFixed(1).replace('.', ',')}%` : safeVisitors > 0 ? 'Fluxo disponivel' : ''}
+          </div>
+        </div>
+        {!hasFlowRatio && (
+          <p className="text-[10px] text-gray-500">Passantes ainda nao disponivel no pipeline atual deste widget.</p>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Audiencia Device</span>
+        {audienceRows.length > 0 ? (
+          <div className="space-y-3">
+            {audienceRows.map((entry) => (
+              <div key={entry.label} className="grid grid-cols-[minmax(0,1fr)_88px] gap-4 items-center">
+                <div className="h-14 rounded-sm text-white font-bold text-[22px] flex items-center justify-end pr-5" style={{ background: entry.color, width: `${Math.max(18, Math.min(100, entry.value))}%` }}>
+                  {entry.value.toFixed(1).replace('.', ',')}%
+                </div>
+                <span className="text-sm text-gray-300 truncate">{entry.label}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-gray-800 bg-gray-950/40 px-4 py-6 text-sm text-gray-500 text-center">
+            Sem dados de audiencia por device.
+          </div>
+        )}
+      </div>
+
+      <div className="space-y-3">
+        <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Tracking Ilha</span>
+        {trackingRows.length > 0 ? (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+            {trackingRows.map((entry) => (
+              <div key={entry.label} className="rounded-md px-4 py-5 text-center" style={{ background: entry.color }}>
+                <div className="text-[11px] text-gray-900/80 font-semibold mb-3">{entry.label}</div>
+                <div className="text-[18px] font-bold text-gray-950">{entry.value.toFixed(1).replace('.', ',')}%</div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="rounded-lg border border-dashed border-gray-800 bg-gray-950/40 px-4 py-6 text-sm text-gray-500 text-center">
+            Sem dados de tracking por ilha.
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 export const WIDGET_MAP: Record<string, React.FC<any>> = {
   'flow_trend':          WidgetFlowTrend,
   'hourly_flow':         WidgetHourlyFlow,
+  'chart_facial_expressions': WidgetFacialExpressions,
+  'chart_device_flow':   WidgetDeviceFlow,
   'age_pyramid':         WidgetAgePyramid,
   'gender_dist':         WidgetGenderDist,
   'attributes':          WidgetAttributes,
