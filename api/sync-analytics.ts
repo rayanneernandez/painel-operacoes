@@ -333,11 +333,67 @@ async function fetchDisplayforceFacialExpressionSeries(clientId: string, rangeSt
   return {
     platformId: platform.platformId,
     platformSlug: platform.platformSlug,
+    hourKeys: hourBuckets.map((bucket) => bucket.hourKey),
     series: FACIAL_EXPRESSION_SERIES.map(({ key, label }) => ({
       label,
       values: hourBuckets.map((bucket) => countsByHour.get(bucket.hourKey)?.[key] ?? 0),
     })),
   };
+}
+
+function buildStoredFacialExpressionPayload(
+  hourKeys: string[],
+  series: Array<{ label: string; values: number[] }>,
+) {
+  const keyByLabel = new Map(FACIAL_EXPRESSION_SERIES.map(({ key, label }) => [label, key]));
+  const totals = Object.fromEntries(FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, 0])) as Record<string, number>;
+  const hourly: Record<string, Record<string, number>> = {};
+
+  hourKeys.forEach((hourKey, index) => {
+    const counts = Object.fromEntries(FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, 0])) as Record<string, number>;
+    for (const item of series) {
+      const key = keyByLabel.get(item.label);
+      if (!key) continue;
+      const value = Number(item.values?.[index] ?? 0) || 0;
+      counts[key] = value;
+      totals[key] = (totals[key] ?? 0) + value;
+    }
+    hourly[hourKey] = counts;
+  });
+
+  const totalCount = Object.values(totals).reduce((acc, value) => acc + (Number(value) || 0), 0);
+  return {
+    expressions: totalCount > 0 ? percentMap(totals, totalCount) : {},
+    expressions_totals: totalCount > 0 ? totals : {},
+    expressions_hourly: hourly,
+  };
+}
+
+function mergeFacialExpressionAttributes(existingAttributes: any, facialExpressionPayload: any) {
+  const base = existingAttributes && typeof existingAttributes === "object" ? existingAttributes : {};
+  return {
+    ...base,
+    expressions: facialExpressionPayload?.expressions ?? base.expressions ?? {},
+    expressions_totals: facialExpressionPayload?.expressions_totals ?? base.expressions_totals ?? {},
+    expressions_hourly: facialExpressionPayload?.expressions_hourly ?? base.expressions_hourly ?? {},
+  };
+}
+
+async function enrichRollupWithDisplayforceExpressions(clientId: string, rangeStart: string, rangeEnd: string, rollup: any) {
+  try {
+    const live = await fetchDisplayforceFacialExpressionSeries(clientId, rangeStart, rangeEnd);
+    if (!live) return rollup;
+
+    const expressionsPayload = buildStoredFacialExpressionPayload(live.hourKeys, live.series);
+    return {
+      ...rollup,
+      attributes_percent: mergeFacialExpressionAttributes(rollup?.attributes_percent, expressionsPayload),
+      updated_at: new Date().toISOString(),
+    };
+  } catch (error) {
+    console.warn("[enrichRollupWithDisplayforceExpressions] fallback para rollup sem cache live:", error);
+    return rollup;
+  }
 }
 
 function extractTimes(visit: any) {
@@ -502,14 +558,17 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   const hairColorCount: Record<string, number> = {};
   const hairTypeCount: Record<string, number> = {};
   const expressionCount: Record<string, number> = {};
+  const expressionHourlyCount: Record<string, Record<string, number>> = {};
   let glassesKnown=0, facialHairKnown=0, headwearKnown=0, hairColorKnown=0, hairTypeKnown=0, expressionKnown=0;
   let sumVisit=0, cntVisit=0, sumDwell=0, cntDwell=0, sumContact=0, cntContact=0;
 
   for (const row of rows) {
+    let hourKey: string | null = null;
     if (row.timestamp) {
       const d = new Date(row.timestamp);
       if (!isNaN(d.getTime())) {
         const dk = asISODateUTC(d);
+        hourKey = d.toISOString().slice(0, 13);
         perDayCount[dk] = (perDayCount[dk] ?? 0) + 1;
         perHourTotal[String(d.getUTCHours())] = (perHourTotal[String(d.getUTCHours())] ?? 0) + 1;
       }
@@ -526,7 +585,15 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     if (typeof a.hair_color === "string" && a.hair_color.trim()) { const hck = a.hair_color.trim().toLowerCase(); hairColorCount[hck] = (hairColorCount[hck] ?? 0) + 1; hairColorKnown++; }
     if (typeof a.hair_type === "string" && a.hair_type.trim()) { const htk = a.hair_type.trim().toLowerCase(); hairTypeCount[htk] = (hairTypeCount[htk] ?? 0) + 1; hairTypeKnown++; }
     const expression = normalizeFacialExpression(a.facial_expression) ?? getDominantFacialExpression(row.raw_data);
-    if (expression) { expressionCount[expression] = (expressionCount[expression] ?? 0) + 1; expressionKnown++; }
+    if (expression) {
+      expressionCount[expression] = (expressionCount[expression] ?? 0) + 1;
+      if (hourKey) {
+        const hourlyEntry = expressionHourlyCount[hourKey] ?? Object.fromEntries(FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, 0])) as Record<string, number>;
+        hourlyEntry[expression] = (hourlyEntry[expression] ?? 0) + 1;
+        expressionHourlyCount[hourKey] = hourlyEntry;
+      }
+      expressionKnown++;
+    }
     if (typeof row.visit_time_seconds === "number" && Number.isFinite(row.visit_time_seconds)) { sumVisit += row.visit_time_seconds; cntVisit++; } else if (row.timestamp && row.end_timestamp) { const s = Date.parse(row.timestamp), e = Date.parse(row.end_timestamp); if (Number.isFinite(s) && Number.isFinite(e) && e >= s) { sumVisit += Math.round((e-s)/1000); cntVisit++; } }
     if (typeof row.dwell_time_seconds === "number" && Number.isFinite(row.dwell_time_seconds)) { sumDwell += row.dwell_time_seconds; cntDwell++; }
     if (typeof row.contact_time_seconds === "number" && Number.isFinite(row.contact_time_seconds) && row.contact_time_seconds > 0) { sumContact += row.contact_time_seconds; cntContact++; }
@@ -552,6 +619,8 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       hair_color:  hairColorKnown  > 0 ? percentMap(hairColorCount,  hairColorKnown)  : {},
       hair_type:   hairTypeKnown   > 0 ? percentMap(hairTypeCount,   hairTypeKnown)   : {},
       expressions: expressionKnown > 0 ? percentMap(expressionCount, expressionKnown) : {},
+      expressions_totals: expressionKnown > 0 ? expressionCount : {},
+      expressions_hourly: expressionKnown > 0 ? expressionHourlyCount : {},
     },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_dwell_time_seconds:   cntDwell   > 0 ? Number((sumDwell   / cntDwell).toFixed(2))   : null,
@@ -680,11 +749,17 @@ async function rebuildBackgroundRollups(client_id: string, cfg: ClientApiConfig,
       p_client_id: client_id, p_start: dayStart.toISOString(), p_end: dayEnd.toISOString(),
     });
     if (!rpcDayErr && rpcDay && Number((rpcDay as any).total_visitors) > 0) {
+      const enrichedDayRollup = await enrichRollupWithDisplayforceExpressions(
+        client_id,
+        dayStart.toISOString(),
+        dayEnd.toISOString(),
+        { client_id, start: dayStart.toISOString(), end: dayEnd.toISOString(), ...(rpcDay as any), updated_at: new Date().toISOString() }
+      );
       await supabase.from("visitor_analytics_rollups").upsert(
-        { client_id, start: dayStart.toISOString(), end: dayEnd.toISOString(), ...(rpcDay as any), updated_at: new Date().toISOString() },
+        enrichedDayRollup,
         { onConflict: "client_id,start,end" }
       );
-      console.log(`[BgSync] Rollup ${asISODateUTC(dayStart)} salvo: ${(rpcDay as any).total_visitors} visitantes`);
+      console.log(`[BgSync] Rollup ${asISODateUTC(dayStart)} salvo: ${Number(enrichedDayRollup.total_visitors ?? 0)} visitantes`);
     }
     d = addUtcDays(d, 1);
   }
@@ -695,11 +770,17 @@ async function rebuildBackgroundRollups(client_id: string, cfg: ClientApiConfig,
     p_client_id: client_id, p_start: historicStart, p_end: syncEnd,
   });
   if (!rpcHistErr && rpcHist && Number((rpcHist as any).total_visitors) > 0) {
+    const enrichedHistoricRollup = await enrichRollupWithDisplayforceExpressions(
+      client_id,
+      historicStart,
+      syncEnd,
+      { client_id, start: historicStart, end: HISTORIC_END, ...(rpcHist as any), updated_at: new Date().toISOString() }
+    );
     await supabase.from("visitor_analytics_rollups").upsert(
-      { client_id, start: historicStart, end: HISTORIC_END, ...(rpcHist as any), updated_at: new Date().toISOString() },
+      enrichedHistoricRollup,
       { onConflict: "client_id,start,end" }
     );
-    console.log(`[BgSync] Rollup histórico salvo: ${(rpcHist as any).total_visitors} visitantes`);
+    console.log(`[BgSync] Rollup histórico salvo: ${Number(enrichedHistoricRollup.total_visitors ?? 0)} visitantes`);
   }
 }
 
@@ -760,6 +841,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!liveSeries) {
           return ok(res, { source: "displayforce_emotion", live_available: false, series: [] });
         }
+
+        const expressionsPayload = buildStoredFacialExpressionPayload(liveSeries.hourKeys, liveSeries.series);
+        const { data: existingRollup } = await supabase
+          .from("visitor_analytics_rollups")
+          .select("attributes_percent")
+          .eq("client_id", client_id)
+          .eq("start", String(start))
+          .eq("end", String(end))
+          .maybeSingle();
+
+        await supabase
+          .from("visitor_analytics_rollups")
+          .update({
+            attributes_percent: mergeFacialExpressionAttributes(existingRollup?.attributes_percent, expressionsPayload),
+            updated_at: new Date().toISOString(),
+          })
+          .eq("client_id", client_id)
+          .eq("start", String(start))
+          .eq("end", String(end));
 
         return ok(res, {
           source: "displayforce_emotion",
@@ -1026,7 +1126,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const stats = rpcData as any;
         const totalVisitors = Number(stats?.total_visitors ?? 0);
         if (totalVisitors === 0) return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
-        const rollupRow = { client_id, start:rangeStart, end:rangeEnd, total_visitors:totalVisitors, avg_visitors_per_day:stats.avg_visitors_per_day??0, visitors_per_day:stats.visitors_per_day??{}, visitors_per_hour_avg:stats.visitors_per_hour_avg??{}, age_pyramid_percent:stats.age_pyramid_percent??{}, gender_percent:stats.gender_percent??{}, attributes_percent:stats.attributes_percent??{}, avg_visit_time_seconds:stats.avg_visit_time_seconds??null, avg_dwell_time_seconds:null, avg_contact_time_seconds:stats.avg_contact_time_seconds??null, updated_at:new Date().toISOString() };
+        let rollupRow = { client_id, start:rangeStart, end:rangeEnd, total_visitors:totalVisitors, avg_visitors_per_day:stats.avg_visitors_per_day??0, visitors_per_day:stats.visitors_per_day??{}, visitors_per_hour_avg:stats.visitors_per_hour_avg??{}, age_pyramid_percent:stats.age_pyramid_percent??{}, gender_percent:stats.gender_percent??{}, attributes_percent:stats.attributes_percent??{}, avg_visit_time_seconds:stats.avg_visit_time_seconds??null, avg_dwell_time_seconds:null, avg_contact_time_seconds:stats.avg_contact_time_seconds??null, updated_at:new Date().toISOString() };
+        rollupRow = await enrichRollupWithDisplayforceExpressions(client_id, rangeStart, rangeEnd, rollupRow);
         const { error: saveErr } = await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict:"client_id,start,end" });
         if (saveErr) console.error("[rebuild_rollup] Erro ao salvar:", saveErr);
         return ok(res, { message:"Rollup recalculado via SQL", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:totalVisitors, next_offset:null, done:true, dashboard: { total_visitors:totalVisitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:null, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:!saveErr });
@@ -1071,7 +1172,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!rpcErr && rpcData) {
         const stats = rpcData as any; const totalVisitors = Number(stats?.total_visitors ?? 0);
         if (totalVisitors > 0) {
-          const rollupRow = { client_id, start:rangeStart, end:rangeEnd, total_visitors:totalVisitors, avg_visitors_per_day:stats.avg_visitors_per_day??0, visitors_per_day:stats.visitors_per_day??{}, visitors_per_hour_avg:stats.visitors_per_hour_avg??{}, age_pyramid_percent:stats.age_pyramid_percent??{}, gender_percent:stats.gender_percent??{}, attributes_percent:stats.attributes_percent??{}, avg_visit_time_seconds:stats.avg_visit_time_seconds??null, avg_dwell_time_seconds:null, avg_contact_time_seconds:stats.avg_contact_time_seconds??null, updated_at:new Date().toISOString() };
+          let rollupRow = { client_id, start:rangeStart, end:rangeEnd, total_visitors:totalVisitors, avg_visitors_per_day:stats.avg_visitors_per_day??0, visitors_per_day:stats.visitors_per_day??{}, visitors_per_hour_avg:stats.visitors_per_hour_avg??{}, age_pyramid_percent:stats.age_pyramid_percent??{}, gender_percent:stats.gender_percent??{}, attributes_percent:stats.attributes_percent??{}, avg_visit_time_seconds:stats.avg_visit_time_seconds??null, avg_dwell_time_seconds:null, avg_contact_time_seconds:stats.avg_contact_time_seconds??null, updated_at:new Date().toISOString() };
+          rollupRow = await enrichRollupWithDisplayforceExpressions(client_id, rangeStart, rangeEnd, rollupRow);
           await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict:"client_id,start,end" });
           return ok(res, { message:"Rollup recalculado via SQL", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:totalVisitors, next_offset:null, done:true, dashboard: { total_visitors:totalVisitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:null, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:true });
         }

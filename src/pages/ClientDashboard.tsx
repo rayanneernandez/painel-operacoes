@@ -276,6 +276,46 @@ function buildFacialExpressionSeriesFromRows(rows: any[], hourKeys: string[]) {
   return series;
 }
 
+function buildFacialExpressionSeriesFromRollups(rollups: any[], hourKeys: string[]) {
+  const series = buildEmptyFacialExpressionSeries(hourKeys.length);
+  const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
+  const bestHourTotals = new Map<string, number>();
+  let hasAnyData = false;
+
+  for (const rollup of rollups || []) {
+    const hourlySource = rollup?.attributes_percent?.expressions_hourly;
+    if (!hourlySource || typeof hourlySource !== 'object') continue;
+
+    for (const hourKey of hourKeys) {
+      const counts = hourlySource?.[hourKey];
+      if (!counts || typeof counts !== 'object') continue;
+
+      const normalizedCounts = Object.fromEntries(
+        FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, Number(counts?.[key] ?? 0) || 0]),
+      ) as Record<'neutral' | 'happiness' | 'surprise' | 'anger', number>;
+
+      const total = Object.values(normalizedCounts).reduce((acc, value) => acc + value, 0);
+      if (total <= 0) continue;
+
+      const currentBest = bestHourTotals.get(hourKey) ?? -1;
+      if (total < currentBest) continue;
+
+      bestHourTotals.set(hourKey, total);
+      const index = hourKeys.indexOf(hourKey);
+      if (index === -1) continue;
+
+      for (const { key } of FACIAL_EXPRESSION_SERIES) {
+        const target = valuesByKey.get(key);
+        if (!target) continue;
+        target[index] = normalizedCounts[key];
+        hasAnyData = hasAnyData || normalizedCounts[key] > 0;
+      }
+    }
+  }
+
+  return hasAnyData ? series : null;
+}
+
 function overlapVisitorsForRange(rollup: any, startDay: string, endDay: string) {
   const vpd: Record<string, number> = rollup?.visitors_per_day ?? {};
   let total = 0;
@@ -595,6 +635,7 @@ export function ClientDashboard() {
     rangeEnd: string,
     deviceFilter: number[],
     isCurrent: () => boolean,
+    candidateRollups: any[] = [],
   ) => {
     const { hourKeys, labels } = buildFacialExpressionHourAxis(rangeStart, rangeEnd);
     if (hourKeys.length === 0) {
@@ -602,6 +643,14 @@ export function ClientDashboard() {
         setFacialExpressionLabels([]);
         setFacialExpressionSeries([]);
       }
+      return;
+    }
+
+    const cachedSeries = buildFacialExpressionSeriesFromRollups(candidateRollups, hourKeys);
+    if (cachedSeries) {
+      if (!isCurrent()) return;
+      setFacialExpressionLabels(labels);
+      setFacialExpressionSeries(cachedSeries);
       return;
     }
 
@@ -685,8 +734,8 @@ export function ClientDashboard() {
       const endDay   = endIso.slice(0, 10);
       const todayDay = alignUtcStartOfDay(new Date()).toISOString().slice(0, 10);
       const rangeTouchesToday = startDay <= todayDay && endDay >= todayDay;
-      const syncExpressions = async () => {
-        await loadFacialExpressions(id, startIso, endIso, deviceIds, isCurrent);
+      const syncExpressions = async (candidateRollups: any[] = []) => {
+        await loadFacialExpressions(id, startIso, endIso, deviceIds, isCurrent, candidateRollups);
       };
 
       // ── Filtro por dispositivo (loja selecionada com dispositivos) ───────
@@ -712,7 +761,7 @@ export function ClientDashboard() {
               age_pyramid_percent:    json.dashboard.age_pyramid_percent,
             };
             applyRollup(rollupPayload, { updatedAt: json?.dashboard?.updated_at ?? null });
-            await syncExpressions();
+            await syncExpressions([rollupPayload]);
           } else {
             // Sem dados para esses dispositivos no período → exibe zeros
             console.log('[loadData] Sem dados para os dispositivos da loja:', deviceIds);
@@ -855,7 +904,7 @@ export function ClientDashboard() {
             console.log(`[loadData] exact rollup: ${exactRollupCandidateTotal}`);
             const hydratedExact = hydrateForApply(exactRollupCandidate);
             applyRollup(hydratedExact, { updatedAt: exactRollupCandidate.updated_at ?? null });
-            await syncExpressions();
+            await syncExpressions([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]);
             return;
           }
 
@@ -874,7 +923,7 @@ export function ClientDashboard() {
             visitors_per_day:     mergedVpd,
           });
           applyRollup(mergedRollup, { updatedAt: metaRollup?.updated_at ?? exactRollupCandidate?.updated_at ?? null });
-          await syncExpressions();
+          await syncExpressions([mergedRollup, ...(allRollups || []), ...(metadataRollups || [])]);
           return;
         }
 
@@ -889,7 +938,7 @@ export function ClientDashboard() {
         console.log(`[loadData] exact rollup fallback: ${exactRollupCandidateTotal}`);
         const hydratedExact = hydrateForApply(exactRollupCandidate);
         applyRollup(hydratedExact, { updatedAt: exactRollupCandidate.updated_at ?? null });
-        await syncExpressions();
+        await syncExpressions([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]);
         return;
       }
 
@@ -922,7 +971,7 @@ export function ClientDashboard() {
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
           };
           applyRollup(rollupPayload, { updatedAt: json?.dashboard?.updated_at ?? null });
-          await syncExpressions();
+          await syncExpressions([rollupPayload]);
           setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes.`);
         } else {
           zeroAll();

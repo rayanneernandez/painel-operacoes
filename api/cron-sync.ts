@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import { getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
+import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
@@ -46,6 +46,27 @@ function percentMap(countMap: Record<string,number>, total: number) {
   for (const [k, v] of Object.entries(countMap))
     out[k] = Number(((v / total) * 100).toFixed(2));
   return out;
+}
+
+function hasStoredExpressionCache(value: any) {
+  if (!value || typeof value !== "object") return false;
+  return Object.values(value).some((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    return Object.values(entry).some((count) => Number(count) > 0);
+  });
+}
+
+function mergeAttributesKeepingExpressionCache(existingAttributes: any, nextAttributes: any) {
+  const existing = existingAttributes && typeof existingAttributes === "object" ? existingAttributes : {};
+  const next = nextAttributes && typeof nextAttributes === "object" ? nextAttributes : {};
+  const shouldKeepExistingExpressions = hasStoredExpressionCache(existing?.expressions_hourly);
+
+  return {
+    ...next,
+    expressions: shouldKeepExistingExpressions ? (existing.expressions ?? next.expressions ?? {}) : (next.expressions ?? existing.expressions ?? {}),
+    expressions_totals: shouldKeepExistingExpressions ? (existing.expressions_totals ?? next.expressions_totals ?? {}) : (next.expressions_totals ?? existing.expressions_totals ?? {}),
+    expressions_hourly: shouldKeepExistingExpressions ? (existing.expressions_hourly ?? next.expressions_hourly ?? {}) : (next.expressions_hourly ?? existing.expressions_hourly ?? {}),
+  };
 }
 
 // ── Deduplica e normaliza registros da API ────────────────────────────────────
@@ -129,14 +150,17 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   const headwearCounts:   Record<string,number> = {};
   const facialHairCounts: Record<string,number> = {};
   const expressionCounts: Record<string,number> = {};
+  const expressionHourlyCounts: Record<string, Record<string, number>> = {};
   let expressionKnown = 0;
   let sumVisit=0, cntVisit=0, sumContact=0, cntContact=0;
 
   for (const r of rows) {
+    let hourKey: string | null = null;
     if (r.timestamp) {
       const d = new Date(r.timestamp);
       if (!isNaN(d.getTime())) {
         const dk = asISODateUTC(d);
+        hourKey = d.toISOString().slice(0, 13);
         perDay[dk] = (perDay[dk] ?? 0) + 1;
         perHour[String(d.getUTCHours())] = (perHour[String(d.getUTCHours())] ?? 0) + 1;
       }
@@ -155,7 +179,15 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     { const k = attrs.headwear   != null ? String(attrs.headwear).toLowerCase()   : "none";    headwearCounts[k]   = (headwearCounts[k]   ?? 0) + 1; }
     { const k = attrs.facial_hair!= null ? String(attrs.facial_hair).toLowerCase(): "none";    facialHairCounts[k] = (facialHairCounts[k] ?? 0) + 1; }
     const expression = normalizeFacialExpression(attrs.facial_expression) ?? getDominantFacialExpression(r.raw_data);
-    if (expression) { expressionCounts[expression] = (expressionCounts[expression] ?? 0) + 1; expressionKnown++; }
+    if (expression) {
+      expressionCounts[expression] = (expressionCounts[expression] ?? 0) + 1;
+      if (hourKey) {
+        const hourlyEntry = expressionHourlyCounts[hourKey] ?? Object.fromEntries(FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, 0])) as Record<string, number>;
+        hourlyEntry[expression] = (hourlyEntry[expression] ?? 0) + 1;
+        expressionHourlyCounts[hourKey] = hourlyEntry;
+      }
+      expressionKnown++;
+    }
   }
 
   const total = rows.length;
@@ -179,6 +211,8 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       headwear:    percentMap(headwearCounts,   nAttr(headwearCounts)),
       facial_hair: percentMap(facialHairCounts, nAttr(facialHairCounts)),
       expressions: expressionKnown > 0 ? percentMap(expressionCounts, expressionKnown) : {},
+      expressions_totals: expressionKnown > 0 ? expressionCounts : {},
+      expressions_hourly: expressionKnown > 0 ? expressionHourlyCounts : {},
     },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_contact_time_seconds: cntContact > 0 ? Number((sumContact / cntContact).toFixed(2)) : null,
@@ -290,7 +324,17 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
         const dayStart = `${dayKey}T00:00:00.000Z`;
         const dayEnd = `${dayKey}T23:59:59.999Z`;
         const rrDay = buildRollup(dayRows, client_id, dayStart, dayEnd);
-        await supabase.from("visitor_analytics_rollups").upsert(rrDay, { onConflict: "client_id,start,end" });
+        const { data: existingDayRollup } = await supabase
+          .from("visitor_analytics_rollups")
+          .select("attributes_percent")
+          .eq("client_id", client_id)
+          .eq("start", dayStart)
+          .eq("end", dayEnd)
+          .maybeSingle();
+        await supabase.from("visitor_analytics_rollups").upsert({
+          ...rrDay,
+          attributes_percent: mergeAttributesKeepingExpressionCache(existingDayRollup?.attributes_percent, rrDay.attributes_percent),
+        }, { onConflict: "client_id,start,end" });
         console.log(`[cron] Rollup ${dayKey}: ${rrDay.total_visitors} visitantes`);
       }
 
@@ -301,7 +345,7 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
       //    Usa dados da API diretamente — sem query extra ao Supabase
       const { data: historicRollup } = await supabase
         .from("visitor_analytics_rollups")
-        .select("visitors_per_day, total_visitors")
+        .select("visitors_per_day, total_visitors, attributes_percent")
         .eq("client_id", client_id)
         .gt("end", "2099-01-01T00:00:00Z")
         .maybeSingle();
@@ -323,7 +367,7 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
             visitors_per_hour_avg:    rrSync.visitors_per_hour_avg,
             age_pyramid_percent:      rrSync.age_pyramid_percent,
             gender_percent:           rrSync.gender_percent,
-            attributes_percent:       rrSync.attributes_percent,
+            attributes_percent:       mergeAttributesKeepingExpressionCache(historicRollup.attributes_percent, rrSync.attributes_percent),
             avg_visit_time_seconds:   rrSync.avg_visit_time_seconds,
             avg_contact_time_seconds: rrSync.avg_contact_time_seconds,
             updated_at:               new Date().toISOString(),
@@ -335,7 +379,7 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
       } else {
         // Nenhum rollup histórico ainda: cria com os dados disponíveis
         await supabase.from("visitor_analytics_rollups").upsert(
-          { ...rrSync, start: collectionStart, end: HISTORIC_END },
+          { ...rrSync, start: collectionStart, end: HISTORIC_END, attributes_percent: mergeAttributesKeepingExpressionCache(undefined, rrSync.attributes_percent) },
           { onConflict: "client_id,start,end" }
         );
         console.log(`[cron] Rollup histórico criado: ${rrSync.total_visitors} visitantes`);
