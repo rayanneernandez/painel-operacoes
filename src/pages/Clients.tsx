@@ -187,7 +187,7 @@ export function Clients() {
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-sm font-medium text-gray-400">Empresa</label>
+                  <label className="text-sm font-medium text-gray-400">Empresa *</label>
                   <input 
                     type="text" 
                     defaultValue={selectedClient?.company}

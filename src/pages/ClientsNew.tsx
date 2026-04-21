@@ -791,7 +791,7 @@ export function Clients() {
       </div>
 
       {/* Client List */}
-      <div className="space-y-4">
+      <div className="space-y-3">
         {clients.length === 0 ? (
           <div className="text-center py-12 bg-gray-900/50 rounded-xl border border-gray-800 border-dashed">
             <div className="w-16 h-16 bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-4 text-gray-500">
@@ -805,43 +805,49 @@ export function Clients() {
           </div>
         ) : (
           clients.map((client) => (
-          <div key={client.id} className="bg-gray-900 border border-gray-800 rounded-xl p-6 hover:border-gray-700 transition-all group relative flex flex-col gap-4">
-            <div className="w-full flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                <div className="w-14 h-14 rounded-2xl bg-gray-900 flex items-center justify-center text-white font-bold text-2xl shadow-inner overflow-hidden">
+          <div key={client.id} className="bg-gray-900 border border-gray-800 rounded-xl px-4 py-4 sm:px-5 hover:border-gray-700 transition-all group relative flex flex-col gap-3">
+            <div className="w-full flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
+              <div className="flex min-w-0 items-center gap-3">
+                <div className="w-12 h-12 rounded-xl bg-gray-900 flex items-center justify-center text-white font-bold text-2xl shadow-inner overflow-hidden shrink-0">
                   {client.logo_url ? (
                     <img src={client.logo_url} alt={client.name} className="w-full h-full object-contain" />
                   ) : (
-                    <Building size={24} />
+                    <Building size={20} />
                   )}
                 </div>
-                <div>
-                  <div className="flex items-center gap-3">
-                    <h3 className="font-bold text-white text-lg">{client.name}</h3>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-3 min-w-0">
+                    <h3 className="truncate font-bold text-white text-lg">{client.name}</h3>
                   </div>
-                  <p className="text-sm text-gray-500 mt-1">{client.company}</p>
-                  <div className="flex items-center gap-4 mt-3 text-sm text-gray-400">
-                    <span className="flex items-center gap-1.5"><Mail size={14} /> {client.email}</span>
-                    <span className="flex items-center gap-1.5"><Phone size={14} /> {client.phone}</span>
+                  <p className="text-sm text-gray-500 mt-0.5 truncate">{client.company || 'Sem nome'}</p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 mt-2 text-sm text-gray-400">
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <Mail size={14} className="shrink-0" />
+                      <span className="truncate">{client.email || 'Sem e-mail'}</span>
+                    </span>
+                    <span className="flex min-w-0 items-center gap-1.5">
+                      <Phone size={14} className="shrink-0" />
+                      <span className="truncate">{client.phone || 'Sem telefone'}</span>
+                    </span>
                   </div>
                 </div>
               </div>
 
-              <div className="flex items-start gap-4 h-full">
+              <div className="flex items-center gap-2 self-end xl:self-center shrink-0">
                  <button 
                   onClick={() => setExpandedClient(expandedClient === client.id ? null : client.id)}
-                  className={`p-2 rounded-lg border transition-colors ${expandedClient === client.id ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'border-gray-700 hover:bg-gray-800 text-gray-300'}`}
+                  className={`h-10 w-10 inline-flex items-center justify-center rounded-lg border transition-colors ${expandedClient === client.id ? 'bg-emerald-500/10 text-emerald-500 border-emerald-500/20' : 'border-gray-700 hover:bg-gray-800 text-gray-300'}`}
                  >
                    {expandedClient === client.id ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
                  </button>
                  <button 
                   onClick={() => navigate(`/clientes/${client.id}/dashboard`)}
-                  className="px-4 py-2 rounded-lg border border-gray-700 hover:bg-gray-800 text-gray-300 text-sm font-medium flex items-center gap-2 transition-colors whitespace-nowrap"
+                  className="h-10 min-w-[148px] px-4 rounded-lg border border-gray-700 hover:bg-gray-800 text-gray-300 text-sm font-medium inline-flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
                  >
                    <LayoutDashboard size={16} className="text-emerald-500" /> Dashboard
                 </button>
                  <div className="relative">
-                  <button onClick={() => setActiveMenu(activeMenu === client.id ? null : client.id)} className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors">
+                  <button onClick={() => setActiveMenu(activeMenu === client.id ? null : client.id)} className="h-10 w-10 inline-flex items-center justify-center text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors">
                       <Settings size={20} />
                   </button>
                   {activeMenu === client.id && (
@@ -974,7 +980,7 @@ export function Clients() {
                 <>
                   <div className="grid grid-cols-2 gap-4">
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-400">Nome *</label>
+                      <label className="text-sm font-medium text-gray-400">Empresa *</label>
                       <input type="text" value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                     <div className="space-y-2">
@@ -986,7 +992,7 @@ export function Clients() {
                       <input type="text" value={formData.phone} onChange={(e) => setFormData({...formData, phone: formatPhone(e.target.value)})} placeholder="(11) 99999-9999" maxLength={15} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                     <div className="space-y-2">
-                      <label className="text-sm font-medium text-gray-400">Empresa</label>
+                      <label className="text-sm font-medium text-gray-400">Nome</label>
                       <input type="text" value={formData.company} onChange={(e) => setFormData({...formData, company: e.target.value})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                     <div className="space-y-2">
