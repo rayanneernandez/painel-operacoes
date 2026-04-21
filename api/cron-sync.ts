@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
+import { getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
@@ -71,6 +72,7 @@ function buildRows(visits: any[], client_id: string) {
     const visitTime = safeNumber(v.tracks_duration) ?? safeNumber(v.visit_time_seconds) ?? safeNumber(v.duration) ?? dur ?? null;
     const dwellTime = safeNumber(v.dwell_time_seconds) ?? safeNumber(v.dwell_time) ?? null;
     const contactTime = safeNumber(v.content_view_duration) ?? safeNumber(v.contact_time_seconds) ?? null;
+    const dominantExpression = getDominantFacialExpression(v);
 
     const visit_uid = sha256(JSON.stringify({ client_id, device_id, visitor_id: v.visitor_id ?? null, start: startTs }));
     map.set(visit_uid, {
@@ -78,7 +80,15 @@ function buildRows(visits: any[], client_id: string) {
       timestamp: startTs, end_timestamp: endTs,
       age: typeof v.age === "number" ? Math.round(v.age) : null,
       gender: normalizeGender(v),
-      attributes: { face_quality: v.face_quality ?? null, glasses: v.glasses ?? null, facial_hair: v.facial_hair ?? null, hair_color: v.hair_color ?? null, hair_type: v.hair_type ?? null, headwear: v.headwear ?? null },
+      attributes: {
+        face_quality: v.face_quality ?? null,
+        glasses: v.glasses ?? null,
+        facial_hair: v.facial_hair ?? null,
+        hair_color: v.hair_color ?? null,
+        hair_type: v.hair_type ?? null,
+        headwear: v.headwear ?? null,
+        facial_expression: dominantExpression,
+      },
       visit_time_seconds: visitTime,
       dwell_time_seconds: dwellTime,
       contact_time_seconds: contactTime,
@@ -118,6 +128,8 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   const hairTypeCounts:   Record<string,number> = {};
   const headwearCounts:   Record<string,number> = {};
   const facialHairCounts: Record<string,number> = {};
+  const expressionCounts: Record<string,number> = {};
+  let expressionKnown = 0;
   let sumVisit=0, cntVisit=0, sumContact=0, cntContact=0;
 
   for (const r of rows) {
@@ -142,6 +154,8 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     { const k = attrs.hair_type  != null ? String(attrs.hair_type).toLowerCase()  : "unknown"; hairTypeCounts[k]   = (hairTypeCounts[k]   ?? 0) + 1; }
     { const k = attrs.headwear   != null ? String(attrs.headwear).toLowerCase()   : "none";    headwearCounts[k]   = (headwearCounts[k]   ?? 0) + 1; }
     { const k = attrs.facial_hair!= null ? String(attrs.facial_hair).toLowerCase(): "none";    facialHairCounts[k] = (facialHairCounts[k] ?? 0) + 1; }
+    const expression = normalizeFacialExpression(attrs.facial_expression) ?? getDominantFacialExpression(r.raw_data);
+    if (expression) { expressionCounts[expression] = (expressionCounts[expression] ?? 0) + 1; expressionKnown++; }
   }
 
   const total = rows.length;
@@ -164,6 +178,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       hair_type:   percentMap(hairTypeCounts,   nAttr(hairTypeCounts)),
       headwear:    percentMap(headwearCounts,   nAttr(headwearCounts)),
       facial_hair: percentMap(facialHairCounts, nAttr(facialHairCounts)),
+      expressions: expressionKnown > 0 ? percentMap(expressionCounts, expressionKnown) : {},
     },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_contact_time_seconds: cntContact > 0 ? Number((sumContact / cntContact).toFixed(2)) : null,

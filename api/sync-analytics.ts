@@ -1,6 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
+import { getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
 
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 const _key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -166,13 +167,22 @@ function buildAndDeduplicateRows(combined: any[], client_id: string) {
       }
     }
     const { startTs, endTs, visitTimeSeconds, dwellTimeSeconds, contactTimeSeconds } = extractTimes(visit);
+    const dominantExpression = getDominantFacialExpression(visit);
     const visit_uid = sha256(JSON.stringify({ client_id, device_id: deviceId, visitor_id: visit.visitor_id ?? null, start: startTs ?? null }));
     dedupMap.set(visit_uid, {
       visit_uid, client_id, device_id: deviceId,
       timestamp: startTs, end_timestamp: endTs,
       age: typeof visit.age === "number" ? Math.round(visit.age) : null,
       gender: normalizeGender(visit),
-      attributes: { face_quality: visit.face_quality ?? null, glasses: visit.glasses ?? null, facial_hair: visit.facial_hair ?? null, hair_color: visit.hair_color ?? null, hair_type: visit.hair_type ?? null, headwear: visit.headwear ?? null },
+      attributes: {
+        face_quality: visit.face_quality ?? null,
+        glasses: visit.glasses ?? null,
+        facial_hair: visit.facial_hair ?? null,
+        hair_color: visit.hair_color ?? null,
+        hair_type: visit.hair_type ?? null,
+        headwear: visit.headwear ?? null,
+        facial_expression: dominantExpression,
+      },
       visit_time_seconds: visitTimeSeconds, dwell_time_seconds: dwellTimeSeconds, contact_time_seconds: contactTimeSeconds,
       raw_data: visit,
     });
@@ -192,7 +202,7 @@ async function fetchAllDBRows(client_id: string, rangeStart: string, rangeEnd: s
   const all: any[] = [];
   let from = 0;
   while (true) {
-    let q = supabase.from("visitor_analytics").select("visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds").eq("client_id", client_id).gte("timestamp", rangeStart).lte("timestamp", rangeEnd).order("timestamp", { ascending: true }).range(from, from + PAGE - 1);
+    let q = supabase.from("visitor_analytics").select("visit_uid,timestamp,end_timestamp,age,gender,attributes,device_id,visit_time_seconds,dwell_time_seconds,contact_time_seconds,raw_data").eq("client_id", client_id).gte("timestamp", rangeStart).lte("timestamp", rangeEnd).order("timestamp", { ascending: true }).range(from, from + PAGE - 1);
     if (deviceNums.length > 0) q = q.in("device_id", deviceNums);
     const { data, error } = await q;
     if (error) { console.error(`[fetchAllDBRows] Erro offset=${from}:`, error); break; }
@@ -218,7 +228,8 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   const headwearCount: Record<string, number> = {};
   const hairColorCount: Record<string, number> = {};
   const hairTypeCount: Record<string, number> = {};
-  let glassesKnown=0, facialHairKnown=0, headwearKnown=0, hairColorKnown=0, hairTypeKnown=0;
+  const expressionCount: Record<string, number> = {};
+  let glassesKnown=0, facialHairKnown=0, headwearKnown=0, hairColorKnown=0, hairTypeKnown=0, expressionKnown=0;
   let sumVisit=0, cntVisit=0, sumDwell=0, cntDwell=0, sumContact=0, cntContact=0;
 
   for (const row of rows) {
@@ -241,6 +252,8 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     if (hwb !== null) { headwearCount[String(hwb)] = (headwearCount[String(hwb)] ?? 0) + 1; headwearKnown++; }
     if (typeof a.hair_color === "string" && a.hair_color.trim()) { const hck = a.hair_color.trim().toLowerCase(); hairColorCount[hck] = (hairColorCount[hck] ?? 0) + 1; hairColorKnown++; }
     if (typeof a.hair_type === "string" && a.hair_type.trim()) { const htk = a.hair_type.trim().toLowerCase(); hairTypeCount[htk] = (hairTypeCount[htk] ?? 0) + 1; hairTypeKnown++; }
+    const expression = normalizeFacialExpression(a.facial_expression) ?? getDominantFacialExpression(row.raw_data);
+    if (expression) { expressionCount[expression] = (expressionCount[expression] ?? 0) + 1; expressionKnown++; }
     if (typeof row.visit_time_seconds === "number" && Number.isFinite(row.visit_time_seconds)) { sumVisit += row.visit_time_seconds; cntVisit++; } else if (row.timestamp && row.end_timestamp) { const s = Date.parse(row.timestamp), e = Date.parse(row.end_timestamp); if (Number.isFinite(s) && Number.isFinite(e) && e >= s) { sumVisit += Math.round((e-s)/1000); cntVisit++; } }
     if (typeof row.dwell_time_seconds === "number" && Number.isFinite(row.dwell_time_seconds)) { sumDwell += row.dwell_time_seconds; cntDwell++; }
     if (typeof row.contact_time_seconds === "number" && Number.isFinite(row.contact_time_seconds) && row.contact_time_seconds > 0) { sumContact += row.contact_time_seconds; cntContact++; }
@@ -265,6 +278,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       headwear:    headwearKnown   > 0 ? percentMap(headwearCount,   headwearKnown)   : {},
       hair_color:  hairColorKnown  > 0 ? percentMap(hairColorCount,  hairColorKnown)  : {},
       hair_type:   hairTypeKnown   > 0 ? percentMap(hairTypeCount,   hairTypeKnown)   : {},
+      expressions: expressionKnown > 0 ? percentMap(expressionCount, expressionKnown) : {},
     },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_dwell_time_seconds:   cntDwell   > 0 ? Number((sumDwell   / cntDwell).toFixed(2))   : null,

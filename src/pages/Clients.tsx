@@ -188,7 +188,7 @@ export function Clients() {
                 </div>
                 <div className="space-y-2">
                   <label className="text-sm font-medium text-gray-400">Empresa *</label>
-                  <input 
+                  <input  
                     type="text" 
                     defaultValue={selectedClient?.company}
                     className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all"

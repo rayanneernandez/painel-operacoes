@@ -11,6 +11,7 @@ import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
 import { ExportButton } from '../components/ExportButton';
 import supabase from '../lib/supabase';
+import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from '../utils/facialExpressions';
 
 // ── Controle de rebuild em andamento (nível de módulo) ───────────────────────
 const _rebuilding = new Set<string>();
@@ -221,6 +222,95 @@ function countRollupDays(rollup: any) {
   return countInclusiveUtcDays(rollup?.start, rollup?.end);
 }
 
+function buildDateAxis(startValue: Date | string, endValue: Date | string) {
+  const start = alignUtcStartOfDay(startValue);
+  const end = alignUtcStartOfDay(endValue);
+  const dayKeys: string[] = [];
+  const labels: string[] = [];
+
+  for (let cursor = new Date(start.getTime()); cursor <= end; cursor = new Date(cursor.getTime() + 86400000)) {
+    dayKeys.push(cursor.toISOString().slice(0, 10));
+    labels.push(cursor.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'UTC' }));
+  }
+
+  return { dayKeys, labels };
+}
+
+function buildEmptyFacialExpressionSeries(length: number) {
+  return FACIAL_EXPRESSION_SERIES.map(({ label }) => ({
+    label,
+    values: Array.from({ length }, () => 0),
+  }));
+}
+
+function buildFacialExpressionSeriesFromRows(rows: any[], dayKeys: string[]) {
+  const dayIndex = new Map(dayKeys.map((day, index) => [day, index]));
+  const series = buildEmptyFacialExpressionSeries(dayKeys.length);
+  const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
+
+  for (const row of rows || []) {
+    const timestamp = typeof row?.timestamp === 'string' ? row.timestamp : null;
+    if (!timestamp) continue;
+    const dayKey = timestamp.slice(0, 10);
+    const index = dayIndex.get(dayKey);
+    if (index === undefined) continue;
+
+    const expression =
+      normalizeFacialExpression(row?.attributes?.facial_expression) ??
+      getDominantFacialExpression(row?.raw_data);
+
+    if (!expression) continue;
+    const target = valuesByKey.get(expression);
+    if (!target) continue;
+    target[index] += 1;
+  }
+
+  return series;
+}
+
+function buildFacialExpressionSeriesFromRollups(rollups: any[], dayKeys: string[]) {
+  const series = buildEmptyFacialExpressionSeries(dayKeys.length);
+  const dayIndex = new Map(dayKeys.map((day, index) => [day, index]));
+  const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
+  const bestDayWeight = new Map<string, number>();
+  let hasAnyData = false;
+
+  for (const rollup of rollups || []) {
+    const expressions = rollup?.attributes_percent?.expressions;
+    const visitorsPerDay = rollup?.visitors_per_day ?? {};
+    if (!expressions || typeof expressions !== 'object') continue;
+
+    const expressionEntries = Object.entries(expressions)
+      .map(([key, value]) => ({ key: normalizeFacialExpression(key), value: Number(value) || 0 }))
+      .filter((entry): entry is { key: 'neutral' | 'happiness' | 'surprise' | 'anger'; value: number } => !!entry.key && entry.value > 0);
+    if (expressionEntries.length === 0) continue;
+
+    for (const [dayKey, rawVisitors] of Object.entries(visitorsPerDay)) {
+      const normalizedDay = dayKey.slice(0, 10);
+      const index = dayIndex.get(normalizedDay);
+      if (index === undefined) continue;
+
+      const dayVisitors = Number(rawVisitors) || 0;
+      if (dayVisitors <= 0) continue;
+
+      const currentWeight = bestDayWeight.get(normalizedDay) ?? -1;
+      if (dayVisitors < currentWeight) continue;
+
+      bestDayWeight.set(normalizedDay, dayVisitors);
+      for (const values of valuesByKey.values()) values[index] = 0;
+
+      for (const entry of expressionEntries) {
+        const target = valuesByKey.get(entry.key);
+        if (!target) continue;
+        target[index] = Math.round((dayVisitors * entry.value) / 100);
+        hasAnyData = hasAnyData || target[index] > 0;
+      }
+    }
+  }
+
+  return hasAnyData ? series : null;
+}
+
 function overlapVisitorsForRange(rollup: any, startDay: string, endDay: string) {
   const vpd: Record<string, number> = rollup?.visitors_per_day ?? {};
   let total = 0;
@@ -395,6 +485,7 @@ export function ClientDashboard() {
   const [visitorsPerDayMap, setVisitorsPerDayMap] = useState<Record<string, number>>({});
   const [hairTypeData, setHairTypeData] = useState<{ label: string; value: number }[]>([]);
   const [hairColorData, setHairColorData] = useState<{ label: string; value: number }[]>([]);
+  const [facialExpressionSeries, setFacialExpressionSeries] = useState<{ label: string; values: number[] }[]>([]);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
 
@@ -527,8 +618,61 @@ export function ClientDashboard() {
     setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
     setGenderStats([]); setAttributeStats([]); setAgeStats([]);
     setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
+    setFacialExpressionSeries([]);
     setComparePrevVisitorsPerDay({});
   }
+
+  const loadFacialExpressions = useCallback(async (
+    clientId: string,
+    rangeStart: string,
+    rangeEnd: string,
+    deviceFilter: number[],
+    isCurrent: () => boolean,
+    candidateRollups: any[] = []
+  ) => {
+    const { dayKeys } = buildDateAxis(rangeStart, rangeEnd);
+    if (dayKeys.length === 0) {
+      if (isCurrent()) setFacialExpressionSeries([]);
+      return;
+    }
+
+    const rollupSeries = buildFacialExpressionSeriesFromRollups(candidateRollups, dayKeys);
+    if (rollupSeries) {
+      if (isCurrent()) setFacialExpressionSeries(rollupSeries);
+      return;
+    }
+
+    const PAGE = 1000;
+    const allRows: any[] = [];
+    let from = 0;
+
+    while (true) {
+      let query = supabase
+        .from('visitor_analytics')
+        .select('timestamp,attributes,raw_data,device_id')
+        .eq('client_id', clientId)
+        .gte('timestamp', rangeStart)
+        .lte('timestamp', rangeEnd)
+        .order('timestamp', { ascending: true })
+        .range(from, from + PAGE - 1);
+
+      if (deviceFilter.length > 0) query = query.in('device_id', deviceFilter);
+
+      const { data, error } = await withTimeout(query as any, 10000, 'visitor_analytics expressoes faciais');
+      if (error) {
+        console.warn('[Dashboard] Erro ao carregar expressoes faciais:', error);
+        break;
+      }
+
+      if (!Array.isArray(data) || data.length === 0) break;
+      allRows.push(...data);
+      if (data.length < PAGE) break;
+      from += PAGE;
+    }
+
+    if (!isCurrent()) return;
+    setFacialExpressionSeries(buildFacialExpressionSeriesFromRows(allRows, dayKeys));
+  }, []);
 
   // ── loadData: busca dados respeitando o período selecionado ──────────────
   const loadData = useCallback(async () => {
@@ -546,6 +690,9 @@ export function ClientDashboard() {
       const endDay   = endIso.slice(0, 10);
       const todayDay = alignUtcStartOfDay(new Date()).toISOString().slice(0, 10);
       const rangeTouchesToday = startDay <= todayDay && endDay >= todayDay;
+      const syncExpressions = async (candidateRollups: any[] = []) => {
+        await loadFacialExpressions(id, startIso, endIso, deviceIds, isCurrent, candidateRollups);
+      };
 
       // ── Filtro por dispositivo (loja selecionada com dispositivos) ───────
       // Se há IDs de dispositivo, filtra exclusivamente por eles.
@@ -558,7 +705,7 @@ export function ClientDashboard() {
           }, 15000, 'sync-analytics devices');
           if (!isCurrent()) return;
           if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
-            applyRollup({
+            const rollupPayload = {
               total_visitors:         json.dashboard.total_visitors,
               avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
               avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
@@ -568,7 +715,9 @@ export function ClientDashboard() {
               gender_percent:         json.dashboard.gender_percent,
               attributes_percent:     json.dashboard.attributes_percent,
               age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-            }, { updatedAt: json?.dashboard?.updated_at ?? null });
+            };
+            applyRollup(rollupPayload, { updatedAt: json?.dashboard?.updated_at ?? null });
+            await syncExpressions([rollupPayload]);
           } else {
             // Sem dados para esses dispositivos no período → exibe zeros
             console.log('[loadData] Sem dados para os dispositivos da loja:', deviceIds);
@@ -709,7 +858,9 @@ export function ClientDashboard() {
 
           if (exactRollupCandidate && !preferMergedOverExact) {
             console.log(`[loadData] exact rollup: ${exactRollupCandidateTotal}`);
-            applyRollup(hydrateForApply(exactRollupCandidate), { updatedAt: exactRollupCandidate.updated_at ?? null });
+            const hydratedExact = hydrateForApply(exactRollupCandidate);
+            applyRollup(hydratedExact, { updatedAt: exactRollupCandidate.updated_at ?? null });
+            await syncExpressions([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]);
             return;
           }
 
@@ -728,6 +879,7 @@ export function ClientDashboard() {
             visitors_per_day:     mergedVpd,
           });
           applyRollup(mergedRollup, { updatedAt: metaRollup?.updated_at ?? exactRollupCandidate?.updated_at ?? null });
+          await syncExpressions([mergedRollup, ...(allRollups || []), ...(metadataRollups || [])]);
           return;
         }
 
@@ -740,7 +892,9 @@ export function ClientDashboard() {
       // ── Sem rollups úteis: tenta rebuild via backend ───────────────────
       if (exactRollupCandidate) {
         console.log(`[loadData] exact rollup fallback: ${exactRollupCandidateTotal}`);
-        applyRollup(hydrateForApply(exactRollupCandidate), { updatedAt: exactRollupCandidate.updated_at ?? null });
+        const hydratedExact = hydrateForApply(exactRollupCandidate);
+        applyRollup(hydratedExact, { updatedAt: exactRollupCandidate.updated_at ?? null });
+        await syncExpressions([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]);
         return;
       }
 
@@ -761,7 +915,7 @@ export function ClientDashboard() {
 
         if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
           console.log('[loadData] ✅ Rebuild:', json.dashboard.total_visitors);
-          applyRollup({
+          const rollupPayload = {
             total_visitors:         json.dashboard.total_visitors,
             avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
             avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
@@ -771,7 +925,9 @@ export function ClientDashboard() {
             gender_percent:         json.dashboard.gender_percent,
             attributes_percent:     json.dashboard.attributes_percent,
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
-          }, { updatedAt: json?.dashboard?.updated_at ?? null });
+          };
+          applyRollup(rollupPayload, { updatedAt: json?.dashboard?.updated_at ?? null });
+          await syncExpressions([rollupPayload]);
           setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes.`);
         } else {
           zeroAll();
@@ -1776,7 +1932,12 @@ export function ClientDashboard() {
                 const widgetProps: any = { view: 'network' };
                 if (widget.id === 'flow_trend')              { widgetProps.dailyData = dailyStats; widgetProps.genderData = genderStats; }
                 if (widget.id === 'hourly_flow')             { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'chart_facial_expressions') { widgetProps.startDate = selectedStartDate; widgetProps.endDate = selectedEndDate; }
+                if (widget.id === 'chart_facial_expressions') {
+                  widgetProps.startDate = selectedStartDate;
+                  widgetProps.endDate = selectedEndDate;
+                  widgetProps.labels = periodSeries.labels;
+                  widgetProps.series = facialExpressionSeries;
+                }
                 if (widget.id === 'chart_device_flow')       { widgetProps.visitors = totalVisitors; }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
