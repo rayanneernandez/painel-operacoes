@@ -316,6 +316,18 @@ function buildFacialExpressionSeriesFromRollups(rollups: any[], hourKeys: string
   return hasAnyData ? series : null;
 }
 
+function extractDeviceFlowFromRollups(rollups: any[]) {
+  for (const rollup of rollups || []) {
+    const deviceFlow = rollup?.attributes_percent?.device_flow;
+    if (!deviceFlow || typeof deviceFlow !== 'object') continue;
+    const hasAudience = Array.isArray(deviceFlow.deviceAudience) && deviceFlow.deviceAudience.length > 0;
+    const hasTracking = Array.isArray(deviceFlow.trackingData) && deviceFlow.trackingData.length > 0;
+    const hasPassersby = Number(deviceFlow.passersby ?? 0) > 0;
+    if (hasAudience || hasTracking || hasPassersby) return deviceFlow;
+  }
+  return null;
+}
+
 function overlapVisitorsForRange(rollup: any, startDay: string, endDay: string) {
   const vpd: Record<string, number> = rollup?.visitors_per_day ?? {};
   let total = 0;
@@ -492,6 +504,10 @@ export function ClientDashboard() {
   const [hairColorData, setHairColorData] = useState<{ label: string; value: number }[]>([]);
   const [facialExpressionLabels, setFacialExpressionLabels] = useState<string[]>([]);
   const [facialExpressionSeries, setFacialExpressionSeries] = useState<{ label: string; values: number[] }[]>([]);
+  const [deviceFlowVisitors, setDeviceFlowVisitors] = useState<number | null>(null);
+  const [deviceFlowPassersby, setDeviceFlowPassersby] = useState<number | null>(null);
+  const [deviceFlowAudience, setDeviceFlowAudience] = useState<{ label: string; value: number }[]>([]);
+  const [deviceFlowTracking, setDeviceFlowTracking] = useState<{ label: string; value: number }[]>([]);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
 
@@ -626,6 +642,10 @@ export function ClientDashboard() {
     setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
     setFacialExpressionLabels([]);
     setFacialExpressionSeries([]);
+    setDeviceFlowVisitors(null);
+    setDeviceFlowPassersby(null);
+    setDeviceFlowAudience([]);
+    setDeviceFlowTracking([]);
     setComparePrevVisitorsPerDay({});
   }
 
@@ -718,6 +738,59 @@ export function ClientDashboard() {
     setFacialExpressionSeries(buildFacialExpressionSeriesFromRows(allRows, hourKeys));
   }, []);
 
+  const loadDeviceFlowWidget = useCallback(async (
+    clientId: string,
+    rangeStart: string,
+    rangeEnd: string,
+    deviceFilter: number[],
+    isCurrent: () => boolean,
+    candidateRollups: any[] = [],
+  ) => {
+    const cached = extractDeviceFlowFromRollups(candidateRollups);
+    if (cached) {
+      if (!isCurrent()) return;
+      setDeviceFlowVisitors(Number(cached.visitors ?? 0) || null);
+      setDeviceFlowPassersby(Number(cached.passersby ?? 0) || null);
+      setDeviceFlowAudience(Array.isArray(cached.deviceAudience) ? cached.deviceAudience : []);
+      setDeviceFlowTracking(Array.isArray(cached.trackingData) ? cached.trackingData : []);
+      return;
+    }
+
+    try {
+      const json = await fetchJsonWithTimeout<{
+        device_flow?: {
+          visitors?: number | null;
+          passersby?: number | null;
+          deviceAudience?: { label: string; value: number }[];
+          trackingData?: { label: string; value: number }[];
+        } | null;
+      }>('/api/sync-analytics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: clientId,
+          start: rangeStart,
+          end: rangeEnd,
+          devices: deviceFilter,
+          live_device_flow: true,
+        }),
+      }, 20000, 'sync-analytics device flow');
+
+      if (!isCurrent()) return;
+      setDeviceFlowVisitors(Number(json?.device_flow?.visitors ?? 0) || null);
+      setDeviceFlowPassersby(Number(json?.device_flow?.passersby ?? 0) || null);
+      setDeviceFlowAudience(Array.isArray(json?.device_flow?.deviceAudience) ? json!.device_flow!.deviceAudience : []);
+      setDeviceFlowTracking(Array.isArray(json?.device_flow?.trackingData) ? json!.device_flow!.trackingData : []);
+    } catch (error) {
+      console.warn('[Dashboard] Falha ao carregar fluxo/audiencia device:', error);
+      if (!isCurrent()) return;
+      setDeviceFlowVisitors(null);
+      setDeviceFlowPassersby(null);
+      setDeviceFlowAudience([]);
+      setDeviceFlowTracking([]);
+    }
+  }, []);
+
   // ── loadData: busca dados respeitando o período selecionado ──────────────
   const loadData = useCallback(async () => {
     if (!id) return;
@@ -736,6 +809,9 @@ export function ClientDashboard() {
       const rangeTouchesToday = startDay <= todayDay && endDay >= todayDay;
       const syncExpressions = async (candidateRollups: any[] = []) => {
         await loadFacialExpressions(id, startIso, endIso, deviceIds, isCurrent, candidateRollups);
+      };
+      const syncDeviceFlow = async (candidateRollups: any[] = []) => {
+        await loadDeviceFlowWidget(id, startIso, endIso, deviceIds, isCurrent, candidateRollups);
       };
 
       // ── Filtro por dispositivo (loja selecionada com dispositivos) ───────
@@ -761,7 +837,10 @@ export function ClientDashboard() {
               age_pyramid_percent:    json.dashboard.age_pyramid_percent,
             };
             applyRollup(rollupPayload, { updatedAt: json?.dashboard?.updated_at ?? null });
-            await syncExpressions([rollupPayload]);
+            await Promise.all([
+              syncExpressions([rollupPayload]),
+              syncDeviceFlow([rollupPayload]),
+            ]);
           } else {
             // Sem dados para esses dispositivos no período → exibe zeros
             console.log('[loadData] Sem dados para os dispositivos da loja:', deviceIds);
@@ -904,7 +983,10 @@ export function ClientDashboard() {
             console.log(`[loadData] exact rollup: ${exactRollupCandidateTotal}`);
             const hydratedExact = hydrateForApply(exactRollupCandidate);
             applyRollup(hydratedExact, { updatedAt: exactRollupCandidate.updated_at ?? null });
-            await syncExpressions([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]);
+            await Promise.all([
+              syncExpressions([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]),
+              syncDeviceFlow([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]),
+            ]);
             return;
           }
 
@@ -923,7 +1005,10 @@ export function ClientDashboard() {
             visitors_per_day:     mergedVpd,
           });
           applyRollup(mergedRollup, { updatedAt: metaRollup?.updated_at ?? exactRollupCandidate?.updated_at ?? null });
-          await syncExpressions([mergedRollup, ...(allRollups || []), ...(metadataRollups || [])]);
+          await Promise.all([
+            syncExpressions([mergedRollup, ...(allRollups || []), ...(metadataRollups || [])]),
+            syncDeviceFlow([mergedRollup, ...(allRollups || []), ...(metadataRollups || [])]),
+          ]);
           return;
         }
 
@@ -938,7 +1023,10 @@ export function ClientDashboard() {
         console.log(`[loadData] exact rollup fallback: ${exactRollupCandidateTotal}`);
         const hydratedExact = hydrateForApply(exactRollupCandidate);
         applyRollup(hydratedExact, { updatedAt: exactRollupCandidate.updated_at ?? null });
-        await syncExpressions([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]);
+        await Promise.all([
+          syncExpressions([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]),
+          syncDeviceFlow([hydratedExact, ...(allRollups || []), ...(metadataRollups || [])]),
+        ]);
         return;
       }
 
@@ -971,7 +1059,10 @@ export function ClientDashboard() {
             age_pyramid_percent:    json.dashboard.age_pyramid_percent,
           };
           applyRollup(rollupPayload, { updatedAt: json?.dashboard?.updated_at ?? null });
-          await syncExpressions([rollupPayload]);
+          await Promise.all([
+            syncExpressions([rollupPayload]),
+            syncDeviceFlow([rollupPayload]),
+          ]);
           setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes.`);
         } else {
           zeroAll();
@@ -1982,7 +2073,12 @@ export function ClientDashboard() {
                   widgetProps.labels = facialExpressionLabels;
                   widgetProps.series = facialExpressionSeries;
                 }
-                if (widget.id === 'chart_device_flow')       { widgetProps.visitors = totalVisitors; }
+                if (widget.id === 'chart_device_flow')       {
+                  widgetProps.visitors = deviceFlowVisitors ?? totalVisitors;
+                  widgetProps.passersby = deviceFlowPassersby;
+                  widgetProps.deviceAudience = deviceFlowAudience;
+                  widgetProps.trackingData = deviceFlowTracking;
+                }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'attributes')                widgetProps.attrData = attributeStats;

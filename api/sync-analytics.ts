@@ -341,6 +341,33 @@ async function fetchDisplayforceFacialExpressionSeries(clientId: string, rangeSt
   };
 }
 
+async function fetchDisplayforceAudienceSummary(clientId: string, rangeStart: string, rangeEnd: string) {
+  const platform = await resolveDisplayforcePlatform(clientId);
+  if (!platform) return null;
+
+  const cookieHeader = await getDisplayforceAuthCookie();
+  const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platform.platformId}/stats/visitor_view/audience`, {
+    method: "POST",
+    headers: {
+      Accept: "application/json,text/plain,*/*",
+      "Content-Type": "application/json",
+      Cookie: cookieHeader,
+    },
+    body: JSON.stringify({
+      ranges: [{ from: toUnixSeconds(rangeStart), to: toUnixSeconds(rangeEnd) }],
+      finetuning: false,
+    }),
+  });
+
+  const range = Array.isArray(json?.ranges) ? json.ranges[0] : null;
+  return {
+    platformId: platform.platformId,
+    platformSlug: platform.platformSlug,
+    uniqueVisitors: Number(range?.unique_visitors_count ?? 0) || 0,
+    passersby: Number(range?.passerby_body_tracks_count ?? 0) || 0,
+  };
+}
+
 function buildStoredFacialExpressionPayload(
   hourKeys: string[],
   series: Array<{ label: string; values: number[] }>,
@@ -376,6 +403,124 @@ function mergeFacialExpressionAttributes(existingAttributes: any, facialExpressi
     expressions: facialExpressionPayload?.expressions ?? base.expressions ?? {},
     expressions_totals: facialExpressionPayload?.expressions_totals ?? base.expressions_totals ?? {},
     expressions_hourly: facialExpressionPayload?.expressions_hourly ?? base.expressions_hourly ?? {},
+  };
+}
+
+async function fetchDeviceFlowRows(clientId: string, rangeStart: string, rangeEnd: string, deviceNums: number[]) {
+  const PAGE = 2000;
+  const all: any[] = [];
+  let from = 0;
+
+  while (true) {
+    let query = supabase
+      .from("visitor_analytics")
+      .select("device_id,raw_data")
+      .eq("client_id", clientId)
+      .gte("timestamp", rangeStart)
+      .lte("timestamp", rangeEnd)
+      .order("timestamp", { ascending: true })
+      .range(from, from + PAGE - 1);
+
+    if (deviceNums.length > 0) query = query.in("device_id", deviceNums);
+
+    const { data, error } = await query;
+    if (error) {
+      throw new Error(`[fetchDeviceFlowRows] ${error.message}`);
+    }
+    if (!data || data.length === 0) break;
+    all.push(...data);
+    if (data.length < PAGE) break;
+    from += PAGE;
+  }
+
+  return all;
+}
+
+async function loadClientDeviceNameMap(clientId: string, deviceNums: number[]) {
+  const { data: stores, error: storesError } = await supabase
+    .from("stores")
+    .select("id")
+    .eq("client_id", clientId);
+
+  if (storesError) {
+    throw new Error(`[loadClientDeviceNameMap] ${storesError.message}`);
+  }
+
+  const storeIds = (stores || []).map((store: any) => String(store.id)).filter(Boolean);
+  if (storeIds.length === 0) return new Map<string, string>();
+
+  let query = supabase
+    .from("devices")
+    .select("name,mac_address,store_id")
+    .in("store_id", storeIds);
+
+  if (deviceNums.length > 0) {
+    query = query.in("mac_address", deviceNums.map(String));
+  }
+
+  const { data: devices, error: devicesError } = await query;
+  if (devicesError) {
+    throw new Error(`[loadClientDeviceNameMap] ${devicesError.message}`);
+  }
+
+  const nameMap = new Map<string, string>();
+  for (const device of devices || []) {
+    const key = String(device?.mac_address ?? "").trim();
+    const name = String(device?.name ?? "").trim();
+    if (!key || !name) continue;
+    nameMap.set(key, name);
+  }
+
+  return nameMap;
+}
+
+async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, rangeEnd: string, deviceNums: number[]) {
+  const rows = await fetchDeviceFlowRows(clientId, rangeStart, rangeEnd, deviceNums);
+  const totalVisitors = rows.length;
+  const nameMap = await loadClientDeviceNameMap(clientId, deviceNums);
+
+  const deviceCounts = new Map<string, number>();
+  const trackingCounts = new Map<string, number>();
+
+  for (const row of rows) {
+    const deviceKey = String(row?.device_id ?? "").trim();
+    if (deviceKey) {
+      deviceCounts.set(deviceKey, (deviceCounts.get(deviceKey) ?? 0) + 1);
+    }
+
+    const rawTracks = Number(row?.raw_data?.tracks_count ?? 0);
+    const normalizedTracks = Number.isFinite(rawTracks) && rawTracks > 0 ? Math.min(4, Math.round(rawTracks)) : 1;
+    const label = normalizedTracks === 1 ? "1 Device" : `${normalizedTracks} Devices`;
+    trackingCounts.set(label, (trackingCounts.get(label) ?? 0) + 1);
+  }
+
+  const deviceAudience = [...deviceCounts.entries()]
+    .map(([deviceKey, count]) => ({
+      label: nameMap.get(deviceKey) || `Device ${deviceKey}`,
+      value: totalVisitors > 0 ? Number(((count / totalVisitors) * 100).toFixed(1)) : 0,
+      rawCount: count,
+    }))
+    .sort((a, b) => b.rawCount - a.rawCount)
+    .slice(0, 4)
+    .map(({ label, value }) => ({ label, value }));
+
+  const trackingOrder = ["1 Device", "2 Devices", "3 Devices", "4 Devices"];
+  const trackingData = trackingOrder
+    .map((label) => ({
+      label,
+      value: totalVisitors > 0 ? Number((((trackingCounts.get(label) ?? 0) / totalVisitors) * 100).toFixed(1)) : 0,
+    }))
+    .filter((item) => item.value > 0);
+
+  const audienceSummary = deviceNums.length === 0
+    ? await fetchDisplayforceAudienceSummary(clientId, rangeStart, rangeEnd)
+    : null;
+
+  return {
+    visitors: audienceSummary?.uniqueVisitors || totalVisitors,
+    passersby: audienceSummary?.passersby || null,
+    deviceAudience,
+    trackingData,
   };
 }
 
@@ -820,7 +965,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") return bad(res, 405, { error: "Method Not Allowed" });
 
-    const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup, sync_stores, check_sync_needed, background_sync, live_facial_expressions } = (req.body as any) ?? {};
+    const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup, sync_stores, check_sync_needed, background_sync, live_facial_expressions, live_device_flow } = (req.body as any) ?? {};
 
     const authHeader = req.headers.authorization;
     const providedAuth = typeof authHeader === "string" && authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : auth;
@@ -875,6 +1020,50 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           live_available: false,
           error: error?.message || String(error),
           series: [],
+        });
+      }
+    }
+
+    if (live_device_flow === true) {
+      if (!start || !end) return bad(res, 400, { error: "start e end sao obrigatorios" });
+
+      try {
+        const deviceNums = Array.isArray(devices) ? devices.map(Number).filter(Number.isFinite) : [];
+        const widgetData = await buildDeviceFlowWidgetData(client_id, String(start), String(end), deviceNums);
+
+        if (deviceNums.length === 0) {
+          const { data: existingRollup } = await supabase
+            .from("visitor_analytics_rollups")
+            .select("attributes_percent")
+            .eq("client_id", client_id)
+            .eq("start", String(start))
+            .eq("end", String(end))
+            .maybeSingle();
+
+          await supabase
+            .from("visitor_analytics_rollups")
+            .update({
+              attributes_percent: {
+                ...(existingRollup?.attributes_percent && typeof existingRollup.attributes_percent === "object" ? existingRollup.attributes_percent : {}),
+                device_flow: widgetData,
+              },
+              updated_at: new Date().toISOString(),
+            })
+            .eq("client_id", client_id)
+            .eq("start", String(start))
+            .eq("end", String(end));
+        }
+
+        return ok(res, {
+          source: "device_flow_widget",
+          device_flow: widgetData,
+        });
+      } catch (error: any) {
+        console.error("[live_device_flow] Falha ao montar widget:", error);
+        return ok(res, {
+          source: "device_flow_widget",
+          device_flow: null,
+          error: error?.message || String(error),
         });
       }
     }
