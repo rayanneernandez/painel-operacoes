@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import { getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
+import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
 
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 const _key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -18,6 +18,15 @@ type ClientApiConfig = {
   collect_hair_color?: boolean; collect_hair_type?: boolean;
   collect_headwear?: boolean;
 };
+
+type DisplayforcePlatformRef = {
+  platformId: number;
+  platformSlug: string;
+};
+
+const DISPLAYFORCE_SESSION_TTL_MS = 10 * 60 * 1000;
+let displayforceSessionCache: { cookieHeader: string; expiresAt: number } | null = null;
+const displayforcePlatformCache = new Map<string, DisplayforcePlatformRef>();
 
 function ok(res: VercelResponse, data: any) {
   res.setHeader("Cache-Control", "no-store");
@@ -65,6 +74,270 @@ function buildChunkedRanges(rangeStart: string, rangeEnd: string, chunkDays = 1)
     cursor = addUtcDays(startOfUtcDay(chunkEnd), 1);
   }
   return ranges;
+}
+
+function toUnixSeconds(value: string | Date) {
+  return Math.floor(new Date(value).getTime() / 1000);
+}
+
+function buildHourlyUnixRanges(rangeStart: string, rangeEnd: string) {
+  const start = new Date(rangeStart);
+  const end = new Date(rangeEnd);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime()) || start > end) return [];
+
+  start.setUTCMinutes(0, 0, 0);
+  end.setUTCMinutes(0, 0, 0);
+
+  const ranges: Array<{ hourKey: string; from: number; to: number }> = [];
+  for (let cursor = new Date(start.getTime()); cursor <= end; cursor = new Date(cursor.getTime() + 3600000)) {
+    const bucketStart = new Date(cursor.getTime());
+    const bucketEnd = new Date(cursor.getTime());
+    bucketEnd.setUTCMinutes(59, 59, 999);
+    ranges.push({
+      hourKey: bucketStart.toISOString().slice(0, 13),
+      from: toUnixSeconds(bucketStart),
+      to: toUnixSeconds(bucketEnd),
+    });
+  }
+
+  return ranges;
+}
+
+function parseSetCookies(existingCookie: string, response: Response) {
+  const jar = new Map(
+    existingCookie
+      .split(/;\s*/)
+      .filter(Boolean)
+      .map((part) => {
+        const idx = part.indexOf("=");
+        return [part.slice(0, idx), part.slice(idx + 1)];
+      })
+  );
+
+  const getSetCookie = (response.headers as any)?.getSetCookie;
+  const setCookies = typeof getSetCookie === "function"
+    ? getSetCookie.call(response.headers)
+    : (response.headers.get("set-cookie") ? [response.headers.get("set-cookie")] : []);
+
+  for (const cookie of setCookies) {
+    if (!cookie) continue;
+    const pair = cookie.split(";")[0];
+    const idx = pair.indexOf("=");
+    if (idx > 0) jar.set(pair.slice(0, idx), pair.slice(idx + 1));
+  }
+
+  return [...jar.entries()].map(([key, value]) => `${key}=${value}`).join("; ");
+}
+
+function formatLocalTimeIso() {
+  const now = new Date();
+  const offsetMinutes = -now.getTimezoneOffset();
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const abs = Math.abs(offsetMinutes);
+  const hh = String(Math.floor(abs / 60)).padStart(2, "0");
+  const mm = String(abs % 60).padStart(2, "0");
+  const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
+  return `${local}${sign}${hh}:${mm}`;
+}
+
+async function fetchDisplayforceJson(url: string, options: RequestInit = {}) {
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let json: any = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(`${response.status} ${response.statusText} @ ${url}: ${text.slice(0, 300)}`);
+  }
+
+  return { response, json };
+}
+
+async function getDisplayforceAuthCookie() {
+  if (displayforceSessionCache && displayforceSessionCache.expiresAt > Date.now()) {
+    return displayforceSessionCache.cookieHeader;
+  }
+
+  const email = process.env.DISPLAYFORCE_EMAIL?.trim();
+  const password = process.env.DISPLAYFORCE_PASS?.trim();
+  if (!email || !password) {
+    throw new Error("DISPLAYFORCE_EMAIL e DISPLAYFORCE_PASS nao estao configurados");
+  }
+
+  const headers = {
+    Accept: "application/json,text/plain,*/*",
+    "Content-Type": "application/json",
+  };
+
+  let cookieHeader = "";
+  const applyCookie = (response: Response) => {
+    cookieHeader = parseSetCookies(cookieHeader, response);
+  };
+
+  const start = await fetchDisplayforceJson("https://api.displayforce.ai/v5/auth/login/multi_step/start", {
+    method: "POST",
+    headers,
+  });
+  applyCookie(start.response);
+  const sessionId = start.json?.session_id;
+  if (!sessionId) {
+    throw new Error("Login DisplayForce sem session_id");
+  }
+
+  const localTime = formatLocalTimeIso();
+  const steps: Array<[string, Record<string, unknown>]> = [
+    ["check_login", { session_id: sessionId, login: email, local_time: localTime }],
+    ["commit_pwd", { session_id: sessionId, password, local_time: localTime }],
+    ["finish", { session_id: sessionId }],
+  ];
+
+  for (const [step, body] of steps) {
+    const result = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/auth/login/multi_step/${step}`, {
+      method: "POST",
+      headers: {
+        ...headers,
+        ...(cookieHeader ? { Cookie: cookieHeader } : {}),
+      },
+      body: JSON.stringify(body),
+    });
+    applyCookie(result.response);
+  }
+
+  if (!cookieHeader.includes("refresh_token=")) {
+    throw new Error("Login DisplayForce sem refresh_token");
+  }
+
+  displayforceSessionCache = {
+    cookieHeader,
+    expiresAt: Date.now() + DISPLAYFORCE_SESSION_TTL_MS,
+  };
+
+  return cookieHeader;
+}
+
+function slugifyDisplayforceCandidate(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildDisplayforcePlatformCandidates(values: Array<string | null | undefined>) {
+  const candidates = new Set<string>();
+
+  for (const raw of values) {
+    const trimmed = String(raw || "").trim();
+    if (!trimmed) continue;
+
+    const slug = slugifyDisplayforceCandidate(trimmed);
+    if (slug) candidates.add(slug);
+
+    const compact = slug.replace(/-/g, "");
+    if (compact) candidates.add(compact);
+  }
+
+  return [...candidates];
+}
+
+async function resolveDisplayforcePlatform(clientId: string): Promise<DisplayforcePlatformRef | null> {
+  const cached = displayforcePlatformCache.get(clientId);
+  if (cached) return cached;
+
+  const { data: client, error } = await supabase
+    .from("clients")
+    .select("name,company")
+    .eq("id", clientId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Erro ao buscar cliente ${clientId}: ${error.message}`);
+  }
+
+  const candidates = buildDisplayforcePlatformCandidates([client?.name, client?.company]);
+  if (candidates.length === 0) return null;
+
+  const cookieHeader = await getDisplayforceAuthCookie();
+  for (const platformSlug of candidates) {
+    try {
+      const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platformSlug}/summary`, {
+        headers: {
+          Accept: "application/json,text/plain,*/*",
+          Cookie: cookieHeader,
+        },
+      });
+
+      const platformId = Number(json?.platform?.id);
+      if (!Number.isFinite(platformId) || platformId <= 0) continue;
+
+      const resolved = { platformId, platformSlug };
+      displayforcePlatformCache.set(clientId, resolved);
+      return resolved;
+    } catch {
+      continue;
+    }
+  }
+
+  return null;
+}
+
+async function fetchDisplayforceFacialExpressionSeries(clientId: string, rangeStart: string, rangeEnd: string) {
+  const platform = await resolveDisplayforcePlatform(clientId);
+  if (!platform) return null;
+
+  const hourBuckets = buildHourlyUnixRanges(rangeStart, rangeEnd);
+  if (hourBuckets.length === 0) {
+    return {
+      platformId: platform.platformId,
+      platformSlug: platform.platformSlug,
+      series: FACIAL_EXPRESSION_SERIES.map(({ label }) => ({ label, values: [] as number[] })),
+    };
+  }
+
+  const cookieHeader = await getDisplayforceAuthCookie();
+  const countsByHour = new Map<string, Record<string, number>>();
+  const chunkSize = 168;
+
+  for (let startIndex = 0; startIndex < hourBuckets.length; startIndex += chunkSize) {
+    const chunk = hourBuckets.slice(startIndex, startIndex + chunkSize);
+    const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platform.platformId}/stats/visitor_view/emotion`, {
+      method: "POST",
+      headers: {
+        Accept: "application/json,text/plain,*/*",
+        "Content-Type": "application/json",
+        Cookie: cookieHeader,
+      },
+      body: JSON.stringify({
+        ranges: chunk.map(({ from, to }) => ({ from, to })),
+        finetuning: false,
+      }),
+    });
+
+    const apiRanges = Array.isArray(json?.ranges) ? json.ranges : [];
+    chunk.forEach((bucket, index) => {
+      const source = apiRanges[index] ?? {};
+      countsByHour.set(bucket.hourKey, {
+        neutral: Number(source?.neutral ?? 0) || 0,
+        happiness: Number(source?.happiness ?? 0) || 0,
+        surprise: Number(source?.surprise ?? 0) || 0,
+        anger: Number(source?.anger ?? 0) || 0,
+      });
+    });
+  }
+
+  return {
+    platformId: platform.platformId,
+    platformSlug: platform.platformSlug,
+    series: FACIAL_EXPRESSION_SERIES.map(({ key, label }) => ({
+      label,
+      values: hourBuckets.map((bucket) => countsByHour.get(bucket.hourKey)?.[key] ?? 0),
+    })),
+  };
 }
 
 function extractTimes(visit: any) {
@@ -466,7 +739,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     if (req.method !== "POST") return bad(res, 405, { error: "Method Not Allowed" });
 
-    const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup, sync_stores, check_sync_needed, background_sync } = (req.body as any) ?? {};
+    const { client_id, start, end, devices, auth, offset: incomingOffset, force_full_sync, rebuild_rollup, sync_stores, check_sync_needed, background_sync, live_facial_expressions } = (req.body as any) ?? {};
 
     const authHeader = req.headers.authorization;
     const providedAuth = typeof authHeader === "string" && authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : auth;
@@ -478,6 +751,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .eq("client_id", client_id).single();
     if (apiCfgErr || !apiCfg) return bad(res, 400, { error: "Config da API não encontrada", details: apiCfgErr });
     const cfg = apiCfg as ClientApiConfig;
+
+    if (live_facial_expressions === true) {
+      if (!start || !end) return bad(res, 400, { error: "start e end sao obrigatorios" });
+
+      try {
+        const liveSeries = await fetchDisplayforceFacialExpressionSeries(client_id, String(start), String(end));
+        if (!liveSeries) {
+          return ok(res, { source: "displayforce_emotion", live_available: false, series: [] });
+        }
+
+        return ok(res, {
+          source: "displayforce_emotion",
+          live_available: true,
+          platform_id: liveSeries.platformId,
+          platform_slug: liveSeries.platformSlug,
+          series: liveSeries.series,
+        });
+      } catch (error: any) {
+        console.error("[live_facial_expressions] Falha ao consultar emotions:", error);
+        return ok(res, {
+          source: "displayforce_emotion",
+          live_available: false,
+          error: error?.message || String(error),
+          series: [],
+        });
+      }
+    }
 
     // ── check_sync_needed ────────────────────────────────────────────────────
     if (check_sync_needed === true) {
