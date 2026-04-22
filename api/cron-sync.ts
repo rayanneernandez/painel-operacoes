@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
+import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions.ts";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
@@ -46,6 +46,29 @@ function percentMap(countMap: Record<string,number>, total: number) {
   for (const [k, v] of Object.entries(countMap))
     out[k] = Number(((v / total) * 100).toFixed(2));
   return out;
+}
+
+function extractDeviceFlowPassersbyCount(row: any) {
+  const raw = row?.raw_data;
+  const candidates = [
+    raw?.tracks_count,
+    raw?.tracks_acount,
+    raw?.contacts_count,
+    raw?.contact_count,
+    raw?.overall_tracks_count,
+    raw?.passerby_body_tracks_count,
+  ];
+
+  let best = 0;
+  for (const candidate of candidates) {
+    const numeric = Math.round(Number(candidate) || 0);
+    if (Number.isFinite(numeric) && numeric > best) best = numeric;
+  }
+
+  const tracksLength = Array.isArray(raw?.tracks) ? raw.tracks.length : 0;
+  if (Number.isFinite(tracksLength) && tracksLength > best) best = tracksLength;
+
+  return best > 0 ? best : 1;
 }
 
 function hasStoredExpressionCache(value: any) {
@@ -174,10 +197,11 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
 
   // device_flow — alimenta o widget Fluxo e Audiência Device direto do banco
   const deviceCounts = new Map<string, number>();
-  const trackingCounts = new Map<string, number>();
+  const trackingIslands = new Map<string, { label: string; count: number }>();
+  let totalPassersby = 0;
 
   for (const r of rows) {
-    // device_flow: conta visitas por device e cardinality de tracking (1..4 devices)
+    // device_flow: conta visitas por device e combinações reais de devices da ilha
     const rawDevices = Array.isArray(r?.raw_data?.devices) ? r.raw_data.devices : [];
     const normalizedDeviceKeys: string[] = rawDevices
       .map((v: any) => String(v ?? "").trim())
@@ -188,10 +212,15 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     for (const key of deviceKeys) {
       deviceCounts.set(key, (deviceCounts.get(key) ?? 0) + 1);
     }
-    const rawTracks = Number(r?.raw_data?.tracks_count ?? deviceKeys.length ?? 0);
-    const normalizedTracks = Number.isFinite(rawTracks) && rawTracks > 0 ? Math.min(4, Math.round(rawTracks)) : 1;
-    const trackLabel = normalizedTracks === 1 ? "1 Device" : `${normalizedTracks} Devices`;
-    trackingCounts.set(trackLabel, (trackingCounts.get(trackLabel) ?? 0) + 1);
+    const islandKey = [...deviceKeys].sort().join("|");
+    if (islandKey) {
+      const current = trackingIslands.get(islandKey);
+      trackingIslands.set(islandKey, {
+        label: current?.label || deviceKeys.map((key) => `Device ${key}`).join(" + "),
+        count: (current?.count ?? 0) + 1,
+      });
+    }
+    totalPassersby += extractDeviceFlowPassersbyCount(r);
 
     let hourKey: string | null = null;
     if (r.timestamp) {
@@ -244,11 +273,12 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     .sort((a, b) => b.rawCount - a.rawCount)
     .slice(0, 4)
     .map(({ label, value }) => ({ label, value }));
-  const trackingOrder = ["1 Device", "2 Devices", "3 Devices", "4 Devices"];
-  const trackingData = trackingOrder
-    .map((label) => ({
+  const trackingData = [...trackingIslands.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 4)
+    .map(({ label, count }) => ({
       label,
-      value: total > 0 ? Number((((trackingCounts.get(label) ?? 0) / total) * 100).toFixed(1)) : 0,
+      value: total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0,
     }))
     .filter((item) => item.value > 0);
 
@@ -271,7 +301,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       expressions_hourly: expressionKnown > 0 ? expressionHourlyCounts : {},
       device_flow: {
         visitors: total,
-        passersby: null, // passersby vem do live /visitor_view/audience — cache enriquece depois
+        passersby: Math.max(total, totalPassersby) || null,
         deviceAudience,
         trackingData,
       },

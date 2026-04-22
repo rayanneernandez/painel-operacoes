@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
+import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions.ts";
 
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 const _key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -575,11 +575,32 @@ function buildTrackingIslandLabel(deviceKeys: string[], nameMap?: Map<string, st
     .join(" + ");
 }
 
+function extractDeviceFlowPassersbyCount(row: any) {
+  const raw = row?.raw_data;
+  const candidates = [
+    raw?.tracks_count,
+    raw?.tracks_acount,
+    raw?.contacts_count,
+    raw?.contact_count,
+    raw?.overall_tracks_count,
+    raw?.passerby_body_tracks_count,
+  ];
+
+  let best = 0;
+  for (const candidate of candidates) {
+    const numeric = Math.round(Number(candidate) || 0);
+    if (Number.isFinite(numeric) && numeric > best) best = numeric;
+  }
+
+  const tracksLength = Array.isArray(raw?.tracks) ? raw.tracks.length : 0;
+  if (Number.isFinite(tracksLength) && tracksLength > best) best = tracksLength;
+
+  return best > 0 ? best : 1;
+}
+
 async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, rangeEnd: string, deviceNums: number[]) {
-  // Puxa sempre o audience summary (passersby) da Displayforce.
-  // O endpoint /visitor_view/audience retorna valores globais do platform;
-  // quando há filtro de dispositivo o número fica aproximado, mas é melhor
-  // mostrar um valor do que deixar o card "Fluxo disponível" sem %.
+  // O widget precisa responder imediatamente com o que já está salvo no banco.
+  // A leitura live da DisplayForce vira apenas enriquecimento opcional.
   const [rows, nameMapResult, audienceSummaryResult] = await Promise.allSettled([
     fetchDeviceFlowRows(clientId, rangeStart, rangeEnd, deviceNums),
     loadClientDeviceNameMap(clientId, deviceNums),
@@ -592,6 +613,7 @@ async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, r
 
   const rowsData = rows.value;
   const totalVisitors = rowsData.length;
+  const derivedPassersby = rowsData.reduce((sum, row) => sum + extractDeviceFlowPassersbyCount(row), 0);
   const nameMap = nameMapResult.status === "fulfilled" ? nameMapResult.value : new Map<string, string>();
   if (nameMapResult.status !== "fulfilled") {
     console.warn("[buildDeviceFlowWidgetData] Falha ao carregar nomes dos devices:", nameMapResult.reason);
@@ -641,8 +663,8 @@ async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, r
     .filter((item) => item.value > 0);
 
   return {
-    visitors: audienceSummary?.uniqueVisitors || totalVisitors,
-    passersby: audienceSummary?.passersby || null,
+    visitors: Math.max(totalVisitors, Number(audienceSummary?.uniqueVisitors ?? 0) || 0),
+    passersby: Math.max(totalVisitors, derivedPassersby, Number(audienceSummary?.passersby ?? 0) || 0) || null,
     deviceAudience,
     trackingData,
   };
@@ -830,6 +852,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   const expressionHourlyCount: Record<string, Record<string, number>> = {};
   const deviceCounts = new Map<string, number>();
   const trackingIslands = new Map<string, { label: string; count: number }>();
+  let totalPassersby = 0;
   let glassesKnown=0, facialHairKnown=0, headwearKnown=0, hairColorKnown=0, hairTypeKnown=0, expressionKnown=0;
   let sumVisit=0, cntVisit=0, sumDwell=0, cntDwell=0, sumContact=0, cntContact=0;
 
@@ -866,6 +889,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
         count: (current?.count ?? 0) + 1,
       });
     }
+    totalPassersby += extractDeviceFlowPassersbyCount(row);
     if (typeof row.age === "number" && Number.isFinite(row.age)) { const b = bucketAge(Math.round(row.age)); ageCounts[b] = (ageCounts[b] ?? 0) + 1; } else { ageCounts.unknown += 1; }
     if (row.gender === 1) genderCounts.male++; else if (row.gender === 2) genderCounts.female++; else genderCounts.unknown++;
     const a = row.attributes || {};
@@ -933,7 +957,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       expressions_hourly: expressionKnown > 0 ? expressionHourlyCount : {},
       device_flow: {
         visitors: totalVisitors,
-        passersby: null,
+        passersby: Math.max(totalVisitors, totalPassersby) || null,
         deviceAudience,
         trackingData,
       },

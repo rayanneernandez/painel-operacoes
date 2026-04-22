@@ -582,10 +582,34 @@ export function ClientDashboard() {
     });
   }, [deviceNameByMac]);
 
+  const extractDeviceFlowPassersbyCount = useCallback((row: any) => {
+    const raw = row?.raw_data;
+    const candidates = [
+      raw?.tracks_count,
+      raw?.tracks_acount,
+      raw?.contacts_count,
+      raw?.contact_count,
+      raw?.overall_tracks_count,
+      raw?.passerby_body_tracks_count,
+    ];
+
+    let best = 0;
+    for (const candidate of candidates) {
+      const numeric = Math.round(Number(candidate) || 0);
+      if (Number.isFinite(numeric) && numeric > best) best = numeric;
+    }
+
+    const tracksLength = Array.isArray(raw?.tracks) ? raw.tracks.length : 0;
+    if (Number.isFinite(tracksLength) && tracksLength > best) best = tracksLength;
+
+    return best > 0 ? best : 1;
+  }, []);
+
   const buildDeviceFlowFromRows = useCallback((rows: any[], fallback?: any) => {
     const safeRows = Array.isArray(rows) ? rows : [];
     const deviceCounts = new Map<string, number>();
     const trackingIslands = new Map<string, { label: string; count: number }>();
+    let derivedPassersby = 0;
 
     for (const row of safeRows) {
       const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
@@ -611,10 +635,16 @@ export function ClientDashboard() {
         label: current?.label || uniqueDeviceKeys.map((deviceKey) => resolveDeviceFlowLabel(`Device ${deviceKey}`)).join(' + '),
         count: (current?.count ?? 0) + 1,
       });
+
+      derivedPassersby += extractDeviceFlowPassersbyCount(row);
     }
 
     const totalVisitors = Math.max(Number(fallback?.visitors ?? 0) || 0, safeRows.length);
-    const passersby = Number(fallback?.passersby ?? 0) > 0 ? Number(fallback.passersby) : null;
+    const passersby = Math.max(
+      totalVisitors,
+      derivedPassersby,
+      Number(fallback?.passersby ?? 0) || 0,
+    ) || null;
 
     const deviceAudience = [...deviceCounts.entries()]
       .map(([deviceKey, count]) => ({
@@ -641,7 +671,7 @@ export function ClientDashboard() {
       deviceAudience,
       trackingData,
     };
-  }, [resolveDeviceFlowLabel]);
+  }, [extractDeviceFlowPassersbyCount, resolveDeviceFlowLabel]);
 
   useEffect(() => {
     activeFilterKeyRef.current = [

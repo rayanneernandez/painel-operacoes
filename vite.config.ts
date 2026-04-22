@@ -11,19 +11,28 @@ import type { ViteDevServer } from 'vite'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// Carrega o .env manualmente para que process.env tenha SUPABASE_SERVICE_ROLE_KEY etc.
-// O Vite só injeta variáveis com prefixo VITE_ — as demais precisam ser carregadas aqui.
+// Carrega os arquivos .env manualmente para que process.env tenha
+// SUPABASE_SERVICE_ROLE_KEY, DISPLAYFORCE_EMAIL etc.
+// As variaveis existentes do sistema nao sao sobrescritas.
 function loadDotEnv() {
-  const envPath = path.join(__dirname, '.env')
-  try {
-    const content = fs.readFileSync(envPath, 'utf-8')
-    for (const line of content.split('\n')) {
-      const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/)
-      if (match && !process.env[match[1]]) {
-        process.env[match[1]] = match[2].trim().replace(/^["']|["']$/g, '')
+  const lockedEnvKeys = new Set(Object.keys(process.env))
+  const envFiles = ['.env', '.env.local', '.env.production.local']
+
+  for (const envFile of envFiles) {
+    const envPath = path.join(__dirname, envFile)
+    try {
+      const content = fs.readFileSync(envPath, 'utf-8')
+      for (const line of content.split('\n')) {
+        const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/)
+        if (!match) continue
+        const envKey = match[1]
+        if (lockedEnvKeys.has(envKey)) continue
+        process.env[envKey] = match[2].trim().replace(/^["']|["']$/g, '')
       }
+    } catch {
+      // arquivo opcional
     }
-  } catch { /* .env não encontrado — ok em produção */ }
+  }
 }
 
 loadDotEnv()
@@ -37,7 +46,7 @@ function localApiPlugin() {
       server.middlewares.use(async (req: IncomingMessage, res: ServerResponse, next: () => void) => {
         if (!req.url?.startsWith('/api/')) { next(); return; }
 
-        // Lê body da requisição
+        // Le body da requisicao
         const rawBody = await new Promise<string>((resolve) => {
           let data = ''
           req.on('data', (chunk: Buffer) => { data += chunk.toString() })
@@ -47,7 +56,7 @@ function localApiPlugin() {
         let parsedBody: any = {}
         try { parsedBody = rawBody ? JSON.parse(rawBody) : {} } catch { /* noop */ }
 
-        // Monta req/res no formato que o handler espera (compatível com VercelRequest/VercelResponse)
+        // Monta req/res no formato que o handler espera
         const mockReq: any = {
           method: req.method ?? 'POST',
           headers: req.headers,
@@ -98,8 +107,8 @@ export default defineConfig({
       plugins: [
         tailwindcss({
           content: [
-            "./index.html",
-            "./src/**/*.{js,ts,jsx,tsx}",
+            './index.html',
+            './src/**/*.{js,ts,jsx,tsx}',
           ],
           darkMode: 'class',
           theme: {
@@ -113,7 +122,7 @@ export default defineConfig({
   },
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      '@': path.resolve(__dirname, './src'),
     },
   },
   server: {
@@ -127,4 +136,3 @@ export default defineConfig({
     },
   },
 })
-
