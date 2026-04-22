@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
+import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "./_lib/facialExpressions.js";
 
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 const _key =
@@ -503,7 +503,7 @@ function buildStoredFacialExpressionPayload(
   hourKeys: string[],
   series: Array<{ label: string; values: number[] }>,
 ) {
-  const keyByLabel = new Map(FACIAL_EXPRESSION_SERIES.map(({ key, label }) => [label, key]));
+  const keyByLabel = new Map<string, string>(FACIAL_EXPRESSION_SERIES.map(({ key, label }) => [label, key]));
   const totals = Object.fromEntries(FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, 0])) as Record<string, number>;
   const hourly: Record<string, Record<string, number>> = {};
 
