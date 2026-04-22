@@ -266,6 +266,13 @@ function hasFacialExpressionSeriesData(series: Array<{ label: string; values: nu
   return Array.isArray(series) && series.some((item) => Array.isArray(item?.values) && item.values.some((value) => Number(value) > 0));
 }
 
+function rangeTouchesTodayLocal(rangeStart: string, rangeEnd: string) {
+  const startDay = formatLocalDateKey(rangeStart);
+  const endDay = formatLocalDateKey(rangeEnd);
+  const todayDay = formatLocalDateKey(new Date());
+  return startDay <= todayDay && endDay >= todayDay;
+}
+
 function normalizeFacialExpressionHourCounts(counts: any) {
   return Object.fromEntries(
     FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, Number(counts?.[key] ?? 0) || 0]),
@@ -803,11 +810,12 @@ export function ClientDashboard() {
     }
 
     const cachedSeries = buildFacialExpressionSeriesFromRollups(candidateRollups, rangeStart, rangeEnd);
+    const shouldRefreshLive = deviceFilter.length === 0 && rangeTouchesTodayLocal(rangeStart, rangeEnd);
     if (cachedSeries) {
       if (!isCurrent()) return;
       setFacialExpressionLabels(labels);
       setFacialExpressionSeries(cachedSeries);
-      return;
+      if (!shouldRefreshLive) return;
     }
 
     if (deviceFilter.length === 0) {
@@ -835,6 +843,8 @@ export function ClientDashboard() {
       } catch (liveError) {
         console.warn('[Dashboard] Falha ao reaquecer expressoes faciais no backend:', liveError);
       }
+
+      if (cachedSeries) return;
     }
 
     const PAGE = 1000;

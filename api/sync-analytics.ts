@@ -1,7 +1,7 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
-import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions.ts";
+import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "../src/utils/facialExpressions";
 
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 const _key = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
@@ -965,10 +965,10 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       }
     }
     const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
-    const normalizedDeviceKeys = rawDevices
+    const normalizedDeviceKeys: string[] = rawDevices
       .map((value: any) => String(value ?? "").trim())
-      .filter(Boolean);
-    const uniqueDeviceKeys = normalizedDeviceKeys.length > 0
+      .filter((value: string) => value.length > 0);
+    const uniqueDeviceKeys: string[] = normalizedDeviceKeys.length > 0
       ? [...new Set(normalizedDeviceKeys)]
       : (() => {
           const fallback = String(row?.device_id ?? "").trim();
