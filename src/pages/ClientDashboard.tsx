@@ -53,28 +53,53 @@ type ClientApiConfig = {
 
 function alignUtcStartOfDay(value: Date | string) {
   const d = value instanceof Date ? new Date(value) : new Date(value);
-  d.setUTCHours(0, 0, 0, 0);
+  d.setHours(0, 0, 0, 0);
   return d;
 }
 
 function alignUtcEndOfDay(value: Date | string) {
   const d = value instanceof Date ? new Date(value) : new Date(value);
-  d.setUTCHours(23, 59, 59, 999);
+  d.setHours(23, 59, 59, 999);
   return d;
 }
 
 function alignUtcStartOfWeek(value: Date | string) {
   const d = alignUtcStartOfDay(value);
-  const utcDay = d.getUTCDay() || 7;
-  d.setUTCDate(d.getUTCDate() - utcDay + 1);
+  const localDay = d.getDay() || 7;
+  d.setDate(d.getDate() - localDay + 1);
   return d;
 }
 
 function alignUtcEndOfWeek(value: Date | string) {
   const d = alignUtcStartOfWeek(value);
-  d.setUTCDate(d.getUTCDate() + 6);
-  d.setUTCHours(23, 59, 59, 999);
+  d.setDate(d.getDate() + 6);
+  d.setHours(23, 59, 59, 999);
   return d;
+}
+
+function formatLocalDateKey(value: Date | string) {
+  const d = value instanceof Date ? new Date(value) : new Date(value);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+function formatDateInputValue(value: Date | string) {
+  return formatLocalDateKey(value);
+}
+
+function parseDateInputValue(value: string, endOfDay = false) {
+  const [year, month, day] = String(value || '').split('-').map(Number);
+  if (!year || !month || !day) return null;
+  const parsed = endOfDay
+    ? new Date(year, month - 1, day, 23, 59, 59, 999)
+    : new Date(year, month - 1, day, 0, 0, 0, 0);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function countInclusiveLocalDayKeys(startDay: string, endDay: string) {
+  const start = parseDateInputValue(startDay);
+  const end = parseDateInputValue(endDay);
+  if (!start || !end) return 0;
+  return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
 }
 
 function sumVisitorsPerDay(vpd: Record<string, number> | null | undefined) {
@@ -223,24 +248,10 @@ function countRollupDays(rollup: any) {
 }
 
 function buildFacialExpressionHourAxis(startValue: Date | string, endValue: Date | string) {
-  const start = new Date(startValue);
-  const end = new Date(endValue);
-  start.setUTCMinutes(0, 0, 0);
-  end.setUTCMinutes(0, 0, 0);
-
-  const hourKeys: string[] = [];
-  const labels: string[] = [];
-  const includeDay = end.getTime() - start.getTime() >= 86400000;
-
-  for (let cursor = new Date(start.getTime()); cursor <= end; cursor = new Date(cursor.getTime() + 3600000)) {
-    hourKeys.push(cursor.toISOString().slice(0, 13));
-    labels.push(
-      includeDay
-        ? `${cursor.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'UTC' })} ${String(cursor.getUTCHours()).padStart(2, '0')}h`
-        : `${String(cursor.getUTCHours()).padStart(2, '0')}h`
-    );
-  }
-
+  void startValue;
+  void endValue;
+  const hourKeys = Array.from({ length: 24 }, (_, hour) => String(hour));
+  const labels = hourKeys.map((hour) => `${hour}h`);
   return { hourKeys, labels };
 }
 
@@ -251,17 +262,21 @@ function buildEmptyFacialExpressionSeries(length: number) {
   }));
 }
 
-function buildFacialExpressionSeriesFromRows(rows: any[], hourKeys: string[]) {
-  const hourIndex = new Map(hourKeys.map((hour, index) => [hour, index]));
-  const series = buildEmptyFacialExpressionSeries(hourKeys.length);
+function normalizeFacialExpressionHourCounts(counts: any) {
+  return Object.fromEntries(
+    FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, Number(counts?.[key] ?? 0) || 0]),
+  ) as Record<'neutral' | 'happiness' | 'surprise' | 'anger', number>;
+}
+
+function buildFacialExpressionSeriesFromRows(rows: any[]) {
+  const series = buildEmptyFacialExpressionSeries(24);
   const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
 
   for (const row of rows || []) {
     const timestamp = typeof row?.timestamp === 'string' ? row.timestamp : null;
     if (!timestamp) continue;
-    const hourKey = timestamp.slice(0, 13);
-    const index = hourIndex.get(hourKey);
-    if (index === undefined) continue;
+    const index = new Date(timestamp).getHours();
+    if (!Number.isFinite(index) || index < 0 || index > 23) continue;
 
     const expression =
       normalizeFacialExpression(row?.attributes?.facial_expression) ??
@@ -276,24 +291,26 @@ function buildFacialExpressionSeriesFromRows(rows: any[], hourKeys: string[]) {
   return series;
 }
 
-function buildFacialExpressionSeriesFromRollups(rollups: any[], hourKeys: string[]) {
-  const series = buildEmptyFacialExpressionSeries(hourKeys.length);
+function buildFacialExpressionSeriesFromRollups(rollups: any[], rangeStart: string, rangeEnd: string) {
+  const startMs = Date.parse(rangeStart);
+  const endMs = Date.parse(rangeEnd);
+  const series = buildEmptyFacialExpressionSeries(24);
   const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
   const bestHourTotals = new Map<string, number>();
+  const bestHourCounts = new Map<string, Record<'neutral' | 'happiness' | 'surprise' | 'anger', number>>();
   let hasAnyData = false;
 
   for (const rollup of rollups || []) {
     const hourlySource = rollup?.attributes_percent?.expressions_hourly;
     if (!hourlySource || typeof hourlySource !== 'object') continue;
 
-    for (const hourKey of hourKeys) {
-      const counts = hourlySource?.[hourKey];
+    for (const [hourKey, counts] of Object.entries(hourlySource)) {
       if (!counts || typeof counts !== 'object') continue;
+      const bucketDate = new Date(`${hourKey}:00:00.000Z`);
+      const bucketMs = bucketDate.getTime();
+      if (!Number.isFinite(bucketMs) || bucketMs < startMs || bucketMs > endMs) continue;
 
-      const normalizedCounts = Object.fromEntries(
-        FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, Number(counts?.[key] ?? 0) || 0]),
-      ) as Record<'neutral' | 'happiness' | 'surprise' | 'anger', number>;
-
+      const normalizedCounts = normalizeFacialExpressionHourCounts(counts);
       const total = Object.values(normalizedCounts).reduce((acc, value) => acc + value, 0);
       if (total <= 0) continue;
 
@@ -301,15 +318,19 @@ function buildFacialExpressionSeriesFromRollups(rollups: any[], hourKeys: string
       if (total < currentBest) continue;
 
       bestHourTotals.set(hourKey, total);
-      const index = hourKeys.indexOf(hourKey);
-      if (index === -1) continue;
+      bestHourCounts.set(hourKey, normalizedCounts);
+    }
+  }
 
-      for (const { key } of FACIAL_EXPRESSION_SERIES) {
-        const target = valuesByKey.get(key);
-        if (!target) continue;
-        target[index] = normalizedCounts[key];
-        hasAnyData = hasAnyData || normalizedCounts[key] > 0;
-      }
+  for (const [hourKey, normalizedCounts] of bestHourCounts.entries()) {
+    const index = new Date(`${hourKey}:00:00.000Z`).getHours();
+    if (!Number.isFinite(index) || index < 0 || index > 23) continue;
+
+    for (const { key } of FACIAL_EXPRESSION_SERIES) {
+      const target = valuesByKey.get(key);
+      if (!target) continue;
+      target[index] += normalizedCounts[key];
+      hasAnyData = hasAnyData || normalizedCounts[key] > 0;
     }
   }
 
@@ -317,15 +338,23 @@ function buildFacialExpressionSeriesFromRollups(rollups: any[], hourKeys: string
 }
 
 function extractDeviceFlowFromRollups(rollups: any[]) {
+  let bestPartial: any = null;
   for (const rollup of rollups || []) {
     const deviceFlow = rollup?.attributes_percent?.device_flow;
     if (!deviceFlow || typeof deviceFlow !== 'object') continue;
     const hasAudience = Array.isArray(deviceFlow.deviceAudience) && deviceFlow.deviceAudience.length > 0;
     const hasTracking = Array.isArray(deviceFlow.trackingData) && deviceFlow.trackingData.length > 0;
     const hasPassersby = Number(deviceFlow.passersby ?? 0) > 0;
-    if (hasAudience || hasTracking || hasPassersby) return deviceFlow;
+    const hasLegacyTrackingLabels = Array.isArray(deviceFlow.trackingData)
+      && deviceFlow.trackingData.length > 0
+      && deviceFlow.trackingData.every((entry: any) => /^\d+\s+devices?$/i.test(String(entry?.label ?? '').trim()));
+    // Só usa cache quando os três pedaços visuais estão completos.
+    // Assim, se o rollup salvo no Supabase estiver parcial (ex.: só visitors),
+    // o loader cai no fetch live que repopula deviceAudience/trackingData/passersby.
+    if (hasAudience && hasTracking && hasPassersby && !hasLegacyTrackingLabels) return deviceFlow;
+    if (!bestPartial) bestPartial = deviceFlow;
   }
-  return null;
+  return bestPartial;
 }
 
 function overlapVisitorsForRange(rollup: any, startDay: string, endDay: string) {
@@ -341,7 +370,7 @@ function overlapVisitorsForRange(rollup: any, startDay: string, endDay: string) 
 
 function aggregateAttributesFromRollups(rollups: any[], startDay: string, endDay: string) {
   const categories = ['glasses', 'facial_hair', 'hair_color', 'hair_type', 'headwear'];
-  const targetDays = countInclusiveUtcDays(`${startDay}T00:00:00.000Z`, `${endDay}T00:00:00.000Z`);
+  const targetDays = countInclusiveLocalDayKeys(startDay, endDay);
   const candidateRollups = (rollups || []).filter((rollup) => {
     if (!hasNestedMetricData(rollup?.attributes_percent)) return false;
     const days = countRollupDays(rollup);
@@ -392,25 +421,17 @@ export function ClientDashboard() {
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
   const [selectedStartDate, setSelectedStartDate] = useState<Date>(() => {
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    return today;
+    return alignUtcStartOfDay(new Date());
   });
   const [selectedEndDate, setSelectedEndDate] = useState<Date>(() => {
-    const today = new Date();
-    today.setUTCHours(23, 59, 59, 999);
-    return today;
+    return alignUtcEndOfDay(new Date());
   });
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [draftStartDate, setDraftStartDate] = useState<Date>(() => {
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    return today;
+    return alignUtcStartOfDay(new Date());
   });
   const [draftEndDate, setDraftEndDate] = useState<Date>(() => {
-    const today = new Date();
-    today.setUTCHours(23, 59, 59, 999);
-    return today;
+    return alignUtcEndOfDay(new Date());
   });
   const autoTodayRef = useRef(true);
   const didApplyD1DefaultRef = useRef(false);
@@ -455,8 +476,8 @@ export function ClientDashboard() {
   useEffect(() => {
     const tick = () => {
       if (!autoTodayRef.current) return;
-      const s = new Date(); s.setUTCHours(0, 0, 0, 0);
-      const e = new Date(); e.setUTCHours(23, 59, 59, 999);
+      const s = alignUtcStartOfDay(new Date());
+      const e = alignUtcEndOfDay(new Date());
       if (selectedStartDate.getTime() !== s.getTime()) setSelectedStartDate(s);
       if (selectedEndDate.getTime() !== e.getTime()) setSelectedEndDate(e);
       setDraftStartDate(s);
@@ -540,6 +561,87 @@ export function ClientDashboard() {
     }
     return [];
   }, [view, selectedStore, selectedCamera]);
+
+  const deviceNameByMac = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const store of stores) {
+      for (const camera of store.cameras || []) {
+        const key = String((camera as any).macAddress ?? '').trim();
+        const name = String(camera?.name ?? '').trim();
+        if (!key || !name) continue;
+        map.set(key, name);
+      }
+    }
+    return map;
+  }, [stores]);
+
+  const resolveDeviceFlowLabel = useCallback((label: string) => {
+    return String(label ?? '').replace(/Device\s+(\d+)/gi, (_match, rawId) => {
+      const normalized = String(rawId ?? '').trim();
+      return deviceNameByMac.get(normalized) || `Device ${normalized}`;
+    });
+  }, [deviceNameByMac]);
+
+  const buildDeviceFlowFromRows = useCallback((rows: any[], fallback?: any) => {
+    const safeRows = Array.isArray(rows) ? rows : [];
+    const deviceCounts = new Map<string, number>();
+    const trackingIslands = new Map<string, { label: string; count: number }>();
+
+    for (const row of safeRows) {
+      const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
+      const normalizedDeviceKeys = rawDevices
+        .map((value: any) => String(value ?? '').trim())
+        .filter(Boolean);
+      const uniqueDeviceKeys: string[] = normalizedDeviceKeys.length > 0
+        ? Array.from(new Set<string>(normalizedDeviceKeys))
+        : (() => {
+            const fallbackKey = String(row?.device_id ?? '').trim();
+            return fallbackKey ? [fallbackKey] : [];
+          })();
+
+      for (const deviceKey of uniqueDeviceKeys) {
+        deviceCounts.set(deviceKey, (deviceCounts.get(deviceKey) ?? 0) + 1);
+      }
+
+      const islandKey = [...uniqueDeviceKeys].sort().join('|');
+      if (!islandKey) continue;
+
+      const current = trackingIslands.get(islandKey);
+      trackingIslands.set(islandKey, {
+        label: current?.label || uniqueDeviceKeys.map((deviceKey) => resolveDeviceFlowLabel(`Device ${deviceKey}`)).join(' + '),
+        count: (current?.count ?? 0) + 1,
+      });
+    }
+
+    const totalVisitors = Math.max(Number(fallback?.visitors ?? 0) || 0, safeRows.length);
+    const passersby = Number(fallback?.passersby ?? 0) > 0 ? Number(fallback.passersby) : null;
+
+    const deviceAudience = [...deviceCounts.entries()]
+      .map(([deviceKey, count]) => ({
+        label: resolveDeviceFlowLabel(`Device ${deviceKey}`),
+        value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
+        rawCount: count,
+      }))
+      .sort((a, b) => b.rawCount - a.rawCount)
+      .slice(0, 4)
+      .map(({ label, value }) => ({ label, value }));
+
+    const trackingData = [...trackingIslands.values()]
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 4)
+      .map(({ label, count }) => ({
+        label,
+        value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
+      }))
+      .filter((entry) => entry.value > 0);
+
+    return {
+      visitors: totalVisitors > 0 ? totalVisitors : null,
+      passersby,
+      deviceAudience,
+      trackingData,
+    };
+  }, [resolveDeviceFlowLabel]);
 
   useEffect(() => {
     activeFilterKeyRef.current = [
@@ -666,39 +768,12 @@ export function ClientDashboard() {
       return;
     }
 
-    const cachedSeries = buildFacialExpressionSeriesFromRollups(candidateRollups, hourKeys);
+    const cachedSeries = buildFacialExpressionSeriesFromRollups(candidateRollups, rangeStart, rangeEnd);
     if (cachedSeries) {
       if (!isCurrent()) return;
       setFacialExpressionLabels(labels);
       setFacialExpressionSeries(cachedSeries);
       return;
-    }
-
-    if (deviceFilter.length === 0) {
-      try {
-        const json = await fetchJsonWithTimeout<{
-          live_available?: boolean;
-          series?: { label: string; values: number[] }[];
-        }>('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            client_id: clientId,
-            start: rangeStart,
-            end: rangeEnd,
-            live_facial_expressions: true,
-          }),
-        }, 20000, 'sync-analytics facial expressions');
-
-        if (json?.live_available && Array.isArray(json.series)) {
-          if (!isCurrent()) return;
-          setFacialExpressionLabels(labels);
-          setFacialExpressionSeries(json.series);
-          return;
-        }
-      } catch (error) {
-        console.warn('[Dashboard] Falha ao carregar expressoes faciais live:', error);
-      }
     }
 
     const PAGE = 1000;
@@ -735,7 +810,7 @@ export function ClientDashboard() {
 
     if (!isCurrent()) return;
     setFacialExpressionLabels(labels);
-    setFacialExpressionSeries(buildFacialExpressionSeriesFromRows(allRows, hourKeys));
+    setFacialExpressionSeries(buildFacialExpressionSeriesFromRows(allRows));
   }, []);
 
   const loadDeviceFlowWidget = useCallback(async (
@@ -747,49 +822,106 @@ export function ClientDashboard() {
     candidateRollups: any[] = [],
   ) => {
     const cached = extractDeviceFlowFromRollups(candidateRollups);
-    if (cached) {
+    const cachedHasAudience = Array.isArray(cached?.deviceAudience) && cached.deviceAudience.length > 0;
+    const cachedHasTracking = Array.isArray(cached?.trackingData) && cached.trackingData.length > 0;
+    const applyDeviceFlowState = (payload: {
+      visitors?: number | null;
+      passersby?: number | null;
+      deviceAudience?: { label: string; value: number }[];
+      trackingData?: { label: string; value: number }[];
+    }) => {
+      setDeviceFlowVisitors(Number(payload?.visitors ?? 0) || null);
+      setDeviceFlowPassersby(Number(payload?.passersby ?? 0) || null);
+      setDeviceFlowAudience(Array.isArray(payload?.deviceAudience) ? payload.deviceAudience : []);
+      setDeviceFlowTracking(Array.isArray(payload?.trackingData) ? payload.trackingData : []);
+    };
+
+    if (cachedHasAudience && cachedHasTracking) {
       if (!isCurrent()) return;
-      setDeviceFlowVisitors(Number(cached.visitors ?? 0) || null);
-      setDeviceFlowPassersby(Number(cached.passersby ?? 0) || null);
-      setDeviceFlowAudience(Array.isArray(cached.deviceAudience) ? cached.deviceAudience : []);
-      setDeviceFlowTracking(Array.isArray(cached.trackingData) ? cached.trackingData : []);
-      return;
+      applyDeviceFlowState(cached);
+      if (Number(cached?.passersby ?? 0) > 0) return;
     }
 
     try {
-      const json = await fetchJsonWithTimeout<{
-        device_flow?: {
-          visitors?: number | null;
-          passersby?: number | null;
-          deviceAudience?: { label: string; value: number }[];
-          trackingData?: { label: string; value: number }[];
-        } | null;
-      }>('/api/sync-analytics', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          client_id: clientId,
-          start: rangeStart,
-          end: rangeEnd,
-          devices: deviceFilter,
-          live_device_flow: true,
-        }),
-      }, 20000, 'sync-analytics device flow');
+      const PAGE = 1000;
+      const allRows: any[] = [];
+      let from = 0;
 
+      while (true) {
+        let query = supabase
+          .from('visitor_analytics')
+          .select('device_id,raw_data')
+          .eq('client_id', clientId)
+          .gte('timestamp', rangeStart)
+          .lte('timestamp', rangeEnd)
+          .order('timestamp', { ascending: true })
+          .range(from, from + PAGE - 1);
+
+        if (deviceFilter.length > 0) query = query.in('device_id', deviceFilter);
+
+        const { data, error } = await withTimeout<{ data: any[] | null; error: any }>(
+          query as any,
+          10000,
+          'visitor_analytics fluxo audiencia device',
+        );
+        if (error) throw error;
+        if (!Array.isArray(data) || data.length === 0) break;
+        allRows.push(...data);
+        if (data.length < PAGE) break;
+        from += PAGE;
+      }
+
+      const rebuilt = buildDeviceFlowFromRows(allRows, cached);
       if (!isCurrent()) return;
-      setDeviceFlowVisitors(Number(json?.device_flow?.visitors ?? 0) || null);
-      setDeviceFlowPassersby(Number(json?.device_flow?.passersby ?? 0) || null);
-      setDeviceFlowAudience(Array.isArray(json?.device_flow?.deviceAudience) ? json!.device_flow!.deviceAudience : []);
-      setDeviceFlowTracking(Array.isArray(json?.device_flow?.trackingData) ? json!.device_flow!.trackingData : []);
+      applyDeviceFlowState(rebuilt);
+
+      if (Number(rebuilt?.passersby ?? 0) <= 0) {
+        try {
+          const json = await fetchJsonWithTimeout<{
+            device_flow?: {
+              visitors?: number | null;
+              passersby?: number | null;
+              deviceAudience?: { label: string; value: number }[];
+              trackingData?: { label: string; value: number }[];
+            } | null;
+          }>('/api/sync-analytics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              client_id: clientId,
+              start: rangeStart,
+              end: rangeEnd,
+              devices: deviceFilter,
+              live_device_flow: true,
+            }),
+          }, 6000, 'sync-analytics device flow live enrich');
+
+          if (!isCurrent()) return;
+          const liveDeviceFlow = json?.device_flow;
+          if (liveDeviceFlow) {
+            applyDeviceFlowState({
+              visitors: liveDeviceFlow.visitors ?? rebuilt.visitors,
+              passersby: liveDeviceFlow.passersby ?? rebuilt.passersby,
+              deviceAudience:
+                Array.isArray(rebuilt.deviceAudience) && rebuilt.deviceAudience.length > 0
+                  ? rebuilt.deviceAudience
+                  : (Array.isArray(liveDeviceFlow.deviceAudience) ? liveDeviceFlow.deviceAudience : []),
+              trackingData:
+                Array.isArray(rebuilt.trackingData) && rebuilt.trackingData.length > 0
+                  ? rebuilt.trackingData
+                  : (Array.isArray(liveDeviceFlow.trackingData) ? liveDeviceFlow.trackingData : []),
+            });
+          }
+        } catch (liveError) {
+          console.warn('[Dashboard] Falha ao enriquecer passantes do fluxo/audiencia device:', liveError);
+        }
+      }
     } catch (error) {
       console.warn('[Dashboard] Falha ao carregar fluxo/audiencia device:', error);
       if (!isCurrent()) return;
-      setDeviceFlowVisitors(null);
-      setDeviceFlowPassersby(null);
-      setDeviceFlowAudience([]);
-      setDeviceFlowTracking([]);
+      applyDeviceFlowState(cached || {});
     }
-  }, []);
+  }, [buildDeviceFlowFromRows]);
 
   // ── loadData: busca dados respeitando o período selecionado ──────────────
   const loadData = useCallback(async () => {
@@ -803,9 +935,9 @@ export function ClientDashboard() {
       const endAligned = alignUtcEndOfDay(selectedEndDate);
       const startIso = startAligned.toISOString();
       const endIso   = endAligned.toISOString();
-      const startDay = startIso.slice(0, 10);
-      const endDay   = endIso.slice(0, 10);
-      const todayDay = alignUtcStartOfDay(new Date()).toISOString().slice(0, 10);
+      const startDay = formatLocalDateKey(selectedStartDate);
+      const endDay   = formatLocalDateKey(selectedEndDate);
+      const todayDay = formatLocalDateKey(new Date());
       const rangeTouchesToday = startDay <= todayDay && endDay >= todayDay;
       const syncExpressions = async (candidateRollups: any[] = []) => {
         await loadFacialExpressions(id, startIso, endIso, deviceIds, isCurrent, candidateRollups);
@@ -974,6 +1106,9 @@ export function ClientDashboard() {
         }
 
         if (mergedTotal > 0) {
+          if (!exactRollupCandidate && selectedDays === 1) {
+            console.log('[loadData] Rollups sobrepostos sem cache exato local, recalculando periodo para evitar mistura de dias.');
+          } else {
           const preferMergedOverExact =
             !!exactRollupCandidate &&
             Math.abs(mergedTotal - exactRollupCandidateTotal) >
@@ -1010,6 +1145,7 @@ export function ClientDashboard() {
             syncDeviceFlow([mergedRollup, ...(allRollups || []), ...(metadataRollups || [])]),
           ]);
           return;
+          }
         }
 
         // Rollups encontrados mas sem dados para o período específico
@@ -1467,10 +1603,10 @@ export function ClientDashboard() {
     const toWeekDays = (vpd: Record<string, number>) => {
       const totals = [0, 0, 0, 0, 0, 0, 0];
       Object.entries(vpd || {}).forEach(([dateStr, count]) => {
-        const d = new Date(dateStr + 'T00:00:00Z');
-        if (isNaN(d.getTime())) return;
-        const ud = d.getUTCDay();
-        const idx = ud === 0 ? 6 : ud - 1;
+        const d = parseDateInputValue(dateStr);
+        if (!d || isNaN(d.getTime())) return;
+        const localDay = d.getDay();
+        const idx = localDay === 0 ? 6 : localDay - 1;
         totals[idx] += Number(count) || 0;
       });
       return totals;
@@ -1524,7 +1660,7 @@ export function ClientDashboard() {
               .range(from2, from2 + page2 - 1);
             if (rowErr || !rows || rows.length === 0) break;
             (rows as any[]).forEach((r: any) => {
-              const dk = (r.timestamp || '').slice(0, 10);
+              const dk = r.timestamp ? formatLocalDateKey(r.timestamp) : '';
               if (dk) visPerDay[dk] = (visPerDay[dk] ?? 0) + 1;
             });
             if (rows.length < page2) break;
@@ -1551,7 +1687,7 @@ export function ClientDashboard() {
         if (error || !data || data.length === 0) break;
         (data as any[]).forEach((r: any) => {
           const t = new Date(r.timestamp); if (isNaN(t.getTime())) return;
-          const ud = t.getUTCDay(); const idx = ud === 0 ? 6 : ud - 1;
+          const localDay = t.getDay(); const idx = localDay === 0 ? 6 : localDay - 1;
           days[idx] += 1;
         });
         if (data.length < page) break;
@@ -1801,11 +1937,11 @@ export function ClientDashboard() {
 
   const periodSeries = useMemo(() => {
     const labels: string[] = []; const values: number[] = [];
-    const start = new Date(selectedStartDate); start.setUTCHours(0, 0, 0, 0);
-    const end   = new Date(selectedEndDate);   end.setUTCHours(0, 0, 0, 0);
+    const start = alignUtcStartOfDay(selectedStartDate);
+    const end   = alignUtcStartOfDay(selectedEndDate);
     for (let d = start; d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
-      const key = d.toISOString().slice(0, 10);
-      labels.push(d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', timeZone: 'UTC' }));
+      const key = formatLocalDateKey(d);
+      labels.push(d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }));
       values.push(Number(visitorsPerDayMap[key] || 0));
     }
     return { labels, values };
@@ -1826,10 +1962,10 @@ export function ClientDashboard() {
     const prevEnd   = new Date(selectedStartDate.getTime() - 1);
     const prevStart = new Date(prevEnd.getTime() - (dayCount - 1) * 86400000);
     const prev: number[] = [];
-    const start = new Date(prevStart); start.setUTCHours(0, 0, 0, 0);
-    const end   = new Date(prevEnd);   end.setUTCHours(0, 0, 0, 0);
+    const start = alignUtcStartOfDay(prevStart);
+    const end   = alignUtcStartOfDay(prevEnd);
     for (let d = start; d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
-      prev.push(Number(comparePrevVisitorsPerDay[d.toISOString().slice(0, 10)] || 0));
+      prev.push(Number(comparePrevVisitorsPerDay[formatLocalDateKey(d)] || 0));
     }
     while (prev.length < dayCount) prev.push(0);
     return { labels: periodSeries.labels, current: periodSeries.values, previous: prev.slice(0, dayCount) };
@@ -1977,7 +2113,7 @@ export function ClientDashboard() {
                   >
                     <div className="flex items-center gap-2 flex-nowrap">
                       <Calendar size={16} className="text-gray-500" />
-                      <span className="text-sm whitespace-nowrap">{selectedStartDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })} → {selectedEndDate.toLocaleDateString('pt-BR', { timeZone: 'UTC' })}</span>
+                      <span className="text-sm whitespace-nowrap">{selectedStartDate.toLocaleDateString('pt-BR')} → {selectedEndDate.toLocaleDateString('pt-BR')}</span>
                     </div>
                     <ChevronDown size={14} className="text-gray-500" />
                   </button>
@@ -1986,21 +2122,21 @@ export function ClientDashboard() {
                       <div className="flex flex-col sm:flex-row items-end gap-3">
                         <div className="w-full sm:w-auto">
                           <label className="block text-xs text-gray-400">Início</label>
-                          <input type="date" value={draftStartDate.toISOString().slice(0, 10)}
-                            onChange={(e) => { const d = new Date(`${e.target.value}T00:00:00.000Z`); if (!isNaN(d.getTime())) setDraftStartDate(d); }}
+                          <input type="date" value={formatDateInputValue(draftStartDate)}
+                            onChange={(e) => { const d = parseDateInputValue(e.target.value, false); if (d) setDraftStartDate(d); }}
                             className="bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
                         </div>
                         <div className="w-full sm:w-auto">
                           <label className="block text-xs text-gray-400">Fim</label>
-                          <input type="date" value={draftEndDate.toISOString().slice(0, 10)}
-                            onChange={(e) => { const d = new Date(`${e.target.value}T23:59:59.999Z`); if (!isNaN(d.getTime())) setDraftEndDate(d); }}
+                          <input type="date" value={formatDateInputValue(draftEndDate)}
+                            onChange={(e) => { const d = parseDateInputValue(e.target.value, true); if (d) setDraftEndDate(d); }}
                             className="w-full bg-gray-800 text-white px-3 py-2 rounded-md border border-gray-700" />
                         </div>
                         <button
                           onClick={() => {
                             autoTodayRef.current = false;
-                            let nextStart = new Date(draftStartDate); nextStart.setUTCHours(0, 0, 0, 0);
-                            let nextEnd = new Date(draftEndDate); nextEnd.setUTCHours(23, 59, 59, 999);
+                            let nextStart = alignUtcStartOfDay(draftStartDate);
+                            let nextEnd = alignUtcEndOfDay(draftEndDate);
                             if (nextEnd.getTime() < nextStart.getTime()) nextEnd = new Date(nextStart.getTime() + 86399999);
                             setSelectedStartDate(nextStart);
                             setSelectedEndDate(nextEnd);
@@ -2076,8 +2212,13 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_device_flow')       {
                   widgetProps.visitors = deviceFlowVisitors ?? totalVisitors;
                   widgetProps.passersby = deviceFlowPassersby;
-                  widgetProps.deviceAudience = deviceFlowAudience;
-                  widgetProps.trackingData = deviceFlowTracking;
+                  widgetProps.deviceAudience = deviceFlowAudience.map((entry) => {
+                    return { ...entry, label: resolveDeviceFlowLabel(String(entry?.label ?? '')) };
+                  });
+                  widgetProps.trackingData = deviceFlowTracking.map((entry) => ({
+                    ...entry,
+                    label: resolveDeviceFlowLabel(String(entry?.label ?? '')),
+                  }));
                 }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }

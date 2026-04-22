@@ -61,11 +61,29 @@ function mergeAttributesKeepingExpressionCache(existingAttributes: any, nextAttr
   const next = nextAttributes && typeof nextAttributes === "object" ? nextAttributes : {};
   const shouldKeepExistingExpressions = hasStoredExpressionCache(existing?.expressions_hourly);
 
+  // device_flow: preserva passersby (vem do live fetch) mesmo quando cron recalcula,
+  // e só sobrescreve audience/tracking se o cron trouxe algo válido.
+  const existingDeviceFlow = existing?.device_flow && typeof existing.device_flow === "object" ? existing.device_flow : null;
+  const nextDeviceFlow = next?.device_flow && typeof next.device_flow === "object" ? next.device_flow : null;
+  const mergedDeviceFlow = (existingDeviceFlow || nextDeviceFlow)
+    ? {
+        visitors: nextDeviceFlow?.visitors ?? existingDeviceFlow?.visitors ?? 0,
+        passersby: nextDeviceFlow?.passersby ?? existingDeviceFlow?.passersby ?? null,
+        deviceAudience: Array.isArray(nextDeviceFlow?.deviceAudience) && nextDeviceFlow.deviceAudience.length > 0
+          ? nextDeviceFlow.deviceAudience
+          : (Array.isArray(existingDeviceFlow?.deviceAudience) ? existingDeviceFlow.deviceAudience : []),
+        trackingData: Array.isArray(nextDeviceFlow?.trackingData) && nextDeviceFlow.trackingData.length > 0
+          ? nextDeviceFlow.trackingData
+          : (Array.isArray(existingDeviceFlow?.trackingData) ? existingDeviceFlow.trackingData : []),
+      }
+    : undefined;
+
   return {
     ...next,
     expressions: shouldKeepExistingExpressions ? (existing.expressions ?? next.expressions ?? {}) : (next.expressions ?? existing.expressions ?? {}),
     expressions_totals: shouldKeepExistingExpressions ? (existing.expressions_totals ?? next.expressions_totals ?? {}) : (next.expressions_totals ?? existing.expressions_totals ?? {}),
     expressions_hourly: shouldKeepExistingExpressions ? (existing.expressions_hourly ?? next.expressions_hourly ?? {}) : (next.expressions_hourly ?? existing.expressions_hourly ?? {}),
+    ...(mergedDeviceFlow ? { device_flow: mergedDeviceFlow } : {}),
   };
 }
 
@@ -154,7 +172,27 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   let expressionKnown = 0;
   let sumVisit=0, cntVisit=0, sumContact=0, cntContact=0;
 
+  // device_flow — alimenta o widget Fluxo e Audiência Device direto do banco
+  const deviceCounts = new Map<string, number>();
+  const trackingCounts = new Map<string, number>();
+
   for (const r of rows) {
+    // device_flow: conta visitas por device e cardinality de tracking (1..4 devices)
+    const rawDevices = Array.isArray(r?.raw_data?.devices) ? r.raw_data.devices : [];
+    const normalizedDeviceKeys: string[] = rawDevices
+      .map((v: any) => String(v ?? "").trim())
+      .filter(Boolean);
+    const deviceKeys = normalizedDeviceKeys.length > 0
+      ? [...new Set(normalizedDeviceKeys)]
+      : (r?.device_id ? [String(r.device_id).trim()].filter(Boolean) : []);
+    for (const key of deviceKeys) {
+      deviceCounts.set(key, (deviceCounts.get(key) ?? 0) + 1);
+    }
+    const rawTracks = Number(r?.raw_data?.tracks_count ?? deviceKeys.length ?? 0);
+    const normalizedTracks = Number.isFinite(rawTracks) && rawTracks > 0 ? Math.min(4, Math.round(rawTracks)) : 1;
+    const trackLabel = normalizedTracks === 1 ? "1 Device" : `${normalizedTracks} Devices`;
+    trackingCounts.set(trackLabel, (trackingCounts.get(trackLabel) ?? 0) + 1);
+
     let hourKey: string | null = null;
     if (r.timestamp) {
       const d = new Date(r.timestamp);
@@ -196,6 +234,24 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   const n = Math.max(total, 1);
   const nAttr = (k: Record<string,number>) => Object.values(k).reduce((a,b) => a+b, 0) || 1;
 
+  // device_flow a partir das contagens acumuladas — top 4 devices ranqueados por visita
+  const deviceAudience = [...deviceCounts.entries()]
+    .map(([deviceKey, count]) => ({
+      label: `Device ${deviceKey}`,
+      value: total > 0 ? Number(((count / total) * 100).toFixed(1)) : 0,
+      rawCount: count,
+    }))
+    .sort((a, b) => b.rawCount - a.rawCount)
+    .slice(0, 4)
+    .map(({ label, value }) => ({ label, value }));
+  const trackingOrder = ["1 Device", "2 Devices", "3 Devices", "4 Devices"];
+  const trackingData = trackingOrder
+    .map((label) => ({
+      label,
+      value: total > 0 ? Number((((trackingCounts.get(label) ?? 0) / total) * 100).toFixed(1)) : 0,
+    }))
+    .filter((item) => item.value > 0);
+
   return {
     client_id, start: rangeStart, end: rangeEnd,
     total_visitors: total,
@@ -213,6 +269,12 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       expressions: expressionKnown > 0 ? percentMap(expressionCounts, expressionKnown) : {},
       expressions_totals: expressionKnown > 0 ? expressionCounts : {},
       expressions_hourly: expressionKnown > 0 ? expressionHourlyCounts : {},
+      device_flow: {
+        visitors: total,
+        passersby: null, // passersby vem do live /visitor_view/audience — cache enriquece depois
+        deviceAudience,
+        trackingData,
+      },
     },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_contact_time_seconds: cntContact > 0 ? Number((sumContact / cntContact).toFixed(2)) : null,

@@ -1278,79 +1278,150 @@ export const WidgetDeviceFlow = ({
   const safeVisitors = Math.max(0, Number(visitors) || 0);
   const safePassersby = Math.max(0, Number(passersby) || 0);
   const hasFlowRatio = safePassersby > 0;
-  const flowPct = hasFlowRatio ? Math.min(100, (safeVisitors / safePassersby) * 100) : null;
-  const audiencePalette = ['#ef4444', '#d946ef', '#1d4ed8', '#f59e0b'];
-  const trackingPalette = ['#f3d8c7', '#efc0a3', '#eea67a', '#c45a16'];
+  const flowPct = hasFlowRatio ? Math.max(0, Math.min(100, (safeVisitors / safePassersby) * 100)) : null;
+  const audiencePalette = ['#ff4d4f', '#d667ff', '#2f7df6', '#ffb703'];
+  const trackingPalette = ['#f8dfcf', '#f2c3a8', '#e89e72', '#cc5d12'];
   const audienceRows = (deviceAudience || []).map((entry, index) => ({
     ...entry,
     color: entry.color || audiencePalette[index % audiencePalette.length],
   }));
-  const trackingRows = (trackingData || []).map((entry, index) => ({
-    ...entry,
-    color: entry.color || trackingPalette[index % trackingPalette.length],
-  }));
+  const incomingTracking = Array.isArray(trackingData) ? trackingData : [];
+  const trackingRows = incomingTracking
+    .filter((entry) => Number(entry?.value ?? 0) > 0)
+    .slice(0, 4)
+    .map((entry, index) => ({
+      label: String(entry?.label ?? '').trim(),
+      value: Number(entry?.value ?? 0),
+      color: entry?.color || trackingPalette[index % trackingPalette.length],
+    }));
+
+  const formatPct = (value: number) => `${value.toFixed(1).replace('.', ',')}%`;
+  const fluxoBarWidth = flowPct ?? 0;
+  const passersbyPct = hasFlowRatio ? Math.max(0, 100 - flowPct!) : null;
+  const flowDisplay = hasFlowRatio ? formatPct(flowPct!) : (safeVisitors > 0 ? '0,0%' : '--');
+  const flowHelperText = hasFlowRatio
+    ? 'Visitantes sobre passantes no periodo.'
+    : 'Sem passantes no periodo filtrado.';
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col gap-5 overflow-hidden">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-2.5 h-full flex flex-col gap-2.5 overflow-hidden">
       <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
         <Users size={14} className="text-fuchsia-400" />
         Fluxo e Audiencia Device
       </h3>
 
+      {/* ── FLUXO ───────────────────────────────────────────────── */}
       <div className="space-y-2">
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
           <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Fluxo</span>
-          <span className="text-[11px] text-gray-400 text-right">
-            {safeVisitors.toLocaleString('pt-BR')} visitantes
-            {hasFlowRatio ? `  •  ${safePassersby.toLocaleString('pt-BR')} passantes` : ''}
-          </span>
+          <div className="h-px flex-1 bg-gradient-to-r from-fuchsia-400/60 via-fuchsia-300/20 to-transparent" />
         </div>
-        <div className="h-14 rounded-md bg-gray-800 overflow-hidden border border-gray-800">
-          <div
-            className="h-full bg-emerald-500 text-white font-bold text-2xl flex items-center justify-end pr-5 transition-all duration-500"
-            style={{ width: `${flowPct ?? (safeVisitors > 0 ? 100 : 0)}%` }}
-          >
-            {hasFlowRatio ? `${flowPct!.toFixed(1).replace('.', ',')}%` : safeVisitors > 0 ? 'Fluxo disponivel' : ''}
+        <div className="rounded-xl border border-gray-800/80 bg-gradient-to-br from-gray-900 via-gray-900 to-gray-800/60 p-2">
+          <div className="flex flex-wrap items-end justify-between gap-1.5 mb-1.5">
+            <div className="min-w-[96px]">
+              <div className="text-[10px] uppercase tracking-[0.24em] text-gray-500">Conversao do fluxo</div>
+              <div className="text-[19px] font-black text-white leading-none mt-1">
+                {flowDisplay}
+              </div>
+              <div className="text-[9px] text-gray-500 mt-0.5">{flowHelperText}</div>
+            </div>
+            <div className="flex flex-wrap justify-end gap-1.5">
+              <div className="min-w-[76px] rounded-lg border border-gray-800 bg-gray-950/60 px-2 py-1 text-right">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-500">Visitantes</div>
+                <div className="text-[13px] font-bold text-white">{safeVisitors.toLocaleString('pt-BR')}</div>
+              </div>
+              <div className="min-w-[76px] rounded-lg border border-gray-800 bg-gray-950/60 px-2 py-1 text-right">
+                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-500">Passantes</div>
+                <div className="text-[13px] font-bold text-white">{safePassersby.toLocaleString('pt-BR')}</div>
+              </div>
+            </div>
+          </div>
+
+          <div className="relative h-5 rounded-lg overflow-hidden border border-gray-800 bg-white/[0.06]">
+            <div className="absolute inset-0 bg-gradient-to-r from-white/5 to-transparent" />
+            <div
+              className="absolute inset-y-0 left-0 rounded-r-lg bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-300 shadow-[0_0_18px_rgba(16,185,129,0.14)] transition-all duration-500"
+              style={{ width: `${fluxoBarWidth}%` }}
+            />
+            <div className="absolute inset-y-0 right-0 flex items-center pr-1.5">
+              <span className="rounded-full bg-gray-950/80 px-1.5 py-0.5 text-[10px] font-black text-white shadow-lg">
+                {flowDisplay}
+              </span>
+            </div>
+          </div>
+          <div className="mt-1 flex items-center justify-between text-[10px] text-gray-400">
+            <span>Visitantes {flowDisplay}</span>
+            <span>Passantes {passersbyPct !== null ? formatPct(passersbyPct) : '--'}</span>
           </div>
         </div>
-        {!hasFlowRatio && (
-          <p className="text-[10px] text-gray-500">Passantes ainda nao disponivel no pipeline atual deste widget.</p>
-        )}
       </div>
 
-      <div className="space-y-3">
-        <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Audiencia Device</span>
+      {/* ── AUDIENCIA DEVICE ────────────────────────────────────── */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Audiencia Device</span>
+          <div className="h-px flex-1 bg-gradient-to-r from-fuchsia-400/60 via-fuchsia-300/20 to-transparent" />
+        </div>
         {audienceRows.length > 0 ? (
-          <div className="space-y-3">
-            {audienceRows.map((entry) => (
-              <div key={entry.label} className="grid grid-cols-[minmax(0,1fr)_88px] gap-4 items-center">
-                <div className="h-14 rounded-sm text-white font-bold text-[22px] flex items-center justify-end pr-5" style={{ background: entry.color, width: `${Math.max(18, Math.min(100, entry.value))}%` }}>
-                  {entry.value.toFixed(1).replace('.', ',')}%
+          <div className="space-y-1.5">
+            {audienceRows.map((entry, index) => {
+              const barWidth = Math.max(10, Math.min(100, entry.value));
+              return (
+                <div key={entry.label} className="rounded-xl border border-gray-800/70 bg-gray-950/35 px-2 py-1.5 overflow-hidden">
+                  <div className="mb-1 flex items-start gap-2">
+                    <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border border-white/10 bg-gray-950/80 px-1.5 text-[9px] font-bold text-white">
+                      #{index + 1}
+                    </span>
+                    <div className="min-w-0 flex-1 text-[10px] text-gray-200 leading-tight break-words whitespace-normal">
+                      {entry.label}
+                    </div>
+                    <span className="rounded-full bg-gray-950/70 px-1.5 py-0.5 text-[10px] font-black text-white shadow-lg">
+                      {formatPct(entry.value)}
+                    </span>
+                  </div>
+                  <div className="h-4 rounded-lg bg-white/[0.04] relative overflow-hidden">
+                    <div
+                      className="absolute inset-y-0 left-0 rounded-lg transition-all duration-500 shadow-[0_4px_12px_rgba(0,0,0,0.14)]"
+                      style={{ background: `linear-gradient(90deg, ${entry.color}, ${entry.color}dd)`, width: `${barWidth}%` }}
+                    />
+                    <div className="absolute inset-0 bg-gradient-to-r from-white/[0.06] to-transparent" />
+                  </div>
                 </div>
-                <span className="text-sm text-gray-300 truncate">{entry.label}</span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
-          <div className="rounded-lg border border-dashed border-gray-800 bg-gray-950/40 px-4 py-6 text-sm text-gray-500 text-center">
+          <div className="rounded-2xl border border-dashed border-gray-800 bg-gray-950/40 px-4 py-6 text-sm text-gray-500 text-center">
             Sem dados de audiencia por device.
           </div>
         )}
       </div>
 
-      <div className="space-y-3">
-        <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Tracking Ilha</span>
+      {/* ── TRACKING ILHA ───────────────────────────────────────── */}
+      <div className="space-y-2">
+        <div className="flex items-center gap-3">
+          <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Tracking Ilha</span>
+          <div className="h-px flex-1 bg-gradient-to-r from-fuchsia-400/60 via-fuchsia-300/20 to-transparent" />
+        </div>
         {trackingRows.length > 0 ? (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5">
             {trackingRows.map((entry) => (
-              <div key={entry.label} className="rounded-md px-4 py-5 text-center" style={{ background: entry.color }}>
-                <div className="text-[11px] text-gray-900/80 font-semibold mb-3">{entry.label}</div>
-                <div className="text-[18px] font-bold text-gray-950">{entry.value.toFixed(1).replace('.', ',')}%</div>
+              <div
+                key={entry.label}
+                className="rounded-xl border border-black/10 px-1.5 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]"
+                style={{ background: `linear-gradient(180deg, ${entry.color}, ${entry.color}ee)` }}
+              >
+                <div className="text-[9px] text-gray-900/80 font-semibold leading-tight break-words whitespace-normal min-h-[2rem] mb-1">
+                  {entry.label}
+                </div>
+                <div className="text-[16px] font-black text-gray-950 leading-none">
+                  {formatPct(entry.value)}
+                </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="rounded-lg border border-dashed border-gray-800 bg-gray-950/40 px-4 py-6 text-sm text-gray-500 text-center">
+          <div className="rounded-2xl border border-dashed border-gray-800 bg-gray-950/40 px-4 py-6 text-sm text-gray-500 text-center">
             Sem dados de tracking por ilha.
           </div>
         )}

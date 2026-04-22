@@ -43,8 +43,35 @@ function safeNumber(x: any): number | null {
   const n = Number(x);
   return Number.isFinite(n) ? n : null;
 }
+const SAO_PAULO_TIMEZONE = "America/Sao_Paulo";
+const SAO_PAULO_DATE_FORMATTER = new Intl.DateTimeFormat("en-CA", {
+  timeZone: SAO_PAULO_TIMEZONE,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+});
+const SAO_PAULO_HOUR_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: SAO_PAULO_TIMEZONE,
+  hour: "2-digit",
+  hour12: false,
+  hourCycle: "h23",
+});
 function asISODateUTC(d: Date) {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth()+1).padStart(2,"0")}-${String(d.getUTCDate()).padStart(2,"0")}`;
+}
+function asSaoPauloDateKey(value: string | Date) {
+  const d = value instanceof Date ? new Date(value) : new Date(value);
+  const parts = SAO_PAULO_DATE_FORMATTER.formatToParts(d);
+  const year = parts.find((part) => part.type === "year")?.value ?? "0000";
+  const month = parts.find((part) => part.type === "month")?.value ?? "00";
+  const day = parts.find((part) => part.type === "day")?.value ?? "00";
+  return `${year}-${month}-${day}`;
+}
+function getSaoPauloHour(value: string | Date) {
+  const d = value instanceof Date ? new Date(value) : new Date(value);
+  const hour = SAO_PAULO_HOUR_FORMATTER.formatToParts(d).find((part) => part.type === "hour")?.value ?? "0";
+  const numeric = Number(hour);
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 function startOfUtcDay(value: string | Date) {
   const d = value instanceof Date ? new Date(value) : new Date(value);
@@ -138,6 +165,20 @@ function formatLocalTimeIso() {
   const mm = String(abs % 60).padStart(2, "0");
   const local = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
   return `${local}${sign}${hh}:${mm}`;
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timeoutHandle = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
 }
 
 async function fetchDisplayforceJson(url: string, options: RequestInit = {}) {
@@ -364,7 +405,7 @@ async function fetchDisplayforceAudienceSummary(clientId: string, rangeStart: st
     platformId: platform.platformId,
     platformSlug: platform.platformSlug,
     uniqueVisitors: Number(range?.unique_visitors_count ?? 0) || 0,
-    passersby: Number(range?.passerby_body_tracks_count ?? 0) || 0,
+    passersby: Number(range?.overall_tracks_count ?? range?.passerby_body_tracks_count ?? 0) || 0,
   };
 }
 
@@ -406,8 +447,43 @@ function mergeFacialExpressionAttributes(existingAttributes: any, facialExpressi
   };
 }
 
+function hasStoredExpressionCache(value: any) {
+  return !!value && typeof value === "object" && Object.keys(value).length > 0;
+}
+
+function mergeStoredRollupAttributes(existingAttributes: any, nextAttributes: any) {
+  const existing = existingAttributes && typeof existingAttributes === "object" ? existingAttributes : {};
+  const next = nextAttributes && typeof nextAttributes === "object" ? nextAttributes : {};
+  const shouldKeepExistingExpressions = hasStoredExpressionCache(existing?.expressions_hourly);
+  const existingDeviceFlow = existing?.device_flow && typeof existing.device_flow === "object" ? existing.device_flow : null;
+  const nextDeviceFlow = next?.device_flow && typeof next.device_flow === "object" ? next.device_flow : null;
+  const mergedDeviceFlow = (existingDeviceFlow || nextDeviceFlow)
+    ? {
+        visitors: nextDeviceFlow?.visitors ?? existingDeviceFlow?.visitors ?? 0,
+        passersby: nextDeviceFlow?.passersby ?? existingDeviceFlow?.passersby ?? null,
+        deviceAudience:
+          Array.isArray(nextDeviceFlow?.deviceAudience) && nextDeviceFlow.deviceAudience.length > 0
+            ? nextDeviceFlow.deviceAudience
+            : (Array.isArray(existingDeviceFlow?.deviceAudience) ? existingDeviceFlow.deviceAudience : []),
+        trackingData:
+          Array.isArray(nextDeviceFlow?.trackingData) && nextDeviceFlow.trackingData.length > 0
+            ? nextDeviceFlow.trackingData
+            : (Array.isArray(existingDeviceFlow?.trackingData) ? existingDeviceFlow.trackingData : []),
+      }
+    : null;
+
+  return {
+    ...existing,
+    ...next,
+    expressions: shouldKeepExistingExpressions ? (existing.expressions ?? next.expressions ?? {}) : (next.expressions ?? existing.expressions ?? {}),
+    expressions_totals: shouldKeepExistingExpressions ? (existing.expressions_totals ?? next.expressions_totals ?? {}) : (next.expressions_totals ?? existing.expressions_totals ?? {}),
+    expressions_hourly: shouldKeepExistingExpressions ? (existing.expressions_hourly ?? next.expressions_hourly ?? {}) : (next.expressions_hourly ?? existing.expressions_hourly ?? {}),
+    ...(mergedDeviceFlow ? { device_flow: mergedDeviceFlow } : {}),
+  };
+}
+
 async function fetchDeviceFlowRows(clientId: string, rangeStart: string, rangeEnd: string, deviceNums: number[]) {
-  const PAGE = 2000;
+  const PAGE = 1000;
   const all: any[] = [];
   let from = 0;
 
@@ -474,24 +550,75 @@ async function loadClientDeviceNameMap(clientId: string, deviceNums: number[]) {
   return nameMap;
 }
 
+function extractDeviceFlowKeys(row: any): string[] {
+  const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
+  const normalized: string[] = rawDevices
+    .map((value: any) => String(value ?? "").trim())
+    .filter(Boolean);
+
+  if (normalized.length > 0) {
+    return Array.from(new Set(normalized));
+  }
+
+  const fallback = String(row?.device_id ?? "").trim();
+  return fallback ? [fallback] : [];
+}
+
+function buildTrackingIslandKey(deviceKeys: string[]) {
+  return Array.from(new Set(deviceKeys.map((value) => String(value ?? "").trim()).filter(Boolean))).sort().join("|");
+}
+
+function buildTrackingIslandLabel(deviceKeys: string[], nameMap?: Map<string, string>) {
+  const uniqueKeys = Array.from(new Set(deviceKeys.map((value) => String(value ?? "").trim()).filter(Boolean)));
+  return uniqueKeys
+    .map((deviceKey) => nameMap?.get(deviceKey) || `Device ${deviceKey}`)
+    .join(" + ");
+}
+
 async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, rangeEnd: string, deviceNums: number[]) {
-  const rows = await fetchDeviceFlowRows(clientId, rangeStart, rangeEnd, deviceNums);
-  const totalVisitors = rows.length;
-  const nameMap = await loadClientDeviceNameMap(clientId, deviceNums);
+  // Puxa sempre o audience summary (passersby) da Displayforce.
+  // O endpoint /visitor_view/audience retorna valores globais do platform;
+  // quando há filtro de dispositivo o número fica aproximado, mas é melhor
+  // mostrar um valor do que deixar o card "Fluxo disponível" sem %.
+  const [rows, nameMapResult, audienceSummaryResult] = await Promise.allSettled([
+    fetchDeviceFlowRows(clientId, rangeStart, rangeEnd, deviceNums),
+    loadClientDeviceNameMap(clientId, deviceNums),
+    withTimeout(fetchDisplayforceAudienceSummary(clientId, rangeStart, rangeEnd), 4500, "displayforce audience summary"),
+  ]);
+
+  if (rows.status !== "fulfilled") {
+    throw rows.reason;
+  }
+
+  const rowsData = rows.value;
+  const totalVisitors = rowsData.length;
+  const nameMap = nameMapResult.status === "fulfilled" ? nameMapResult.value : new Map<string, string>();
+  if (nameMapResult.status !== "fulfilled") {
+    console.warn("[buildDeviceFlowWidgetData] Falha ao carregar nomes dos devices:", nameMapResult.reason);
+  }
+
+  const audienceSummary = audienceSummaryResult.status === "fulfilled" ? audienceSummaryResult.value : null;
+  if (audienceSummaryResult.status !== "fulfilled") {
+    console.warn("[buildDeviceFlowWidgetData] Falha ao carregar resumo de audiencia live:", audienceSummaryResult.reason);
+  }
 
   const deviceCounts = new Map<string, number>();
-  const trackingCounts = new Map<string, number>();
+  const trackingIslands = new Map<string, { label: string; count: number }>();
 
-  for (const row of rows) {
-    const deviceKey = String(row?.device_id ?? "").trim();
-    if (deviceKey) {
+  for (const row of rowsData) {
+    const deviceKeys = extractDeviceFlowKeys(row);
+    for (const deviceKey of deviceKeys) {
       deviceCounts.set(deviceKey, (deviceCounts.get(deviceKey) ?? 0) + 1);
     }
 
-    const rawTracks = Number(row?.raw_data?.tracks_count ?? 0);
-    const normalizedTracks = Number.isFinite(rawTracks) && rawTracks > 0 ? Math.min(4, Math.round(rawTracks)) : 1;
-    const label = normalizedTracks === 1 ? "1 Device" : `${normalizedTracks} Devices`;
-    trackingCounts.set(label, (trackingCounts.get(label) ?? 0) + 1);
+    const islandKey = buildTrackingIslandKey(deviceKeys);
+    if (islandKey) {
+      const current = trackingIslands.get(islandKey);
+      trackingIslands.set(islandKey, {
+        label: current?.label || buildTrackingIslandLabel(deviceKeys, nameMap),
+        count: (current?.count ?? 0) + 1,
+      });
+    }
   }
 
   const deviceAudience = [...deviceCounts.entries()]
@@ -504,17 +631,14 @@ async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, r
     .slice(0, 4)
     .map(({ label, value }) => ({ label, value }));
 
-  const trackingOrder = ["1 Device", "2 Devices", "3 Devices", "4 Devices"];
-  const trackingData = trackingOrder
-    .map((label) => ({
+  const trackingData = [...trackingIslands.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 4)
+    .map(({ label, count }) => ({
       label,
-      value: totalVisitors > 0 ? Number((((trackingCounts.get(label) ?? 0) / totalVisitors) * 100).toFixed(1)) : 0,
+      value: totalVisitors > 0 ? Number(((count / totalVisitors) * 100).toFixed(1)) : 0,
     }))
     .filter((item) => item.value > 0);
-
-  const audienceSummary = deviceNums.length === 0
-    ? await fetchDisplayforceAudienceSummary(clientId, rangeStart, rangeEnd)
-    : null;
 
   return {
     visitors: audienceSummary?.uniqueVisitors || totalVisitors,
@@ -704,6 +828,8 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   const hairTypeCount: Record<string, number> = {};
   const expressionCount: Record<string, number> = {};
   const expressionHourlyCount: Record<string, Record<string, number>> = {};
+  const deviceCounts = new Map<string, number>();
+  const trackingIslands = new Map<string, { label: string; count: number }>();
   let glassesKnown=0, facialHairKnown=0, headwearKnown=0, hairColorKnown=0, hairTypeKnown=0, expressionKnown=0;
   let sumVisit=0, cntVisit=0, sumDwell=0, cntDwell=0, sumContact=0, cntContact=0;
 
@@ -712,11 +838,33 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     if (row.timestamp) {
       const d = new Date(row.timestamp);
       if (!isNaN(d.getTime())) {
-        const dk = asISODateUTC(d);
+        const dk = asSaoPauloDateKey(d);
         hourKey = d.toISOString().slice(0, 13);
         perDayCount[dk] = (perDayCount[dk] ?? 0) + 1;
-        perHourTotal[String(d.getUTCHours())] = (perHourTotal[String(d.getUTCHours())] ?? 0) + 1;
+        const localHour = getSaoPauloHour(d);
+        perHourTotal[String(localHour)] = (perHourTotal[String(localHour)] ?? 0) + 1;
       }
+    }
+    const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
+    const normalizedDeviceKeys = rawDevices
+      .map((value: any) => String(value ?? "").trim())
+      .filter(Boolean);
+    const uniqueDeviceKeys = normalizedDeviceKeys.length > 0
+      ? [...new Set(normalizedDeviceKeys)]
+      : (() => {
+          const fallback = String(row?.device_id ?? "").trim();
+          return fallback ? [fallback] : [];
+        })();
+    for (const deviceKey of uniqueDeviceKeys) {
+      deviceCounts.set(deviceKey, (deviceCounts.get(deviceKey) ?? 0) + 1);
+    }
+    const islandKey = buildTrackingIslandKey(uniqueDeviceKeys);
+    if (islandKey) {
+      const current = trackingIslands.get(islandKey);
+      trackingIslands.set(islandKey, {
+        label: current?.label || buildTrackingIslandLabel(uniqueDeviceKeys),
+        count: (current?.count ?? 0) + 1,
+      });
     }
     if (typeof row.age === "number" && Number.isFinite(row.age)) { const b = bucketAge(Math.round(row.age)); ageCounts[b] = (ageCounts[b] ?? 0) + 1; } else { ageCounts.unknown += 1; }
     if (row.gender === 1) genderCounts.male++; else if (row.gender === 2) genderCounts.female++; else genderCounts.unknown++;
@@ -748,6 +896,23 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
   const perHourAvg: Record<string,number> = {};
   for (let h = 0; h < 24; h++) perHourAvg[String(h)] = Number(((perHourTotal[String(h)] ?? 0) / daysInRange).toFixed(2));
   const n = Math.max(rows.length, 1);
+  const deviceAudience = [...deviceCounts.entries()]
+    .map(([deviceKey, count]) => ({
+      label: `Device ${deviceKey}`,
+      value: totalVisitors > 0 ? Number(((count / totalVisitors) * 100).toFixed(1)) : 0,
+      rawCount: count,
+    }))
+    .sort((a, b) => b.rawCount - a.rawCount)
+    .slice(0, 4)
+    .map(({ label, value }) => ({ label, value }));
+  const trackingData = [...trackingIslands.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 4)
+    .map(({ label, count }) => ({
+      label,
+      value: totalVisitors > 0 ? Number(((count / totalVisitors) * 100).toFixed(1)) : 0,
+    }))
+    .filter((entry) => entry.value > 0);
 
   return {
     client_id, start: rangeStart, end: rangeEnd,
@@ -766,6 +931,12 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       expressions: expressionKnown > 0 ? percentMap(expressionCount, expressionKnown) : {},
       expressions_totals: expressionKnown > 0 ? expressionCount : {},
       expressions_hourly: expressionKnown > 0 ? expressionHourlyCount : {},
+      device_flow: {
+        visitors: totalVisitors,
+        passersby: null,
+        deviceAudience,
+        trackingData,
+      },
     },
     avg_visit_time_seconds:   cntVisit   > 0 ? Number((sumVisit   / cntVisit).toFixed(2))   : null,
     avg_dwell_time_seconds:   cntDwell   > 0 ? Number((sumDwell   / cntDwell).toFixed(2))   : null,
@@ -776,7 +947,20 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
 
 // Salva rollup no banco
 async function saveRollup(rr: ReturnType<typeof buildRollup>) {
-  const { error } = await supabase.from("visitor_analytics_rollups").upsert(rr, { onConflict: "client_id,start,end" });
+  const { data: existing } = await supabase
+    .from("visitor_analytics_rollups")
+    .select("attributes_percent")
+    .eq("client_id", rr.client_id)
+    .eq("start", rr.start)
+    .eq("end", rr.end)
+    .maybeSingle();
+
+  const payload = {
+    ...rr,
+    attributes_percent: mergeStoredRollupAttributes(existing?.attributes_percent, rr.attributes_percent),
+  };
+
+  const { error } = await supabase.from("visitor_analytics_rollups").upsert(payload, { onConflict: "client_id,start,end" });
   if (error) console.error("[saveRollup] Erro:", error);
   return !error;
 }
@@ -1310,16 +1494,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       _serverRebuilding.add(lockKey);
       try {
-        const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", { p_client_id: client_id, p_start: rangeStart, p_end: rangeEnd });
-        if (rpcErr) { console.error("[rebuild_rollup] RPC error:", rpcErr); return bad(res, 500, { error:"Erro ao calcular rollup via SQL", details:rpcErr }); }
-        const stats = rpcData as any;
-        const totalVisitors = Number(stats?.total_visitors ?? 0);
-        if (totalVisitors === 0) return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
-        let rollupRow = { client_id, start:rangeStart, end:rangeEnd, total_visitors:totalVisitors, avg_visitors_per_day:stats.avg_visitors_per_day??0, visitors_per_day:stats.visitors_per_day??{}, visitors_per_hour_avg:stats.visitors_per_hour_avg??{}, age_pyramid_percent:stats.age_pyramid_percent??{}, gender_percent:stats.gender_percent??{}, attributes_percent:stats.attributes_percent??{}, avg_visit_time_seconds:stats.avg_visit_time_seconds??null, avg_dwell_time_seconds:null, avg_contact_time_seconds:stats.avg_contact_time_seconds??null, updated_at:new Date().toISOString() };
-        rollupRow = await enrichRollupWithDisplayforceExpressions(client_id, rangeStart, rangeEnd, rollupRow);
-        const { error: saveErr } = await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict:"client_id,start,end" });
-        if (saveErr) console.error("[rebuild_rollup] Erro ao salvar:", saveErr);
-        return ok(res, { message:"Rollup recalculado via SQL", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:totalVisitors, next_offset:null, done:true, dashboard: { total_visitors:totalVisitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:null, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:!saveErr });
+        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, []);
+        if (rows.length === 0) return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
+        const rollupRow = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        const storedRollup = await saveRollup(rollupRow);
+        return ok(res, {
+          message:"Rollup recalculado via banco",
+          start:rangeStart,
+          end:rangeEnd,
+          externalFetched:0,
+          raw_upserted_new:0,
+          total_in_db:rollupRow.total_visitors,
+          next_offset:null,
+          done:true,
+          dashboard: {
+            total_visitors:rollupRow.total_visitors,
+            avg_visitors_per_day:rollupRow.avg_visitors_per_day,
+            visitors_per_day:rollupRow.visitors_per_day,
+            visitors_per_hour_avg:rollupRow.visitors_per_hour_avg,
+            gender_percent:rollupRow.gender_percent,
+            attributes_percent:rollupRow.attributes_percent,
+            age_pyramid_percent:rollupRow.age_pyramid_percent,
+            avg_times_seconds: {
+              avg_visit_time_seconds:rollupRow.avg_visit_time_seconds,
+              avg_dwell_time_seconds:rollupRow.avg_dwell_time_seconds,
+              avg_attention_seconds:rollupRow.avg_contact_time_seconds,
+            },
+          },
+          stored_rollup: storedRollup,
+        });
       } finally { _serverRebuilding.delete(lockKey); }
     }
 
@@ -1357,15 +1560,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
         return ok(res, { message:"Rollup recalculado (dispositivo)", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rr.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rr.total_visitors, avg_visitors_per_day:rr.avg_visitors_per_day, visitors_per_day:rr.visitors_per_day, visitors_per_hour_avg:rr.visitors_per_hour_avg, gender_percent:rr.gender_percent, attributes_percent:rr.attributes_percent, age_pyramid_percent:rr.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rr.avg_visit_time_seconds, avg_dwell_time_seconds:rr.avg_dwell_time_seconds, avg_attention_seconds:rr.avg_contact_time_seconds } }, stored_rollup:false });
       }
-      const { data: rpcData, error: rpcErr } = await supabase.rpc("build_visitor_rollup", { p_client_id:client_id, p_start:rangeStart, p_end:rangeEnd });
-      if (!rpcErr && rpcData) {
-        const stats = rpcData as any; const totalVisitors = Number(stats?.total_visitors ?? 0);
-        if (totalVisitors > 0) {
-          let rollupRow = { client_id, start:rangeStart, end:rangeEnd, total_visitors:totalVisitors, avg_visitors_per_day:stats.avg_visitors_per_day??0, visitors_per_day:stats.visitors_per_day??{}, visitors_per_hour_avg:stats.visitors_per_hour_avg??{}, age_pyramid_percent:stats.age_pyramid_percent??{}, gender_percent:stats.gender_percent??{}, attributes_percent:stats.attributes_percent??{}, avg_visit_time_seconds:stats.avg_visit_time_seconds??null, avg_dwell_time_seconds:null, avg_contact_time_seconds:stats.avg_contact_time_seconds??null, updated_at:new Date().toISOString() };
-          rollupRow = await enrichRollupWithDisplayforceExpressions(client_id, rangeStart, rangeEnd, rollupRow);
-          await supabase.from("visitor_analytics_rollups").upsert(rollupRow, { onConflict:"client_id,start,end" });
-          return ok(res, { message:"Rollup recalculado via SQL", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:totalVisitors, next_offset:null, done:true, dashboard: { total_visitors:totalVisitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:null, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:true });
-        }
+      const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, []);
+      if (rows.length > 0) {
+        const rollupRow = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        const storedRollup = await saveRollup(rollupRow);
+        return ok(res, { message:"Rollup recalculado via banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rollupRow.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rollupRow.total_visitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:rollupRow.avg_dwell_time_seconds, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:storedRollup });
       }
       return ok(res, { message:"Sem dados", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
     }
