@@ -541,10 +541,69 @@ function hasStoredExpressionCache(value: any) {
   return !!value && typeof value === "object" && Object.keys(value).length > 0;
 }
 
+function sumStoredExpressionValues(value: any): number {
+  if (!value || typeof value !== "object") return 0;
+  let total = 0;
+
+  for (const entry of Object.values(value)) {
+    if (entry && typeof entry === "object") {
+      total += sumStoredExpressionValues(entry);
+      continue;
+    }
+    total += Number(entry) || 0;
+  }
+
+  return total;
+}
+
+function countStoredExpressionKinds(expressions: any, expressionsTotals: any): number {
+  const totals = expressionsTotals && typeof expressionsTotals === "object" ? expressionsTotals : {};
+  const source = Object.keys(totals).length > 0
+    ? totals
+    : (expressions && typeof expressions === "object" ? expressions : {});
+
+  return Object.values(source).filter((value) => (Number(value) || 0) > 0).length;
+}
+
+function shouldKeepExistingExpressions(existing: any, next: any) {
+  const existingTotal = Math.max(
+    sumStoredExpressionValues(existing?.expressions_totals),
+    sumStoredExpressionValues(existing?.expressions_hourly),
+  );
+  const nextTotal = Math.max(
+    sumStoredExpressionValues(next?.expressions_totals),
+    sumStoredExpressionValues(next?.expressions_hourly),
+  );
+
+  if (existingTotal <= 0) return false;
+  if (nextTotal <= 0) return true;
+
+  // Se o rebuild do banco trouxe uma amostra muito mais rica, o cache antigo
+  // provavelmente está parcial/obsoleto e não deve sobrescrever a série nova.
+  if (nextTotal >= existingTotal * 3 && nextTotal - existingTotal >= 25) {
+    return false;
+  }
+
+  const existingKinds = countStoredExpressionKinds(existing?.expressions, existing?.expressions_totals);
+  const nextKinds = countStoredExpressionKinds(next?.expressions, next?.expressions_totals);
+
+  if (existingKinds > nextKinds && existingTotal >= Math.max(25, nextTotal * 0.5)) {
+    return true;
+  }
+
+  if (nextKinds > existingKinds && nextTotal >= Math.max(25, existingTotal * 1.5)) {
+    return false;
+  }
+
+  return existingTotal >= nextTotal;
+}
+
 function mergeStoredRollupAttributes(existingAttributes: any, nextAttributes: any) {
   const existing = existingAttributes && typeof existingAttributes === "object" ? existingAttributes : {};
   const next = nextAttributes && typeof nextAttributes === "object" ? nextAttributes : {};
-  const shouldKeepExistingExpressions = hasStoredExpressionCache(existing?.expressions_hourly);
+  const keepExistingExpressions =
+    hasStoredExpressionCache(existing?.expressions_hourly) &&
+    shouldKeepExistingExpressions(existing, next);
   const existingDeviceFlow = existing?.device_flow && typeof existing.device_flow === "object" ? existing.device_flow : null;
   const nextDeviceFlow = next?.device_flow && typeof next.device_flow === "object" ? next.device_flow : null;
   const mergedDeviceFlow = (existingDeviceFlow || nextDeviceFlow)
@@ -565,9 +624,9 @@ function mergeStoredRollupAttributes(existingAttributes: any, nextAttributes: an
   return {
     ...existing,
     ...next,
-    expressions: shouldKeepExistingExpressions ? (existing.expressions ?? next.expressions ?? {}) : (next.expressions ?? existing.expressions ?? {}),
-    expressions_totals: shouldKeepExistingExpressions ? (existing.expressions_totals ?? next.expressions_totals ?? {}) : (next.expressions_totals ?? existing.expressions_totals ?? {}),
-    expressions_hourly: shouldKeepExistingExpressions ? (existing.expressions_hourly ?? next.expressions_hourly ?? {}) : (next.expressions_hourly ?? existing.expressions_hourly ?? {}),
+    expressions: keepExistingExpressions ? (existing.expressions ?? next.expressions ?? {}) : (next.expressions ?? existing.expressions ?? {}),
+    expressions_totals: keepExistingExpressions ? (existing.expressions_totals ?? next.expressions_totals ?? {}) : (next.expressions_totals ?? existing.expressions_totals ?? {}),
+    expressions_hourly: keepExistingExpressions ? (existing.expressions_hourly ?? next.expressions_hourly ?? {}) : (next.expressions_hourly ?? existing.expressions_hourly ?? {}),
     ...(mergedDeviceFlow ? { device_flow: mergedDeviceFlow } : {}),
   };
 }
