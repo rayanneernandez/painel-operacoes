@@ -84,6 +84,12 @@ function endOfUtcDay(value: string | Date) {
 function addUtcDays(value: Date, days: number) {
   return new Date(Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate() + days, value.getUTCHours(), value.getUTCMinutes(), value.getUTCSeconds(), value.getUTCMilliseconds()));
 }
+function countRangeDays(startValue: string, endValue: string) {
+  const start = new Date(startValue);
+  const end = new Date(endValue);
+  if (!Number.isFinite(start.getTime()) || !Number.isFinite(end.getTime())) return 1;
+  return Math.max(1, Math.ceil((end.getTime() - start.getTime() + 1) / 86400000));
+}
 function monthStartMonthsAgoUtc(base: Date, monthsAgo: number) {
   return new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() - monthsAgo, 1, 0, 0, 0, 0));
 }
@@ -409,6 +415,86 @@ async function fetchDisplayforceAudienceSummary(clientId: string, rangeStart: st
   };
 }
 
+async function countVisitorAnalyticsRows(clientId: string, rangeStart: string, rangeEnd: string, deviceNums: number[] = []) {
+  let query = supabase
+    .from("visitor_analytics")
+    .select("*", { count: "exact", head: true })
+    .eq("client_id", clientId)
+    .gte("timestamp", rangeStart)
+    .lte("timestamp", rangeEnd);
+
+  if (deviceNums.length > 0) {
+    query = query.in("device_id", deviceNums);
+  }
+
+  const { count, error } = await query;
+  if (error) {
+    throw new Error(`[countVisitorAnalyticsRows] ${error.message}`);
+  }
+  return Number(count ?? 0) || 0;
+}
+
+async function loadExactRollup(clientId: string, rangeStart: string, rangeEnd: string) {
+  const { data, error } = await supabase
+    .from("visitor_analytics_rollups")
+    .select("*")
+    .eq("client_id", clientId)
+    .eq("start", String(rangeStart))
+    .eq("end", String(rangeEnd))
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`[loadExactRollup] ${error.message}`);
+  }
+
+  return data;
+}
+
+async function persistRollupAttributeCache(options: {
+  clientId: string;
+  rangeStart: string;
+  rangeEnd: string;
+  nextAttributes: any;
+  mergeAttributes: (existingAttributes: any, nextAttributes: any) => any;
+  deviceNums?: number[];
+}) {
+  const { clientId, rangeStart, rangeEnd, nextAttributes, mergeAttributes, deviceNums = [] } = options;
+  const existingRollup = await loadExactRollup(clientId, rangeStart, rangeEnd);
+  const totalVisitors = Math.max(
+    Number(existingRollup?.total_visitors ?? 0) || 0,
+    await countVisitorAnalyticsRows(clientId, rangeStart, rangeEnd, deviceNums),
+  );
+  const daysCount = countRangeDays(rangeStart, rangeEnd);
+
+  const payload = {
+    ...(existingRollup || {}),
+    client_id: clientId,
+    start: String(rangeStart),
+    end: String(rangeEnd),
+    total_visitors: totalVisitors,
+    avg_visitors_per_day: Number((totalVisitors / Math.max(1, daysCount)).toFixed(2)),
+    visitors_per_day: existingRollup?.visitors_per_day ?? {},
+    visitors_per_hour_avg: existingRollup?.visitors_per_hour_avg ?? {},
+    gender_percent: existingRollup?.gender_percent ?? {},
+    age_pyramid_percent: existingRollup?.age_pyramid_percent ?? {},
+    attributes_percent: mergeAttributes(existingRollup?.attributes_percent, nextAttributes),
+    avg_visit_time_seconds: existingRollup?.avg_visit_time_seconds ?? null,
+    avg_dwell_time_seconds: existingRollup?.avg_dwell_time_seconds ?? null,
+    avg_contact_time_seconds: existingRollup?.avg_contact_time_seconds ?? null,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from("visitor_analytics_rollups")
+    .upsert(payload, { onConflict: "client_id,start,end" });
+
+  if (error) {
+    throw new Error(`[persistRollupAttributeCache] ${error.message}`);
+  }
+
+  return payload;
+}
+
 function buildStoredFacialExpressionPayload(
   hourKeys: string[],
   series: Array<{ label: string; values: number[] }>,
@@ -685,6 +771,16 @@ async function enrichRollupWithDisplayforceExpressions(clientId: string, rangeSt
     console.warn("[enrichRollupWithDisplayforceExpressions] fallback para rollup sem cache live:", error);
     return rollup;
   }
+}
+
+async function enrichGlobalRollupIfNeeded(clientId: string, rangeStart: string, rangeEnd: string, rollup: any) {
+  const hasExpressionCache =
+    hasStoredExpressionCache(rollup?.attributes_percent?.expressions_hourly) ||
+    hasStoredExpressionCache(rollup?.attributes_percent?.expressions_totals) ||
+    hasStoredExpressionCache(rollup?.attributes_percent?.expressions);
+
+  if (hasExpressionCache) return rollup;
+  return enrichRollupWithDisplayforceExpressions(clientId, rangeStart, rangeEnd, rollup);
 }
 
 function extractTimes(visit: any) {
@@ -1196,23 +1292,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         const expressionsPayload = buildStoredFacialExpressionPayload(liveSeries.hourKeys, liveSeries.series);
-        const { data: existingRollup } = await supabase
-          .from("visitor_analytics_rollups")
-          .select("attributes_percent")
-          .eq("client_id", client_id)
-          .eq("start", String(start))
-          .eq("end", String(end))
-          .maybeSingle();
-
-        await supabase
-          .from("visitor_analytics_rollups")
-          .update({
-            attributes_percent: mergeFacialExpressionAttributes(existingRollup?.attributes_percent, expressionsPayload),
-            updated_at: new Date().toISOString(),
-          })
-          .eq("client_id", client_id)
-          .eq("start", String(start))
-          .eq("end", String(end));
+        await persistRollupAttributeCache({
+          clientId: client_id,
+          rangeStart: String(start),
+          rangeEnd: String(end),
+          nextAttributes: expressionsPayload,
+          mergeAttributes: mergeFacialExpressionAttributes,
+        });
 
         return ok(res, {
           source: "displayforce_emotion",
@@ -1240,26 +1326,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const widgetData = await buildDeviceFlowWidgetData(client_id, String(start), String(end), deviceNums);
 
         if (deviceNums.length === 0) {
-          const { data: existingRollup } = await supabase
-            .from("visitor_analytics_rollups")
-            .select("attributes_percent")
-            .eq("client_id", client_id)
-            .eq("start", String(start))
-            .eq("end", String(end))
-            .maybeSingle();
-
-          await supabase
-            .from("visitor_analytics_rollups")
-            .update({
-              attributes_percent: {
-                ...(existingRollup?.attributes_percent && typeof existingRollup.attributes_percent === "object" ? existingRollup.attributes_percent : {}),
-                device_flow: widgetData,
-              },
-              updated_at: new Date().toISOString(),
-            })
-            .eq("client_id", client_id)
-            .eq("start", String(start))
-            .eq("end", String(end));
+          await persistRollupAttributeCache({
+            clientId: client_id,
+            rangeStart: String(start),
+            rangeEnd: String(end),
+            nextAttributes: { device_flow: widgetData },
+            mergeAttributes: (existingAttributes, nextAttributes) => ({
+              ...(existingAttributes && typeof existingAttributes === "object" ? existingAttributes : {}),
+              ...(nextAttributes && typeof nextAttributes === "object" ? nextAttributes : {}),
+            }),
+            deviceNums,
+          });
         }
 
         return ok(res, {
@@ -1520,7 +1597,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       try {
         const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, []);
         if (rows.length === 0) return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
-        const rollupRow = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        const rollupRow = await enrichGlobalRollupIfNeeded(
+          client_id,
+          rangeStart,
+          rangeEnd,
+          buildRollup(rows, client_id, rangeStart, rangeEnd),
+        );
         const storedRollup = await saveRollup(rollupRow);
         return ok(res, {
           message:"Rollup recalculado via banco",
@@ -1586,7 +1668,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, []);
       if (rows.length > 0) {
-        const rollupRow = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        const rollupRow = await enrichGlobalRollupIfNeeded(
+          client_id,
+          rangeStart,
+          rangeEnd,
+          buildRollup(rows, client_id, rangeStart, rangeEnd),
+        );
         const storedRollup = await saveRollup(rollupRow);
         return ok(res, { message:"Rollup recalculado via banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rollupRow.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rollupRow.total_visitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:rollupRow.avg_dwell_time_seconds, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:storedRollup });
       }

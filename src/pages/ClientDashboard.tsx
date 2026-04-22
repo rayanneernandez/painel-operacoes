@@ -262,6 +262,10 @@ function buildEmptyFacialExpressionSeries(length: number) {
   }));
 }
 
+function hasFacialExpressionSeriesData(series: Array<{ label: string; values: number[] }> | null | undefined) {
+  return Array.isArray(series) && series.some((item) => Array.isArray(item?.values) && item.values.some((value) => Number(value) > 0));
+}
+
 function normalizeFacialExpressionHourCounts(counts: any) {
   return Object.fromEntries(
     FACIAL_EXPRESSION_SERIES.map(({ key }) => [key, Number(counts?.[key] ?? 0) || 0]),
@@ -806,6 +810,33 @@ export function ClientDashboard() {
       return;
     }
 
+    if (deviceFilter.length === 0) {
+      try {
+        const json = await fetchJsonWithTimeout<{
+          live_available?: boolean;
+          series?: { label: string; values: number[] }[];
+        }>('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: clientId,
+            start: rangeStart,
+            end: rangeEnd,
+            live_facial_expressions: true,
+          }),
+        }, 12000, 'sync-analytics facial expressions live');
+
+        const liveSeries = Array.isArray(json?.series) ? json!.series : [];
+        if (isCurrent() && hasFacialExpressionSeriesData(liveSeries)) {
+          setFacialExpressionLabels(labels);
+          setFacialExpressionSeries(liveSeries);
+          return;
+        }
+      } catch (liveError) {
+        console.warn('[Dashboard] Falha ao reaquecer expressoes faciais no backend:', liveError);
+      }
+    }
+
     const PAGE = 1000;
     const allRows: any[] = [];
     let from = 0;
@@ -839,8 +870,9 @@ export function ClientDashboard() {
     }
 
     if (!isCurrent()) return;
+    const rowSeries = buildFacialExpressionSeriesFromRows(allRows);
     setFacialExpressionLabels(labels);
-    setFacialExpressionSeries(buildFacialExpressionSeriesFromRows(allRows));
+    setFacialExpressionSeries(rowSeries);
   }, []);
 
   const loadDeviceFlowWidget = useCallback(async (
