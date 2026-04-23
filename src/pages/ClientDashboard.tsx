@@ -348,6 +348,83 @@ function buildFacialExpressionSeriesFromRollups(rollups: any[], rangeStart: stri
   return hasAnyData ? series : null;
 }
 
+function buildLatestFacialExpressionSeriesFromRollups(rollups: any[]) {
+  const dailyCandidates: Array<{
+    updatedAtMs: number;
+    lastBucketMs: number;
+    total: number;
+    hours: Array<[string, Record<'neutral' | 'happiness' | 'surprise' | 'anger', number>]>;
+  }> = [];
+
+  for (const rollup of rollups || []) {
+    const hourlySource = rollup?.attributes_percent?.expressions_hourly;
+    if (!hourlySource || typeof hourlySource !== 'object') continue;
+
+    const rollupUpdatedAtMs = Date.parse(
+      String(rollup?.updated_at ?? rollup?.end ?? rollup?.start ?? '')
+    );
+    const days = new Map<string, {
+      updatedAtMs: number;
+      lastBucketMs: number;
+      total: number;
+      hours: Array<[string, Record<'neutral' | 'happiness' | 'surprise' | 'anger', number>]>;
+    }>();
+
+    for (const [hourKey, counts] of Object.entries(hourlySource)) {
+      if (!counts || typeof counts !== 'object') continue;
+
+      const bucketDate = new Date(`${hourKey}:00:00.000Z`);
+      const bucketMs = bucketDate.getTime();
+      if (!Number.isFinite(bucketMs)) continue;
+
+      const normalizedCounts = normalizeFacialExpressionHourCounts(counts);
+      const total = Object.values(normalizedCounts).reduce((acc, value) => acc + value, 0);
+      if (total <= 0) continue;
+
+      const dayKey = formatLocalDateKey(bucketDate);
+      const existingDay = days.get(dayKey);
+      if (existingDay) {
+        existingDay.lastBucketMs = Math.max(existingDay.lastBucketMs, bucketMs);
+        existingDay.total += total;
+        existingDay.hours.push([hourKey, normalizedCounts]);
+      } else {
+        days.set(dayKey, {
+          updatedAtMs: Number.isFinite(rollupUpdatedAtMs) ? rollupUpdatedAtMs : bucketMs,
+          lastBucketMs: bucketMs,
+          total,
+          hours: [[hourKey, normalizedCounts]],
+        });
+      }
+    }
+
+    dailyCandidates.push(...days.values());
+  }
+
+  const bestCandidate = dailyCandidates.sort((a, b) => {
+    if (b.lastBucketMs !== a.lastBucketMs) return b.lastBucketMs - a.lastBucketMs;
+    if (b.updatedAtMs !== a.updatedAtMs) return b.updatedAtMs - a.updatedAtMs;
+    return b.total - a.total;
+  })[0];
+
+  if (!bestCandidate) return null;
+
+  const series = buildEmptyFacialExpressionSeries(24);
+  const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
+
+  for (const [hourKey, normalizedCounts] of bestCandidate.hours) {
+    const index = new Date(`${hourKey}:00:00.000Z`).getHours();
+    if (!Number.isFinite(index) || index < 0 || index > 23) continue;
+
+    for (const { key } of FACIAL_EXPRESSION_SERIES) {
+      const target = valuesByKey.get(key);
+      if (!target) continue;
+      target[index] += normalizedCounts[key];
+    }
+  }
+
+  return hasFacialExpressionSeriesData(series) ? series : null;
+}
+
 function extractDeviceFlowFromRollups(rollups: any[]) {
   let bestPartial: any = null;
   for (const rollup of rollups || []) {
@@ -810,12 +887,17 @@ export function ClientDashboard() {
     }
 
     const cachedSeries = buildFacialExpressionSeriesFromRollups(candidateRollups, rangeStart, rangeEnd);
+    const latestStoredSeries =
+      deviceFilter.length === 0
+        ? buildLatestFacialExpressionSeriesFromRollups(candidateRollups)
+        : null;
+    const immediateSeries = cachedSeries ?? latestStoredSeries;
     const shouldRefreshLive = deviceFilter.length === 0 && rangeTouchesTodayLocal(rangeStart, rangeEnd);
-    if (cachedSeries) {
+    if (immediateSeries) {
       if (!isCurrent()) return;
       setFacialExpressionLabels(labels);
-      setFacialExpressionSeries(cachedSeries);
-      if (!shouldRefreshLive) return;
+      setFacialExpressionSeries(immediateSeries);
+      if (cachedSeries && !shouldRefreshLive) return;
     }
 
     if (deviceFilter.length === 0) {
@@ -882,7 +964,11 @@ export function ClientDashboard() {
     if (!isCurrent()) return;
     const rowSeries = buildFacialExpressionSeriesFromRows(allRows);
     setFacialExpressionLabels(labels);
-    setFacialExpressionSeries(rowSeries);
+    setFacialExpressionSeries(
+      hasFacialExpressionSeriesData(rowSeries)
+        ? rowSeries
+        : (immediateSeries ?? rowSeries)
+    );
   }, []);
 
   const loadDeviceFlowWidget = useCallback(async (
