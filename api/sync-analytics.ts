@@ -1224,7 +1224,7 @@ async function runSingleWindowSync(client_id: string, cfg: ClientApiConfig, sync
     totalFetched += page.length;
     const rows = buildAndDeduplicateRows(page, client_id);
     for (let i = 0; i < rows.length; i += 500) {
-      const { error } = await supabase.from("visitor_analytics").upsert(rows.slice(i, i + 500), { onConflict: "visit_uid", ignoreDuplicates: true });
+      const { error } = await supabase.from("visitor_analytics").upsert(rows.slice(i, i + 500), { onConflict: "visit_uid" });
       if (error) console.error("[BgSync] Upsert erro:", error);
     }
     console.log(`[BgSync] Janela ${syncStart.slice(0, 10)} → ${syncEnd.slice(0, 10)} | p${pageCount} offset=${offset}: +${page.length} (total: ${totalFetched})`);
@@ -1746,7 +1746,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const toUpsert = buildAndDeduplicateRows(combined, client_id);
     let upserted = 0;
     for (let i = 0; i < toUpsert.length; i += 500) {
-      const { error, data } = await supabase.from("visitor_analytics").upsert(toUpsert.slice(i, i+500), { onConflict:"visit_uid", ignoreDuplicates:true }).select("visit_uid");
+      const { error, data } = await supabase.from("visitor_analytics").upsert(toUpsert.slice(i, i+500), { onConflict:"visit_uid" }).select("visit_uid");
       if (error) console.error(`Upsert chunk ${i} error:`, error);
       else upserted += data?.length ?? 0;
     }

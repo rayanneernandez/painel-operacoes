@@ -282,7 +282,7 @@ async function upsertRows(supabase, rows) {
     const { error } = await withRetry(`upsert visitor_analytics ${i}`, () =>
       supabase
         .from("visitor_analytics")
-        .upsert(batch, { onConflict: "visit_uid", ignoreDuplicates: true })
+        .upsert(batch, { onConflict: "visit_uid" })
     );
     if (error) throw error;
     total += batch.length;
@@ -322,14 +322,14 @@ async function fetchDayVisits(cfg, startIso, endIso) {
   const bodyBase = {
     start: startIso,
     end: endIso,
-    tracks: isPanvel ? false : (cfg.collect_tracks ?? true),
-    face_quality: isPanvel ? false : (cfg.collect_face_quality ?? true),
-    glasses: isPanvel ? false : (cfg.collect_glasses ?? true),
-    facial_hair: isPanvel ? false : (cfg.collect_beard ?? true),
-    hair_color: isPanvel ? false : (cfg.collect_hair_color ?? true),
-    hair_type: isPanvel ? false : (cfg.collect_hair_type ?? true),
-    headwear: isPanvel ? false : (cfg.collect_headwear ?? true),
-    ...(isPanvel ? {} : { additional_attributes: ["smile", "pitch", "yaw", "x", "y", "height"] }),
+    tracks: cfg.collect_tracks ?? true,
+    face_quality: cfg.collect_face_quality ?? true,
+    glasses: cfg.collect_glasses ?? true,
+    facial_hair: cfg.collect_beard ?? true,
+    hair_color: cfg.collect_hair_color ?? true,
+    hair_type: cfg.collect_hair_type ?? true,
+    headwear: cfg.collect_headwear ?? true,
+    additional_attributes: ["smile", "pitch", "yaw", "x", "y", "height"],
   };
 
   const visits = [];
