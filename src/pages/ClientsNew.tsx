@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, CheckCircle2, Activity, Camera, ShieldAlert } from 'lucide-react';
+import { Search, Plus, LayoutDashboard, Link as LinkIcon, Edit, Trash2, X, Building, Mail, Phone, Key, Server, Settings, Upload, FileText, Lock, Shield, Eye, BarChart2, Download, ChevronDown, ChevronUp, MapPin, Building2, CheckCircle2, Activity, Camera, ShieldAlert, Unlock, Calendar, Clock, AlertTriangle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import { logService } from '../services/logService';
@@ -30,6 +30,57 @@ type Client = {
   stores?: Store[];
   logo_url?: string;
   entry_date?: string;
+  block_starts_at?: string | null;
+  block_ends_at?: string | null;
+  block_reason?: string | null;
+  blocked_at?: string | null;
+  blocked_by?: string | null;
+};
+
+// Helpers de bloqueio — espelham AuthContext.tsx para manter o comportamento consistente.
+const BLOCKED_STATUS_VALUES = ['inactive', 'inativo', 'blocked', 'bloqueado', 'suspended', 'suspenso'];
+const isClientStatusBlocked = (status: unknown) =>
+  BLOCKED_STATUS_VALUES.includes(String(status || '').trim().toLowerCase());
+
+const isWithinBlockWindow = (
+  startsAt?: string | null,
+  endsAt?: string | null,
+  now: Date = new Date(),
+): boolean => {
+  const startMs = startsAt ? Date.parse(String(startsAt)) : NaN;
+  const endMs = endsAt ? Date.parse(String(endsAt)) : NaN;
+  const nowMs = now.getTime();
+  if (!Number.isFinite(startMs) && !Number.isFinite(endMs)) return false;
+  if (Number.isFinite(endMs) && nowMs >= endMs) return false;
+  if (Number.isFinite(startMs) && nowMs < startMs) return false;
+  return true;
+};
+
+const getClientBlockState = (client: Pick<Client, 'status' | 'block_starts_at' | 'block_ends_at'>) => {
+  const statusBlocked = isClientStatusBlocked(client.status);
+  const windowActive = isWithinBlockWindow(client.block_starts_at, client.block_ends_at);
+  if (statusBlocked || windowActive) return 'blocked' as const;
+  if (client.block_starts_at) {
+    const startMs = Date.parse(String(client.block_starts_at));
+    if (Number.isFinite(startMs) && Date.now() < startMs) return 'scheduled' as const;
+  }
+  return 'active' as const;
+};
+
+// HTML datetime-local <-> ISO conversions
+const isoToLocalInput = (iso?: string | null): string => {
+  if (!iso) return '';
+  const ms = Date.parse(iso);
+  if (!Number.isFinite(ms)) return '';
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const localInputToIso = (local: string): string | null => {
+  if (!local) return null;
+  const ms = Date.parse(local);
+  if (!Number.isFinite(ms)) return null;
+  return new Date(ms).toISOString();
 };
 
 type Device = {
@@ -469,6 +520,143 @@ export function Clients() {
     setDeleteConfirmation({ isOpen: true, clientId: client.id, clientName: client.name });
   };
 
+  // ── Bloqueio de cliente (afeta todos os usuários do cliente em assertAccessAllowed) ──
+  const [blockModalClient, setBlockModalClient] = useState<Client | null>(null);
+  const [blockMode, setBlockMode] = useState<'now' | 'schedule'>('now');
+  const [blockStartsAt, setBlockStartsAt] = useState<string>('');
+  const [blockEndsAt, setBlockEndsAt] = useState<string>('');
+  const [blockReason, setBlockReason] = useState<string>('');
+  const [savingBlock, setSavingBlock] = useState(false);
+
+  const handleOpenBlockModal = (client: Client) => {
+    setBlockModalClient(client);
+    const hasWindow = !!(client.block_starts_at || client.block_ends_at);
+    setBlockMode(hasWindow ? 'schedule' : 'now');
+    setBlockStartsAt(isoToLocalInput(client.block_starts_at));
+    setBlockEndsAt(isoToLocalInput(client.block_ends_at));
+    setBlockReason(client.block_reason || '');
+    setActiveMenu(null);
+  };
+
+  const handleCloseBlockModal = () => {
+    setBlockModalClient(null);
+    setBlockMode('now');
+    setBlockStartsAt('');
+    setBlockEndsAt('');
+    setBlockReason('');
+    setSavingBlock(false);
+  };
+
+  const handleSaveBlock = async () => {
+    if (!blockModalClient) return;
+    try {
+      setSavingBlock(true);
+      const nowIso = new Date().toISOString();
+      let payload: any;
+
+      if (blockMode === 'now') {
+        // Bloqueio imediato — status=inactive, sem janela
+        payload = {
+          status: 'inactive',
+          block_starts_at: null,
+          block_ends_at: null,
+          block_reason: blockReason || null,
+          blocked_at: nowIso,
+          blocked_by: user?.id || null,
+        };
+      } else {
+        const startIso = localInputToIso(blockStartsAt);
+        const endIso = localInputToIso(blockEndsAt);
+        if (!startIso && !endIso) {
+          showToast('Defina ao menos uma data (início ou término) para o agendamento.', 'error');
+          setSavingBlock(false);
+          return;
+        }
+        if (startIso && endIso && Date.parse(endIso) <= Date.parse(startIso)) {
+          showToast('A data de término precisa ser posterior à de início.', 'error');
+          setSavingBlock(false);
+          return;
+        }
+        // Se a janela já começou (start no passado/agora), aplicamos status=inactive imediatamente.
+        // Se está no futuro, mantemos active — o AuthContext.assertAccessAllowed bloqueia
+        // automaticamente quando o now() entrar na janela.
+        const startInForce = startIso ? Date.parse(startIso) <= Date.now() : true;
+        const endInPast = endIso ? Date.parse(endIso) <= Date.now() : false;
+        const shouldBeInactive = startInForce && !endInPast;
+        payload = {
+          status: shouldBeInactive ? 'inactive' : 'active',
+          block_starts_at: startIso,
+          block_ends_at: endIso,
+          block_reason: blockReason || null,
+          blocked_at: nowIso,
+          blocked_by: user?.id || null,
+        };
+      }
+
+      const { data, error } = await supabase
+        .from('clients')
+        .update(payload)
+        .eq('id', blockModalClient.id)
+        .select()
+        .single();
+      if (error) throw error;
+
+      // Atualiza estado local
+      setClients(prev => prev.map(c => c.id === blockModalClient.id ? { ...c, ...data } : c));
+
+      // Log de auditoria
+      if (user?.email) {
+        const desc = blockMode === 'now'
+          ? `Bloqueou cliente ${blockModalClient.name} imediatamente.`
+          : `Programou bloqueio do cliente ${blockModalClient.name} (início: ${payload.block_starts_at || '—'}, fim: ${payload.block_ends_at || '—'}).`;
+        await logService.logAction(user.email, 'UPDATE', desc, 'network', blockModalClient.name, {
+          clientId: blockModalClient.id,
+          mode: blockMode,
+          payload,
+        });
+      }
+
+      showToast('Bloqueio salvo com sucesso. Todos os usuários vinculados serão afetados.');
+      handleCloseBlockModal();
+    } catch (err: any) {
+      console.error('Erro ao salvar bloqueio do cliente:', err);
+      showToast(`Erro ao salvar bloqueio: ${err.message || err}`, 'error');
+    } finally {
+      setSavingBlock(false);
+    }
+  };
+
+  const handleClearBlock = async (client: Client) => {
+    try {
+      const payload = {
+        status: 'active',
+        block_starts_at: null,
+        block_ends_at: null,
+        block_reason: null,
+        blocked_at: null,
+        blocked_by: null,
+      };
+      const { data, error } = await supabase
+        .from('clients')
+        .update(payload)
+        .eq('id', client.id)
+        .select()
+        .single();
+      if (error) throw error;
+      setClients(prev => prev.map(c => c.id === client.id ? { ...c, ...data } : c));
+      if (user?.email) {
+        await logService.logAction(user.email, 'UPDATE', `Liberou acesso do cliente ${client.name}.`, 'network', client.name, {
+          clientId: client.id,
+        });
+      }
+      setActiveMenu(null);
+      showToast('Acesso liberado. Os usuários do cliente voltam a entrar normalmente.');
+    } catch (err: any) {
+      console.error('Erro ao liberar bloqueio do cliente:', err);
+      showToast(`Erro ao liberar bloqueio: ${err.message || err}`, 'error');
+    }
+  };
+
   const confirmDelete = async () => {
     if (!deleteConfirmation.clientId) return;
     const clientId = deleteConfirmation.clientId;
@@ -818,6 +1006,24 @@ export function Clients() {
                 <div>
                   <div className="flex items-center gap-3">
                     <h3 className="font-bold text-white text-lg">{client.name}</h3>
+                    {(() => {
+                      const blockState = getClientBlockState(client);
+                      if (blockState === 'blocked') {
+                        return (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-red-500/15 text-red-400 border border-red-500/30">
+                            <Lock size={10} /> BLOQUEADO
+                          </span>
+                        );
+                      }
+                      if (blockState === 'scheduled') {
+                        return (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                            <Clock size={10} /> AGENDADO
+                          </span>
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
                   <p className="text-sm text-gray-500 mt-1">{client.company}</p>
                   <div className="flex items-center gap-4 mt-3 text-sm text-gray-400">
@@ -854,6 +1060,23 @@ export function Clients() {
                           <LinkIcon size={16} /> Configurar APIs
                           </button>
                           <div className="h-px bg-gray-800 my-1"></div>
+                          {(() => {
+                            const blockState = getClientBlockState(client);
+                            const hasAnyBlock = blockState !== 'active' || !!client.block_starts_at || !!client.block_ends_at;
+                            return (
+                              <>
+                                <button onClick={() => handleOpenBlockModal(client)} className="w-full text-left px-3 py-2 text-sm text-amber-400 hover:bg-amber-900/20 rounded-md flex items-center gap-2">
+                                  <Lock size={16} /> {hasAnyBlock ? 'Editar Bloqueio' : 'Bloquear Acesso'}
+                                </button>
+                                {hasAnyBlock && (
+                                  <button onClick={() => handleClearBlock(client)} className="w-full text-left px-3 py-2 text-sm text-emerald-400 hover:bg-emerald-900/20 rounded-md flex items-center gap-2">
+                                    <Unlock size={16} /> Liberar Acesso
+                                  </button>
+                                )}
+                                <div className="h-px bg-gray-800 my-1"></div>
+                              </>
+                            );
+                          })()}
                           <button onClick={() => handleDeleteClient(client)} className="w-full text-left px-3 py-2 text-sm text-red-400 hover:bg-red-900/20 rounded-md flex items-center gap-2">
                           <Trash2 size={16} /> Excluir
                           </button>
@@ -1251,6 +1474,115 @@ export function Clients() {
                   <Trash2 size={16} /> Confirmar Exclusão
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {blockModalClient && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+          <div className="bg-gray-900 border border-gray-800 rounded-xl w-full max-w-lg shadow-2xl animate-in zoom-in-95 duration-200 overflow-hidden">
+            <div className="p-6 border-b border-gray-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-12 h-12 rounded-full bg-amber-500/10 flex items-center justify-center flex-shrink-0">
+                  <Lock className="text-amber-500" size={22} />
+                </div>
+                <div>
+                  <h3 className="text-lg font-bold text-white">Bloquear Cliente</h3>
+                  <p className="text-sm text-gray-400">{blockModalClient.name} — afeta TODOS os usuários vinculados</p>
+                </div>
+              </div>
+              <button onClick={handleCloseBlockModal} className="p-2 text-gray-500 hover:text-white hover:bg-gray-800 rounded-lg transition-colors">
+                <X size={20} />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-5">
+              {/* Mode toggle */}
+              <div className="grid grid-cols-2 gap-2 p-1 bg-gray-950 border border-gray-800 rounded-lg">
+                <button
+                  onClick={() => setBlockMode('now')}
+                  className={`px-4 py-2 text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-2 ${blockMode === 'now' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'text-gray-400 hover:text-white'}`}
+                >
+                  <Lock size={14} /> Bloquear Agora
+                </button>
+                <button
+                  onClick={() => setBlockMode('schedule')}
+                  className={`px-4 py-2 text-sm font-medium rounded-md transition-colors flex items-center justify-center gap-2 ${blockMode === 'schedule' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'text-gray-400 hover:text-white'}`}
+                >
+                  <Calendar size={14} /> Programar
+                </button>
+              </div>
+
+              {/* Datetime fields when scheduling */}
+              {blockMode === 'schedule' && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 flex items-center gap-1.5">
+                      <Calendar size={12} /> Início do bloqueio
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={blockStartsAt}
+                      onChange={(e) => setBlockStartsAt(e.target.value)}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500/50"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1.5 flex items-center gap-1.5">
+                      <Clock size={12} /> Término (opcional)
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={blockEndsAt}
+                      onChange={(e) => setBlockEndsAt(e.target.value)}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500/50"
+                    />
+                  </div>
+                  <p className="sm:col-span-2 text-[11px] text-gray-500 -mt-1">
+                    Sem término = bloqueio indefinido até ser liberado manualmente.
+                  </p>
+                </div>
+              )}
+
+              {/* Reason */}
+              <div>
+                <label className="block text-xs font-medium text-gray-400 mb-1.5">Motivo (opcional)</label>
+                <input
+                  type="text"
+                  value={blockReason}
+                  onChange={(e) => setBlockReason(e.target.value)}
+                  placeholder="Ex.: inadimplência, suspensão temporária, etc."
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-600 focus:outline-none focus:border-amber-500/50"
+                />
+              </div>
+
+              {/* Info alert with the exact message users will see */}
+              <div className="bg-amber-500/5 border border-amber-500/20 rounded-lg p-3 flex gap-3">
+                <AlertTriangle className="text-amber-500 flex-shrink-0 mt-0.5" size={16} />
+                <div className="text-xs text-amber-200/80 leading-relaxed">
+                  <p className="font-medium text-amber-300 mb-1">Ao tentar entrar, todos os usuários do cliente verão:</p>
+                  <p className="italic">"Seu perfil encontra-se bloqueado para uso, favor entrar em contato com o administrador."</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-6 border-t border-gray-800 flex justify-end gap-3 bg-gray-950/50">
+              <button
+                onClick={handleCloseBlockModal}
+                disabled={savingBlock}
+                className="px-4 py-2 rounded-lg text-gray-300 hover:text-white hover:bg-gray-800 transition-colors disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveBlock}
+                disabled={savingBlock}
+                className="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium shadow-lg shadow-amber-900/20 transition-colors flex items-center gap-2 disabled:opacity-50"
+              >
+                <Lock size={16} />
+                {savingBlock ? 'Salvando...' : (blockMode === 'now' ? 'Bloquear Agora' : 'Salvar Agendamento')}
+              </button>
             </div>
           </div>
         </div>

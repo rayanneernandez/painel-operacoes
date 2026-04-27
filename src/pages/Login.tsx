@@ -64,9 +64,9 @@ export function Login() {
         else localStorage.removeItem('login_email');
       } catch {}
       navigate('/dashboard');
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError('Email ou senha incorretos');
+      setError(err?.message || 'Email ou senha incorretos');
     } finally {
       setLoading(false);
     }

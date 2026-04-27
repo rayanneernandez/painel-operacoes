@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import supabase from '../lib/supabase';
-import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText, Wifi } from 'lucide-react';
+import { useAuth } from '../contexts/AuthContext';
+import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Unlock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText, Wifi, Calendar, Clock, AlertTriangle } from 'lucide-react';
 
 // Componente Toggle
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
@@ -26,6 +27,12 @@ type UserType = {
   clients: Client[]; // sempre um array (pode ser vazio)
   status?: 'active' | 'inactive';
   last_login: string | null;
+  // Bloqueio agendado — preenchido pelo modal "Bloquear Acesso"
+  block_starts_at?: string | null;
+  block_ends_at?: string | null;
+  block_reason?: string | null;
+  blocked_at?: string | null;
+  blocked_by?: string | null;
   permissions: {
     view_dashboard: boolean;
     view_devices_online: boolean;
@@ -36,7 +43,53 @@ type UserType = {
   };
 };
 
+// Espelha a lógica do AuthContext.assertAccessAllowed para mostrar badge na lista.
+function isUserStatusBlocked(status: unknown): boolean {
+  const normalized = String(status || '').trim().toLowerCase();
+  return ['inactive', 'inativo', 'blocked', 'bloqueado', 'suspended', 'suspenso'].includes(normalized);
+}
+
+function isWithinBlockWindow(startsAt?: string | null, endsAt?: string | null, now: Date = new Date()): boolean {
+  const startMs = startsAt ? Date.parse(startsAt) : NaN;
+  const endMs = endsAt ? Date.parse(endsAt) : NaN;
+  const nowMs = now.getTime();
+  if (!Number.isFinite(startMs) && !Number.isFinite(endMs)) return false;
+  if (Number.isFinite(endMs) && nowMs >= endMs) return false;
+  if (Number.isFinite(startMs) && nowMs < startMs) return false;
+  return true;
+}
+
+function getBlockState(user: UserType, now: Date = new Date()) {
+  const statusBlocked = isUserStatusBlocked(user.status);
+  const windowActive = isWithinBlockWindow(user.block_starts_at, user.block_ends_at, now);
+  const startMs = user.block_starts_at ? Date.parse(user.block_starts_at) : NaN;
+  const scheduledFuture =
+    Number.isFinite(startMs) && now.getTime() < startMs && !statusBlocked;
+  return {
+    isBlockedNow: statusBlocked || windowActive,
+    isScheduledFuture: scheduledFuture,
+  };
+}
+
+// Converte ISO (UTC) para o formato esperado pelo input datetime-local (YYYY-MM-DDTHH:mm).
+function isoToLocalInput(value?: string | null): string {
+  if (!value) return '';
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+// Converte string de datetime-local (interpretado no fuso local do browser) para ISO UTC.
+function localInputToIso(value: string): string | null {
+  if (!value) return null;
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return null;
+  return d.toISOString();
+}
+
 export function Users() {
+  const { user: authedUser } = useAuth();
   const [users, setUsers] = useState<UserType[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
@@ -46,6 +99,14 @@ export function Users() {
   const [editingUser, setEditingUser] = useState<UserType | null>(null);
   const [modalMode, setModalMode] = useState<'create' | 'edit'>('create');
   const [activeTab, setActiveTab] = useState<'details' | 'permissions' | 'clients'>('details');
+
+  // ── Modal de bloqueio agendado ──────────────────────────────────────────
+  const [blockModalUser, setBlockModalUser] = useState<UserType | null>(null);
+  const [blockMode, setBlockMode] = useState<'now' | 'schedule'>('now');
+  const [blockStartsAt, setBlockStartsAt] = useState('');   // datetime-local
+  const [blockEndsAt, setBlockEndsAt] = useState('');       // datetime-local
+  const [blockReason, setBlockReason] = useState('');
+  const [savingBlock, setSavingBlock] = useState(false);
 
   // Estado de permissões (mock)
   const [perms, setPerms] = useState({
@@ -65,6 +126,7 @@ export function Users() {
     name: '',
     email: '',
     role: 'client' as 'admin' | 'client',
+    status: 'active' as 'active' | 'inactive',
     password: ''
   });
 
@@ -139,6 +201,7 @@ export function Users() {
         name: user.name,
         email: user.email,
         role: user.role,
+        status: user.status || 'active',
         password: ''
       });
       setSelectedClientIds(user.client_id ? [user.client_id] : user.clients.map(c => c.id));
@@ -164,6 +227,7 @@ export function Users() {
         name: '',
         email: '',
         role: 'client',
+        status: 'active',
         password: ''
       });
       setSelectedClientIds([]);
@@ -194,8 +258,116 @@ export function Users() {
     }
   };
 
+  // ── Bloqueio agendado: abre modal preenchendo com o estado atual do usuário ─
+  const handleOpenBlockModal = (user: UserType) => {
+    setBlockModalUser(user);
+    setBlockReason(user.block_reason || '');
+    // Se já tem janela definida, abre em modo "schedule" com os valores; senão, "now".
+    if (user.block_starts_at || user.block_ends_at) {
+      setBlockMode('schedule');
+      setBlockStartsAt(isoToLocalInput(user.block_starts_at));
+      setBlockEndsAt(isoToLocalInput(user.block_ends_at));
+    } else {
+      setBlockMode('now');
+      setBlockStartsAt('');
+      setBlockEndsAt('');
+    }
+    setActiveMenu(null);
+  };
+
+  const handleCloseBlockModal = () => {
+    setBlockModalUser(null);
+    setBlockMode('now');
+    setBlockStartsAt('');
+    setBlockEndsAt('');
+    setBlockReason('');
+    setSavingBlock(false);
+  };
+
+  // Aplica o bloqueio escolhido (imediato ou agendado) no banco.
+  // IMPORTANTE: Em users NÃO mexemos na coluna `status` (pode não existir nessa
+  // instalação). Usamos só a janela block_starts_at / block_ends_at — o
+  // AuthContext.assertAccessAllowed considera "bloqueado agora" se now() está
+  // dentro da janela. Isso cobre tanto "Bloquear Agora" (start = now, end = null)
+  // quanto agendamentos futuros.
+  const handleSaveBlock = async () => {
+    if (!blockModalUser) return;
+    try {
+      setSavingBlock(true);
+
+      let startsIso: string | null = null;
+      let endsIso: string | null = null;
+
+      if (blockMode === 'now') {
+        // Bloqueio imediato indefinido — janela começa agora, sem fim.
+        startsIso = new Date().toISOString();
+        endsIso = null;
+      } else {
+        startsIso = localInputToIso(blockStartsAt);
+        endsIso = localInputToIso(blockEndsAt);
+        if (!startsIso && !endsIso) {
+          alert('Defina pelo menos uma data — início ou fim do bloqueio.');
+          setSavingBlock(false);
+          return;
+        }
+        if (startsIso && endsIso && Date.parse(endsIso) <= Date.parse(startsIso)) {
+          alert('A data de fim precisa ser posterior à data de início.');
+          setSavingBlock(false);
+          return;
+        }
+      }
+
+      const payload: any = {
+        block_starts_at: startsIso,
+        block_ends_at: endsIso,
+        block_reason: blockReason.trim() || null,
+        blocked_at: new Date().toISOString(),
+        blocked_by: authedUser?.id || null,
+      };
+
+      const { error } = await supabase
+        .from('users')
+        .update(payload)
+        .eq('id', blockModalUser.id);
+
+      if (error) throw error;
+
+      // Atualiza estado local sem refetch.
+      setUsers(prev => prev.map(u => u.id === blockModalUser.id ? { ...u, ...payload } : u));
+      handleCloseBlockModal();
+    } catch (error) {
+      console.error('Erro ao bloquear usuário:', error);
+      alert('Erro ao bloquear usuário: ' + (error as any).message);
+      setSavingBlock(false);
+    }
+  };
+
+  // Limpa bloqueio — só zera a janela, sem tocar no status.
+  const handleClearBlock = async (user: UserType) => {
+    if (!confirm(`Liberar acesso de ${user.name}?`)) return;
+    try {
+      const payload: any = {
+        block_starts_at: null,
+        block_ends_at: null,
+        block_reason: null,
+        blocked_at: null,
+        blocked_by: null,
+      };
+      const { error } = await supabase.from('users').update(payload).eq('id', user.id);
+      if (error) throw error;
+      setUsers(prev => prev.map(u => u.id === user.id ? { ...u, ...payload } : u));
+      setActiveMenu(null);
+    } catch (error) {
+      console.error('Erro ao desbloquear usuário:', error);
+      alert('Erro ao desbloquear usuário: ' + (error as any).message);
+    }
+  };
+
   const handleSaveUser = async () => {
     try {
+      // Não enviamos `status` no save do form — o bloqueio é controlado exclusivamente
+      // pelo modal de "Bloquear Acesso" (campos block_starts_at / block_ends_at).
+      // Isso evita exigir a coluna `status` na tabela users do Supabase.
       const payload: any = {
         name: formData.name,
         email: formData.email,
@@ -317,7 +489,27 @@ export function Users() {
                       {user.name.charAt(0)}
                     </div>
                     <div>
-                      <p className="font-medium text-white">{user.name}</p>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-medium text-white">{user.name}</p>
+                        {(() => {
+                          const { isBlockedNow, isScheduledFuture } = getBlockState(user);
+                          if (isBlockedNow) {
+                            return (
+                              <span title={user.block_reason || 'Acesso bloqueado'} className="px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-red-500/15 text-red-400 border border-red-500/30 inline-flex items-center gap-1">
+                                <Lock size={10} /> Bloqueado
+                              </span>
+                            );
+                          }
+                          if (isScheduledFuture) {
+                            return (
+                              <span title={`Bloqueio agendado para ${new Date(user.block_starts_at!).toLocaleString('pt-BR')}`} className="px-1.5 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-amber-500/15 text-amber-400 border border-amber-500/30 inline-flex items-center gap-1">
+                                <Clock size={10} /> Agendado
+                              </span>
+                            );
+                          }
+                          return null;
+                        })()}
+                      </div>
                       <p className="text-xs text-gray-500">{user.email}</p>
                     </div>
                   </div>
@@ -377,7 +569,7 @@ export function Users() {
                         <Shield size={16} className="text-purple-500" />
                         Permissões
                       </button>
-                      <button 
+                      <button
                         onClick={() => handleOpenModal(user, 'edit', 'clients')}
                         className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 hover:text-white flex items-center gap-2 transition-colors"
                       >
@@ -385,7 +577,32 @@ export function Users() {
                         Gerenciar Clientes
                       </button>
                       <div className="h-px bg-gray-800 my-1"></div>
-                      <button 
+                      {(() => {
+                        const { isBlockedNow, isScheduledFuture } = getBlockState(user);
+                        const hasAnyBlock = isBlockedNow || isScheduledFuture;
+                        return (
+                          <>
+                            <button
+                              onClick={() => handleOpenBlockModal(user)}
+                              className="w-full text-left px-4 py-2.5 text-sm text-gray-300 hover:bg-gray-800 hover:text-white flex items-center gap-2 transition-colors"
+                            >
+                              <Lock size={16} className="text-amber-500" />
+                              {hasAnyBlock ? 'Editar Bloqueio' : 'Bloquear Acesso'}
+                            </button>
+                            {hasAnyBlock && (
+                              <button
+                                onClick={() => handleClearBlock(user)}
+                                className="w-full text-left px-4 py-2.5 text-sm text-emerald-400 hover:bg-emerald-500/10 flex items-center gap-2 transition-colors"
+                              >
+                                <Unlock size={16} />
+                                Liberar Acesso
+                              </button>
+                            )}
+                          </>
+                        );
+                      })()}
+                      <div className="h-px bg-gray-800 my-1"></div>
+                      <button
                         onClick={() => handleDeleteUser(user.id)}
                         className="w-full text-left px-4 py-2.5 text-sm text-red-400 hover:bg-red-500/10 flex items-center gap-2 transition-colors"
                       >
@@ -548,6 +765,7 @@ export function Users() {
                         </div>
                       </div>
                     </div>
+
                 </div>
               )}
 
@@ -707,19 +925,150 @@ export function Users() {
               )}
 
               <div className="mt-6 pt-4 border-t border-gray-800 flex items-center justify-end gap-3">
-                <button 
+                <button
                   onClick={() => setIsModalOpen(false)}
                   className="px-6 py-2.5 rounded-xl text-gray-400 hover:text-white hover:bg-gray-800 transition-colors font-medium"
                 >
                   Cancelar
                 </button>
-                <button 
+                <button
                   onClick={() => handleSaveUser()}
                   className="px-6 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-bold rounded-xl transition-all shadow-lg shadow-indigo-900/20 hover:shadow-indigo-900/40 transform hover:-translate-y-0.5"
                 >
                   {modalMode === 'create' ? 'Cadastrar Usuário' : 'Salvar Alterações'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal de Bloqueio Agendado ─────────────────────────────────── */}
+      {blockModalUser && (
+        <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-200">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl w-full max-w-lg shadow-2xl flex flex-col overflow-hidden">
+            <div className="p-6 border-b border-gray-800 bg-gray-900/50">
+              <div className="flex justify-between items-start">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center">
+                    <Lock size={18} className="text-amber-400" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-white">Bloquear Acesso</h2>
+                    <p className="text-xs text-gray-500">{blockModalUser.name} · {blockModalUser.email}</p>
+                  </div>
+                </div>
+                <button
+                  onClick={handleCloseBlockModal}
+                  className="text-gray-400 hover:text-white transition-colors p-1 hover:bg-gray-800 rounded-lg"
+                >
+                  <X size={18} />
+                </button>
+              </div>
+            </div>
+
+            <div className="p-6 space-y-5">
+              {/* Modo: agora vs agendado */}
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setBlockMode('now')}
+                  className={`px-3 py-3 rounded-xl border text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                    blockMode === 'now'
+                      ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                      : 'bg-gray-950 border-gray-800 text-gray-400 hover:text-white hover:border-gray-700'
+                  }`}
+                >
+                  <Lock size={14} /> Bloquear Agora
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setBlockMode('schedule')}
+                  className={`px-3 py-3 rounded-xl border text-sm font-medium transition-colors flex items-center justify-center gap-2 ${
+                    blockMode === 'schedule'
+                      ? 'bg-amber-500/15 border-amber-500/40 text-amber-300'
+                      : 'bg-gray-950 border-gray-800 text-gray-400 hover:text-white hover:border-gray-700'
+                  }`}
+                >
+                  <Calendar size={14} /> Programar
+                </button>
+              </div>
+
+              {/* Campos de data — só aparecem em modo schedule */}
+              {blockMode === 'schedule' && (
+                <div className="grid grid-cols-1 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-gray-400 flex items-center gap-1.5">
+                      <Calendar size={12} /> Início do bloqueio (opcional)
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={blockStartsAt}
+                      onChange={(e) => setBlockStartsAt(e.target.value)}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all"
+                    />
+                    <p className="text-[10px] text-gray-500">Vazio = começa imediatamente.</p>
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-medium text-gray-400 flex items-center gap-1.5">
+                      <Clock size={12} /> Fim do bloqueio (opcional)
+                    </label>
+                    <input
+                      type="datetime-local"
+                      value={blockEndsAt}
+                      onChange={(e) => setBlockEndsAt(e.target.value)}
+                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-amber-500 focus:ring-1 focus:ring-amber-500 transition-all"
+                    />
+                    <p className="text-[10px] text-gray-500">Vazio = bloqueio indefinido até liberação manual.</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Motivo */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-gray-400">Motivo (opcional, para auditoria)</label>
+                <input
+                  type="text"
+                  value={blockReason}
+                  onChange={(e) => setBlockReason(e.target.value)}
+                  placeholder="Ex: inadimplência - aguardando pagamento"
+                  className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2.5 text-white text-sm outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all placeholder-gray-600"
+                />
+              </div>
+
+              {/* Aviso */}
+              <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 flex items-start gap-2">
+                <AlertTriangle size={14} className="text-amber-400 mt-0.5 flex-shrink-0" />
+                <p className="text-[11px] text-amber-200/90 leading-relaxed">
+                  O usuário verá: <span className="italic">"Seu perfil encontra-se bloqueado para uso, favor entrar em contato com o administrador."</span>
+                </p>
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-gray-800 bg-gray-900/40 flex items-center justify-end gap-2">
+              <button
+                onClick={handleCloseBlockModal}
+                disabled={savingBlock}
+                className="px-4 py-2 rounded-lg text-gray-400 hover:text-white hover:bg-gray-800 transition-colors text-sm font-medium disabled:opacity-50"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={handleSaveBlock}
+                disabled={savingBlock}
+                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-gray-950 font-bold rounded-lg transition-all text-sm disabled:opacity-50 inline-flex items-center gap-2"
+              >
+                {savingBlock ? (
+                  <>
+                    <span className="w-3.5 h-3.5 border-2 border-gray-950/30 border-t-gray-950 rounded-full animate-spin" />
+                    Salvando...
+                  </>
+                ) : (
+                  <>
+                    <Lock size={14} /> Confirmar Bloqueio
+                  </>
+                )}
+              </button>
             </div>
           </div>
         </div>
