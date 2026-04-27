@@ -2,6 +2,11 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "./_lib/facialExpressions.js";
+import {
+  fetchFacialExpressionHourlyMap,
+  totalsFromHourlyMap,
+  percentFromTotals,
+} from "./_lib/displayforce.js";
 
 // ── Supabase ──────────────────────────────────────────────────────────────────
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
@@ -83,10 +88,30 @@ function hasStoredExpressionCache(value: any) {
   });
 }
 
+// Conta quantos tipos de emoção (de 4) tem amostra > 0 — usado para decidir
+// se o "novo" payload (v5 emotion endpoint) é mais rico que o cache.
+function countNonZeroExpressionKinds(hourly: any): number {
+  if (!hourly || typeof hourly !== "object") return 0;
+  const seen = new Set<string>();
+  for (const entry of Object.values(hourly)) {
+    if (!entry || typeof entry !== "object") continue;
+    for (const [k, v] of Object.entries(entry as Record<string, unknown>)) {
+      if ((Number(v) || 0) > 0) seen.add(k);
+    }
+  }
+  return seen.size;
+}
+
 function mergeAttributesKeepingExpressionCache(existingAttributes: any, nextAttributes: any) {
   const existing = existingAttributes && typeof existingAttributes === "object" ? existingAttributes : {};
   const next = nextAttributes && typeof nextAttributes === "object" ? nextAttributes : {};
-  const shouldKeepExistingExpressions = hasStoredExpressionCache(existing?.expressions_hourly);
+
+  // Prefere o lado com mais variedade de emoções (v5 traz neutral+happiness+surprise+anger,
+  // enquanto o /public/v1 só dá happiness/neutral via smile). Se empate ou novo > antigo,
+  // o novo vence — assim o cron diário com dados v5 sempre supera caches antigos parciais.
+  const existingKinds = countNonZeroExpressionKinds(existing?.expressions_hourly);
+  const nextKinds = countNonZeroExpressionKinds(next?.expressions_hourly);
+  const shouldKeepExistingExpressions = existingKinds > nextKinds;
 
   // device_flow: preserva passersby (vem do live fetch) mesmo quando cron recalcula,
   // e só sobrescreve audience/tracking se o cron trouxe algo válido.
@@ -249,6 +274,9 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     { const k = attrs.hair_type  != null ? String(attrs.hair_type).toLowerCase()  : "unknown"; hairTypeCounts[k]   = (hairTypeCounts[k]   ?? 0) + 1; }
     { const k = attrs.headwear   != null ? String(attrs.headwear).toLowerCase()   : "none";    headwearCounts[k]   = (headwearCounts[k]   ?? 0) + 1; }
     { const k = attrs.facial_hair!= null ? String(attrs.facial_hair).toLowerCase(): "none";    facialHairCounts[k] = (facialHairCounts[k] ?? 0) + 1; }
+    // Fallback baseado em dados por visita: o /public/v1 só traz `smile` boolean
+    // (mapeia happiness/neutral). Esse fallback evita rollup vazio enquanto o
+    // emotion endpoint v5 não populou — é sobrescrito depois pelo overlay v5.
     const expression = normalizeFacialExpression(attrs.facial_expression) ?? getDominantFacialExpression(r.raw_data);
     if (expression) {
       expressionCounts[expression] = (expressionCounts[expression] ?? 0) + 1;
@@ -328,6 +356,50 @@ function splitRowsByUtcDay(rows: any[]) {
     byDay.set(key, existing);
   }
   return byDay;
+}
+
+// Filtra um hourly map (HH-key → counts) restringindo às horas dentro do range.
+function filterHourlyMapToRange(
+  hourlyMap: Record<string, Record<string, number>>,
+  rangeStart: string,
+  rangeEnd: string,
+) {
+  const out: Record<string, Record<string, number>> = {};
+  if (!hourlyMap) return out;
+  const startMs = Date.parse(rangeStart);
+  const endMs = Date.parse(rangeEnd);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return out;
+  for (const [hourKey, counts] of Object.entries(hourlyMap)) {
+    const ms = Date.parse(`${hourKey}:00:00.000Z`);
+    if (!Number.isFinite(ms)) continue;
+    if (ms < startMs || ms > endMs) continue;
+    out[hourKey] = counts;
+  }
+  return out;
+}
+
+// Aplica o hourly map (vindo do v5 emotion endpoint) ao rollup, sobrescrevendo
+// expressions / expressions_totals / expressions_hourly. Chamada com map vazio
+// ou null deixa o rollup intacto (mantém o fallback do smile boolean).
+function applyV5ExpressionOverlay(
+  rollup: any,
+  hourlyMap: Record<string, Record<string, number>> | null | undefined,
+) {
+  if (!rollup || !hourlyMap) return rollup;
+  const hourlyForRange = filterHourlyMapToRange(hourlyMap, rollup.start, rollup.end);
+  if (Object.keys(hourlyForRange).length === 0) return rollup;
+
+  const totals = totalsFromHourlyMap(hourlyForRange);
+  const sum = Object.values(totals).reduce((acc, v) => acc + (Number(v) || 0), 0);
+  if (sum <= 0) return rollup;
+
+  rollup.attributes_percent = {
+    ...(rollup.attributes_percent ?? {}),
+    expressions: percentFromTotals(totals),
+    expressions_totals: totals,
+    expressions_hourly: hourlyForRange,
+  };
+  return rollup;
 }
 
 // ── Sync de um cliente ────────────────────────────────────────────────────────
@@ -414,12 +486,32 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
 
     // ── Rollups em memória a partir dos dados da API (sem re-query ao banco) ─
     if (allRows.length > 0) {
+      // Antes de persistir os rollups, busca a série completa de emoções (neutral/
+      // happiness/surprise/anger) na API v5 — UMA chamada só, cobrindo o range
+      // sincronizado. O /public/v1 só dá smile boolean (= happiness/neutral),
+      // por isso precisamos do v5 para popular raiva e surpresa corretamente.
+      let v5HourlyMap: Record<string, Record<string, number>> | null = null;
+      try {
+        v5HourlyMap = await fetchFacialExpressionHourlyMap(client_id, syncStart, todayEnd);
+        const totalSamples = v5HourlyMap
+          ? Object.values(v5HourlyMap).reduce(
+              (acc, counts) => acc + Object.values(counts).reduce((s, v) => s + (Number(v) || 0), 0),
+              0,
+            )
+          : 0;
+        console.log(`[cron] v5 emotions client=${client_id}: ${Object.keys(v5HourlyMap ?? {}).length} horas, ${totalSamples} amostras`);
+      } catch (err: any) {
+        console.warn(`[cron] v5 emotion fetch falhou client=${client_id}: ${err?.message ?? err}`);
+        v5HourlyMap = null;
+      }
+
       // Salva rollup diário EXATO para cada dia sincronizado.
       const rowsByDay = splitRowsByUtcDay(allRows);
       for (const [dayKey, dayRows] of rowsByDay.entries()) {
         const dayStart = `${dayKey}T00:00:00.000Z`;
         const dayEnd = `${dayKey}T23:59:59.999Z`;
         const rrDay = buildRollup(dayRows, client_id, dayStart, dayEnd);
+        applyV5ExpressionOverlay(rrDay, v5HourlyMap);
         const { data: existingDayRollup } = await supabase
           .from("visitor_analytics_rollups")
           .select("attributes_percent")
@@ -436,6 +528,7 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
 
       // 2. Rollup do período sincronizado
       const rrSync = buildRollup(allRows, client_id, syncStart, todayEnd);
+      applyV5ExpressionOverlay(rrSync, v5HourlyMap);
 
       // 3. Atualiza rollup histórico (end=9999) mesclando os dias novos
       //    Usa dados da API diretamente — sem query extra ao Supabase

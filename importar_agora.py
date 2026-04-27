@@ -20,24 +20,7 @@ def _load_env(path=".env"):
                 if not k or not v: continue
                 if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
                     v = v[1:-1]
-                atual = os.environ.get(k, "")
-                atual_lower = atual.lower()
-                deve_sobrescrever = (
-                    not atual
-                    or atual_lower.startswith("seu-")
-                    or atual_lower.startswith("your-")
-                    or atual_lower.startswith("sua-")
-                    or atual_lower.startswith("senha-")
-                    or "sua-senha" in atual_lower
-                    or "senha-ou-app-password" in atual_lower
-                    or "app-password" in atual_lower
-                    or "seu-projeto" in atual_lower
-                    or "your-project" in atual_lower
-                    or "example" in atual_lower
-                    or atual.endswith("@...")
-                )
-                if deve_sobrescrever:
-                    os.environ[k] = v
+                if k not in os.environ: os.environ[k] = v
     except Exception: return
 
 _load_env(os.environ.get("DOTENV_PATH", ".env"))
@@ -51,7 +34,7 @@ IMAP_PORT     = int(os.environ.get("IMAP_PORT", "993"))
 IMAP_EMAIL    = os.environ.get("IMAP_EMAIL", "")
 IMAP_PASSWORD = os.environ.get("IMAP_PASSWORD", "")
 SUPABASE_URL  = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY  = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_KEY", "")
+SUPABASE_KEY  = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 
 _fallback_raw = os.environ.get("CLIENTES_FALLBACK", "Panvel|c6999bd9-14c0-4e26-abb1-d4b852d34421,Assai|b1c05e4d-0417-4853-9af9-8c0725df1880")
 CLIENTES = {}
@@ -77,124 +60,23 @@ def _sb_headers():
     return {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}",
             "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=representation"}
 
-def _sb_get(table, params=None):
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    r = _req.get(url, headers=_sb_headers(), params=params or {}, timeout=30)
-    r.raise_for_status()
-    return r.json()
-
-def _sb_insert(table, payload):
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    r = _req.post(url, headers=_sb_headers(), json=payload, timeout=30)
-    r.raise_for_status()
-    return r.json() if r.text else []
-
-def _sb_patch(table, row_id, payload):
-    url = f"{SUPABASE_URL}/rest/v1/{table}"
-    headers = dict(_sb_headers())
-    headers["Prefer"] = "return=representation"
-    r = _req.patch(url, headers=headers, params={"id": f"eq.{row_id}"}, json=payload, timeout=30)
-    r.raise_for_status()
-    return r.json() if r.text else []
-
-def _norm_text(value):
-    text = str(value or "").strip()
-    return text or None
-
-def _campaign_match_variants(registro):
-    client_id = _norm_text(registro.get("client_id"))
-    name = _norm_text(registro.get("name"))
-    content_name = _norm_text(registro.get("content_name"))
-    loja = _norm_text(registro.get("loja"))
-    tipo_midia = _norm_text(registro.get("tipo_midia"))
-    start_date = _norm_text(registro.get("start_date"))
-
-    variants = []
-    seen = set()
-
-    def push(**kwargs):
-        candidate = {"client_id": client_id}
-        for key, value in kwargs.items():
-            if value:
-                candidate[key] = value
-        if len(candidate) <= 1:
-            return
-        marker = tuple(sorted(candidate.items()))
-        if marker in seen:
-            return
-        seen.add(marker)
-        variants.append(candidate)
-
-    if content_name:
-        push(content_name=content_name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
-        push(content_name=content_name, loja=loja, tipo_midia=tipo_midia)
-        if not loja and not tipo_midia:
-            push(content_name=content_name, start_date=start_date)
-            push(content_name=content_name, name=name)
-    else:
-        push(name=name, loja=loja, tipo_midia=tipo_midia, start_date=start_date)
-        push(name=name, loja=loja, tipo_midia=tipo_midia)
-        if not loja and not tipo_midia:
-            push(name=name, start_date=start_date)
-    return variants
-
-def _discover_mailboxes(imap):
-    inbox = "INBOX"
-    all_mail = None
-    spam_boxes = []
-    try:
-        status, boxes = imap.list()
-        if status != "OK" or not boxes:
-            return inbox, all_mail, spam_boxes
-        for raw in boxes:
-            line = raw.decode("utf-8", errors="replace")
-            lower = line.lower()
-            name = line.rsplit(' "/" ', 1)[-1].strip().strip('"')
-            if name.upper() == "INBOX":
-                inbox = name
-            if "\\all" in lower or "todos os e-mails" in lower or "all mail" in lower:
-                all_mail = name
-            if "\\junk" in lower or "spam" in lower or "lixo eletr" in lower:
-                spam_boxes.append(name)
-    except Exception:
-        pass
-    return inbox, all_mail, spam_boxes
-
-def _find_existing_campaign(registro):
-    for variant in _campaign_match_variants(registro):
-        params = {"select": "id,uploaded_at", "order": "uploaded_at.desc", "limit": "1"}
-        for key, value in variant.items():
-            params[key] = f"eq.{value}"
-        try:
-            data = _sb_get("campaigns", params)
-            if data:
-                return data[0]
-        except Exception as exc:
-            log.warning(f"  Falha ao procurar campanha existente ({variant}): {exc}")
-    return None
-
-def _save_campaign_record(registro):
-    existente = _find_existing_campaign(registro)
-    if existente and existente.get("id"):
-        _sb_patch("campaigns", existente["id"], registro)
-        return 1
-    _sb_insert("campaigns", registro)
-    return 1
-
 def salvar_supabase(registros):
-    if not registros:
-        return 0
-    salvos = 0
-    for registro in registros:
+    if not registros: return 0
+    url = f"{SUPABASE_URL}/rest/v1/campaigns"
+    for on_conflict in ["client_id,name,start_date", "client_id,name", None]:
         try:
-            salvos += _save_campaign_record(registro)
-        except Exception as exc:
-            log.warning(f"  Erro ao salvar campanha '{registro.get('content_name') or registro.get('name')}': {exc}")
-    if salvos == 0:
-        log.error("  Nao foi possivel salvar.")
-    else:
-        log.info(f"  OK {salvos} registros salvos/atualizados")
-    return salvos
+            params = {"on_conflict": on_conflict} if on_conflict else {}
+            r = _req.post(url, headers=_sb_headers(), params=params, json=registros, timeout=30)
+            if r.status_code in (200, 201):
+                j = r.json()
+                count = len(j) if isinstance(j, list) else len(registros)
+                log.info(f"  OK {count} registros salvos (on_conflict={on_conflict})")
+                return count
+            log.warning(f"  Status {r.status_code}: {r.text[:200]}")
+        except Exception as e:
+            log.warning(f"  Erro: {e}")
+    log.error("  Nao foi possivel salvar.")
+    return 0
 
 EXTENSOES_ACEITAS = (".csv", ".xlsx", ".xls", ".txt")
 
@@ -340,9 +222,7 @@ def processar_views_csv(arq_bytes, client_id, nome_arquivo=""):
                 duration_hms = f"{hh}:{mm:02d}:{ss:02d}"
             except Exception: pass
 
-        display_name = content_val if content_val else camp
-
-        registros.append({"client_id": client_id, "name": display_name,
+        registros.append({"client_id": client_id, "name": camp,
             "content_name": content_val if content_val else None,
             "tipo_midia": tipo_midia, "loja": loja,
             "start_date": start_date, "end_date": end_date,
@@ -371,10 +251,7 @@ def buscar_emails_displayforce(dias=60):
         log.error(f"Falha IMAP: {e}"); return []
 
     resultados = []
-    inbox, all_mail, _ = _discover_mailboxes(imap)
-    pastas = [inbox]
-    if all_mail and all_mail not in pastas:
-        pastas.append(all_mail)
+    pastas = ["INBOX", "[Gmail]/Todos os e-mails", "[Gmail]/All Mail", "All Mail"]
 
     for pasta in pastas:
         try:

@@ -892,42 +892,16 @@ export function ClientDashboard() {
         ? buildLatestFacialExpressionSeriesFromRollups(candidateRollups)
         : null;
     const immediateSeries = cachedSeries ?? latestStoredSeries;
-    const shouldRefreshLive = deviceFilter.length === 0 && rangeTouchesTodayLocal(rangeStart, rangeEnd);
     if (immediateSeries) {
       if (!isCurrent()) return;
       setFacialExpressionLabels(labels);
       setFacialExpressionSeries(immediateSeries);
-      if (cachedSeries && !shouldRefreshLive) return;
-    }
-
-    if (deviceFilter.length === 0) {
-      try {
-        const json = await fetchJsonWithTimeout<{
-          live_available?: boolean;
-          series?: { label: string; values: number[] }[];
-        }>('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            client_id: clientId,
-            start: rangeStart,
-            end: rangeEnd,
-            live_facial_expressions: true,
-          }),
-        }, 12000, 'sync-analytics facial expressions live');
-
-        const liveSeries = Array.isArray(json?.series) ? json!.series : [];
-        if (isCurrent() && hasFacialExpressionSeriesData(liveSeries)) {
-          setFacialExpressionLabels(labels);
-          setFacialExpressionSeries(liveSeries);
-          return;
-        }
-      } catch (liveError) {
-        console.warn('[Dashboard] Falha ao reaquecer expressoes faciais no backend:', liveError);
-      }
-
+      // Sempre que houver cache, não bate na API live — o cron-sync diário já reabastece o rollup.
       if (cachedSeries) return;
     }
+    // OBS: removidas as chamadas live_facial_expressions deste dashboard. O cron-sync diário
+    // grava attributes_percent.expressions_hourly, e o widget passa a ler daí. Para reenriquecer
+    // sob demanda, use o endpoint /api/sync-analytics com rebuild_rollup=true via tela de admin.
 
     const PAGE = 1000;
     const allRows: any[] = [];
@@ -1033,47 +1007,9 @@ export function ClientDashboard() {
       if (!isCurrent()) return;
       applyDeviceFlowState(rebuilt);
 
-      if (Number(rebuilt?.passersby ?? 0) <= 0) {
-        try {
-          const json = await fetchJsonWithTimeout<{
-            device_flow?: {
-              visitors?: number | null;
-              passersby?: number | null;
-              deviceAudience?: { label: string; value: number }[];
-              trackingData?: { label: string; value: number }[];
-            } | null;
-          }>('/api/sync-analytics', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              client_id: clientId,
-              start: rangeStart,
-              end: rangeEnd,
-              devices: deviceFilter,
-              live_device_flow: true,
-            }),
-          }, 6000, 'sync-analytics device flow live enrich');
-
-          if (!isCurrent()) return;
-          const liveDeviceFlow = json?.device_flow;
-          if (liveDeviceFlow) {
-            applyDeviceFlowState({
-              visitors: liveDeviceFlow.visitors ?? rebuilt.visitors,
-              passersby: liveDeviceFlow.passersby ?? rebuilt.passersby,
-              deviceAudience:
-                Array.isArray(rebuilt.deviceAudience) && rebuilt.deviceAudience.length > 0
-                  ? rebuilt.deviceAudience
-                  : (Array.isArray(liveDeviceFlow.deviceAudience) ? liveDeviceFlow.deviceAudience : []),
-              trackingData:
-                Array.isArray(rebuilt.trackingData) && rebuilt.trackingData.length > 0
-                  ? rebuilt.trackingData
-                  : (Array.isArray(liveDeviceFlow.trackingData) ? liveDeviceFlow.trackingData : []),
-            });
-          }
-        } catch (liveError) {
-          console.warn('[Dashboard] Falha ao enriquecer passantes do fluxo/audiencia device:', liveError);
-        }
-      }
+      // OBS: removida a chamada live_device_flow daqui. Bate apenas no banco — o cron-sync diário
+      // grava attributes_percent.device_flow no rollup. Se passersby vier null/0, o widget esconde
+      // a porcentagem sem hammerar a DisplayForce a cada reload.
     } catch (error) {
       console.warn('[Dashboard] Falha ao carregar fluxo/audiencia device:', error);
       if (!isCurrent()) return;

@@ -1339,6 +1339,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (providedAuth && providedAuth !== "painel@2026*") return bad(res, 401, { error: "Não autorizado" });
     if (!client_id) return bad(res, 400, { error: "client_id é obrigatório" });
 
+    // Endpoints live_* (raw fetch direto na DisplayForce) ficam restritos: só rodam com Bearer
+    // válido. Isso evita que o dashboard faça hammering na API parceira a cada reload.
+    const isLiveCall = live_facial_expressions === true || live_device_flow === true;
+    if (isLiveCall && providedAuth !== "painel@2026*") {
+      return bad(res, 401, { error: "Endpoint live_* requer Bearer painel@2026*" });
+    }
+
     const { data: apiCfg, error: apiCfgErr } = await supabase.from("client_api_configs")
       .select("api_endpoint,analytics_endpoint,api_key,custom_header_key,custom_header_value,collection_start,collection_end,collect_tracks,collect_face_quality,collect_glasses,collect_beard,collect_hair_color,collect_hair_type,collect_headwear")
       .eq("client_id", client_id).single();
