@@ -11,7 +11,7 @@ on:
         required: false
         default: 'live'
       clients:
-        description: Clientes separados por virgula (ex: panvel,assai)
+        description: "Clientes separados por virgula (ex: panvel,assai)"
         required: false
         default: 'panvel,assai'
       start:
