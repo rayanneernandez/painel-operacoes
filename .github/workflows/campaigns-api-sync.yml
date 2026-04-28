@@ -1,0 +1,86 @@
+name: Campaign Sync - DisplayForce API
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Janela em dias para o snapshot
+        required: false
+        default: '90'
+      clients:
+        description: Clientes separados por virgula (ex: panvel,assai)
+        required: false
+        default: 'panvel,assai'
+      start:
+        description: Inicio exato opcional no formato YYYY-MM-DD
+        required: false
+        default: ''
+      end:
+        description: Fim exato opcional no formato YYYY-MM-DD
+        required: false
+        default: ''
+
+concurrency:
+  group: campaigns-api-sync
+  cancel-in-progress: false
+
+jobs:
+  sync-campaigns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Baixar codigo
+        uses: actions/checkout@v4
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Resolver parametros do sync
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            DAYS_INPUT="${{ github.event.inputs.days }}"
+            CLIENTS_INPUT="${{ github.event.inputs.clients }}"
+            START_INPUT="${{ github.event.inputs.start }}"
+            END_INPUT="${{ github.event.inputs.end }}"
+          else
+            DAYS_INPUT="90"
+            CLIENTS_INPUT="panvel,assai"
+            START_INPUT=""
+            END_INPUT=""
+          fi
+
+          if [ -z "$DAYS_INPUT" ]; then DAYS_INPUT="90"; fi
+          if [ -z "$CLIENTS_INPUT" ]; then CLIENTS_INPUT="panvel,assai"; fi
+
+          echo "SYNC_DAYS=$DAYS_INPUT" >> "$GITHUB_ENV"
+          echo "SYNC_CLIENTS=$CLIENTS_INPUT" >> "$GITHUB_ENV"
+          echo "SYNC_START=$START_INPUT" >> "$GITHUB_ENV"
+          echo "SYNC_END=$END_INPUT" >> "$GITHUB_ENV"
+
+      - name: Sincronizar campanhas via API
+        shell: bash
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          CMD=(node scripts/sync-displayforce-campaigns.mjs --clients="$SYNC_CLIENTS")
+
+          if [ -n "$SYNC_START" ] && [ -n "$SYNC_END" ]; then
+            CMD+=(--start="$SYNC_START" --end="$SYNC_END")
+          else
+            CMD+=(--days="$SYNC_DAYS")
+          fi
+
+          printf 'Executando: %s\n' "${CMD[*]}"
+          "${CMD[@]}"

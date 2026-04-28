@@ -194,6 +194,50 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => { cancelled = true; };
   }, []);
 
+  // Poll periódico (60s) — re-checa se o usuário/cliente foi bloqueado enquanto
+  // a sessão já está aberta. Sem isso, alguém logado só seria deslogado no
+  // próximo refresh ou login. Com isso, o bloqueio entra em vigor em até 1 min.
+  useEffect(() => {
+    if (!user?.id) return;
+
+    let cancelled = false;
+
+    const checkBlocked = async () => {
+      try {
+        const { data, error } = await withTimeout<{ data: any; error: any }>(
+          supabase
+            .from('users')
+            .select('*')
+            .eq('id', user.id)
+            .single() as any,
+          8000,
+          'auth poll user'
+        );
+        if (cancelled || error || !data) return;
+        try {
+          await assertAccessAllowed(data);
+        } catch {
+          // Bloqueado — derruba a sessão silenciosamente.
+          if (!cancelled) {
+            localStorage.removeItem('auth_user');
+            setUser(null);
+          }
+        }
+      } catch {
+        // Erro de rede ou timeout — ignora, tenta de novo no próximo tick.
+      }
+    };
+
+    // Roda imediatamente na 1ª vez (pega bloqueio que entrou em vigor agora)
+    void checkBlocked();
+    const interval = setInterval(() => { void checkBlocked(); }, 60_000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [user?.id]);
+
   const login = async (email: string, password: string) => {
     setIsLoading(true);
     try {

@@ -1,8 +1,6 @@
-name: Auto-Import - DisplayForce Emails to Supabase
+name: Legacy Manual Import - DisplayForce Emails to Supabase
 
 on:
-  schedule:
-    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:

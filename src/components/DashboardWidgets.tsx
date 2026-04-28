@@ -1000,7 +1000,7 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
       ) : filteredRows.length === 0 ? (
         <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
           <p>{lojaFilter ? `Nenhuma campanha para a loja "${lojaFilter}".` : 'Nenhuma campanha disponível.'}</p>
-          {!lojaFilter && <p className="text-xs text-gray-600">Aguardando sincronização automática pelo bot.</p>}
+          {!lojaFilter && <p className="text-xs text-gray-600">Aguardando sincronização automática pela API.</p>}
         </div>
       ) : (
         <div className="flex-1 overflow-auto" style={{ minHeight: 0 }}>
