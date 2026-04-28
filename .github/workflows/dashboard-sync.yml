@@ -1,9 +1,27 @@
-name: Dashboard Sync - Panvel e Assai
+name: Dashboard Sync - API Panvel e Assai
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '*/15 * * * *'
+    - cron: '10 5 * * *'
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Modo do sync (live=today, reconcile=yesterday+today)
+        required: false
+        default: 'live'
+      clients:
+        description: Clientes separados por virgula (ex: panvel,assai)
+        required: false
+        default: 'panvel,assai'
+      start:
+        description: Inicio opcional no formato YYYY-MM-DD
+        required: false
+        default: ''
+      end:
+        description: Fim opcional no formato YYYY-MM-DD
+        required: false
+        default: ''
 
 jobs:
   sync-client:
@@ -38,10 +56,59 @@ jobs:
           echo "TODAY=$(TZ=America/Sao_Paulo date +%F)" >> "$GITHUB_ENV"
           echo "YESTERDAY=$(TZ=America/Sao_Paulo date -d 'yesterday' +%F)" >> "$GITHUB_ENV"
 
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            MODE_INPUT="${{ github.event.inputs.mode }}"
+            CLIENTS_INPUT="${{ github.event.inputs.clients }}"
+            START_INPUT="${{ github.event.inputs.start }}"
+            END_INPUT="${{ github.event.inputs.end }}"
+          elif [ "${{ github.event.schedule }}" = "10 5 * * *" ]; then
+            MODE_INPUT="reconcile"
+            CLIENTS_INPUT="panvel,assai"
+            START_INPUT=""
+            END_INPUT=""
+          else
+            MODE_INPUT="live"
+            CLIENTS_INPUT="panvel,assai"
+            START_INPUT=""
+            END_INPUT=""
+          fi
+
+          if [ -z "$MODE_INPUT" ]; then MODE_INPUT="live"; fi
+          if [ -z "$CLIENTS_INPUT" ]; then CLIENTS_INPUT="panvel,assai"; fi
+
+          echo "SYNC_MODE=$MODE_INPUT" >> "$GITHUB_ENV"
+          echo "SYNC_CLIENTS=$CLIENTS_INPUT" >> "$GITHUB_ENV"
+          echo "SYNC_START=$START_INPUT" >> "$GITHUB_ENV"
+          echo "SYNC_END=$END_INPUT" >> "$GITHUB_ENV"
+
+      - name: Filtrar clientes da matriz
+        id: matrix-filter
+        shell: bash
+        run: |
+          NORMALIZED_CLIENTS=",${SYNC_CLIENTS// /},"
+          if [[ "$NORMALIZED_CLIENTS" == *",${{ matrix.client_key }},"* ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Sincronizar cliente no banco
+        if: steps.matrix-filter.outputs.should_run == 'true'
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         run: |
-          node scripts/backfill-displayforce-range.mjs --start=${{ env.YESTERDAY }} --end=${{ env.TODAY }} --clients=${{ matrix.client_key }}
+          if [ -n "${SYNC_START}" ] && [ -n "${SYNC_END}" ]; then
+            START_DATE="${SYNC_START}"
+            END_DATE="${SYNC_END}"
+          elif [ "${SYNC_MODE}" = "reconcile" ]; then
+            START_DATE="${YESTERDAY}"
+            END_DATE="${TODAY}"
+          else
+            START_DATE="${TODAY}"
+            END_DATE="${TODAY}"
+          fi
+
+          echo "Executando sync ${SYNC_MODE} para ${{ matrix.client_key }} de ${START_DATE} até ${END_DATE}"
+          node scripts/backfill-displayforce-range.mjs --start="${START_DATE}" --end="${END_DATE}" --clients="${{ matrix.client_key }}"
