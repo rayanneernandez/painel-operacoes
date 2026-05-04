@@ -554,44 +554,15 @@ export function Clients() {
       const nowIso = new Date().toISOString();
       let payload: any;
 
-      if (blockMode === 'now') {
-        // Bloqueio imediato — status=inactive, sem janela
-        payload = {
-          status: 'inactive',
-          block_starts_at: null,
-          block_ends_at: null,
-          block_reason: blockReason || null,
-          blocked_at: nowIso,
-          blocked_by: user?.id || null,
-        };
-      } else {
-        const startIso = localInputToIso(blockStartsAt);
-        const endIso = localInputToIso(blockEndsAt);
-        if (!startIso && !endIso) {
-          showToast('Defina ao menos uma data (início ou término) para o agendamento.', 'error');
-          setSavingBlock(false);
-          return;
-        }
-        if (startIso && endIso && Date.parse(endIso) <= Date.parse(startIso)) {
-          showToast('A data de término precisa ser posterior à de início.', 'error');
-          setSavingBlock(false);
-          return;
-        }
-        // Se a janela já começou (start no passado/agora), aplicamos status=inactive imediatamente.
-        // Se está no futuro, mantemos active — o AuthContext.assertAccessAllowed bloqueia
-        // automaticamente quando o now() entrar na janela.
-        const startInForce = startIso ? Date.parse(startIso) <= Date.now() : true;
-        const endInPast = endIso ? Date.parse(endIso) <= Date.now() : false;
-        const shouldBeInactive = startInForce && !endInPast;
-        payload = {
-          status: shouldBeInactive ? 'inactive' : 'active',
-          block_starts_at: startIso,
-          block_ends_at: endIso,
-          block_reason: blockReason || null,
-          blocked_at: nowIso,
-          blocked_by: user?.id || null,
-        };
+      if (blockMode === 'schedule') {
+        showToast('O agendamento de bloqueio para redes não está disponível nesta base. Use o bloqueio imediato.', 'error');
+        setSavingBlock(false);
+        return;
       }
+
+      payload = {
+        status: 'inactive',
+      };
 
       const { data, error } = await supabase
         .from('clients')
@@ -606,9 +577,7 @@ export function Clients() {
 
       // Log de auditoria
       if (user?.email) {
-        const desc = blockMode === 'now'
-          ? `Bloqueou cliente ${blockModalClient.name} imediatamente.`
-          : `Programou bloqueio do cliente ${blockModalClient.name} (início: ${payload.block_starts_at || '—'}, fim: ${payload.block_ends_at || '—'}).`;
+        const desc = `Bloqueou cliente ${blockModalClient.name} imediatamente.`;
         await logService.logAction(user.email, 'UPDATE', desc, 'network', blockModalClient.name, {
           clientId: blockModalClient.id,
           mode: blockMode,
@@ -630,11 +599,6 @@ export function Clients() {
     try {
       const payload = {
         status: 'active',
-        block_starts_at: null,
-        block_ends_at: null,
-        block_reason: null,
-        blocked_at: null,
-        blocked_by: null,
       };
       const { data, error } = await supabase
         .from('clients')
@@ -1514,34 +1478,10 @@ export function Clients() {
                 </button>
               </div>
 
-              {/* Datetime fields when scheduling */}
+              {/* Agendamento desabilitado para clients nesta base */}
               {blockMode === 'schedule' && (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-400 mb-1.5 flex items-center gap-1.5">
-                      <Calendar size={12} /> Início do bloqueio
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={blockStartsAt}
-                      onChange={(e) => setBlockStartsAt(e.target.value)}
-                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500/50"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-400 mb-1.5 flex items-center gap-1.5">
-                      <Clock size={12} /> Término (opcional)
-                    </label>
-                    <input
-                      type="datetime-local"
-                      value={blockEndsAt}
-                      onChange={(e) => setBlockEndsAt(e.target.value)}
-                      className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500/50"
-                    />
-                  </div>
-                  <p className="sm:col-span-2 text-[11px] text-gray-500 -mt-1">
-                    Sem término = bloqueio indefinido até ser liberado manualmente.
-                  </p>
+                <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-3 text-[11px] text-amber-200/80">
+                  O agendamento de bloqueio para redes está desabilitado nesta base porque a tabela `clients` não possui os campos necessários. Use `Bloquear Agora` e `Liberar Acesso`.
                 </div>
               )}
 
@@ -1581,7 +1521,7 @@ export function Clients() {
                 className="px-5 py-2 bg-amber-600 hover:bg-amber-500 text-white rounded-lg font-medium shadow-lg shadow-amber-900/20 transition-colors flex items-center gap-2 disabled:opacity-50"
               >
                 <Lock size={16} />
-                {savingBlock ? 'Salvando...' : (blockMode === 'now' ? 'Bloquear Agora' : 'Salvar Agendamento')}
+                {savingBlock ? 'Salvando...' : (blockMode === 'now' ? 'Bloquear Agora' : 'Agendamento Indisponível')}
               </button>
             </div>
           </div>

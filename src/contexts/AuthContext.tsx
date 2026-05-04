@@ -72,7 +72,7 @@ async function assertAccessAllowed(userRow: any) {
     const { data: clientData, error: clientError } = await withTimeout<{ data: any; error: any }>(
       supabase
         .from('clients')
-        .select('id, name, status, block_starts_at, block_ends_at')
+        .select('id, name, status')
         .eq('id', userRow.client_id)
         .single() as any,
       8000,
