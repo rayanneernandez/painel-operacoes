@@ -613,9 +613,9 @@ export function ClientDashboard() {
   const [hairColorData, setHairColorData] = useState<{ label: string; value: number }[]>([]);
   const [facialExpressionLabels, setFacialExpressionLabels] = useState<string[]>([]);
   const [facialExpressionSeries, setFacialExpressionSeries] = useState<{ label: string; values: number[] }[]>([]);
-  const [deviceFlowVisitors, setDeviceFlowVisitors] = useState<number | null>(null);
+  // deviceFlowVisitors removido — widget usa totalVisitors (KPI) como fonte única da verdade
   const [deviceFlowPassersby, setDeviceFlowPassersby] = useState<number | null>(null);
-  const [deviceFlowAudience, setDeviceFlowAudience] = useState<{ label: string; value: number }[]>([]);
+  const [deviceFlowAudience, setDeviceFlowAudience] = useState<{ label: string; rawKey?: string; value: number }[]>([]);
   const [deviceFlowTracking, setDeviceFlowTracking] = useState<{ label: string; value: number }[]>([]);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
@@ -658,6 +658,18 @@ export function ClientDashboard() {
         const name = String(camera?.name ?? '').trim();
         if (!key || !name) continue;
         map.set(key, name);
+      }
+    }
+    return map;
+  }, [stores]);
+
+  // Mapeia macAddress → nome da loja (para agregar audiência por loja em visão de Rede Global)
+  const deviceKeyToStoreName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const store of stores) {
+      for (const camera of store.cameras || []) {
+        const key = String((camera as any).macAddress ?? '').trim();
+        if (key) map.set(key, store.name);
       }
     }
     return map;
@@ -737,12 +749,13 @@ export function ClientDashboard() {
     const deviceAudience = [...deviceCounts.entries()]
       .map(([deviceKey, count]) => ({
         label: resolveDeviceFlowLabel(`Device ${deviceKey}`),
+        rawKey: deviceKey,   // preserva a chave original para agrupamento por loja
         value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
         rawCount: count,
       }))
       .sort((a, b) => b.rawCount - a.rawCount)
-      .slice(0, 4)
-      .map(({ label, value }) => ({ label, value }));
+      // Não limita a 4 aqui — o corte é feito no render depois de agrupar por loja se necessário
+      .map(({ label, rawKey, value }) => ({ label, rawKey, value }));
 
     const trackingData = [...trackingIslands.values()]
       .sort((a, b) => b.count - a.count)
@@ -862,7 +875,7 @@ export function ClientDashboard() {
     setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
     setFacialExpressionLabels([]);
     setFacialExpressionSeries([]);
-    setDeviceFlowVisitors(null);
+
     setDeviceFlowPassersby(null);
     setDeviceFlowAudience([]);
     setDeviceFlowTracking([]);
@@ -959,10 +972,10 @@ export function ClientDashboard() {
     const applyDeviceFlowState = (payload: {
       visitors?: number | null;
       passersby?: number | null;
-      deviceAudience?: { label: string; value: number }[];
+      deviceAudience?: { label: string; rawKey?: string; value: number }[];
       trackingData?: { label: string; value: number }[];
     }) => {
-      setDeviceFlowVisitors(Number(payload?.visitors ?? 0) || null);
+
       setDeviceFlowPassersby(Number(payload?.passersby ?? 0) || null);
       setDeviceFlowAudience(Array.isArray(payload?.deviceAudience) ? payload.deviceAudience : []);
       setDeviceFlowTracking(Array.isArray(payload?.trackingData) ? payload.trackingData : []);
@@ -1933,6 +1946,14 @@ export function ClientDashboard() {
       const n = Number(v);
       return (SPANS as readonly number[]).includes(n) ? (n as (typeof SPANS)[number]) : null;
     };
+    const getMinHeightPx = (widgetId: string) => {
+      const w = AVAILABLE_WIDGETS.find((x) => x.id === widgetId);
+      if (!w) return 80;
+      if (w.type === 'kpi') return 12;
+      if (w.type === 'table') return 120;
+      return 80;
+    };
+
     const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> } => {
       const ids = Array.isArray(widgetsConfig)
         ? widgetsConfig.filter((x) => typeof x === 'string')
@@ -1944,7 +1965,7 @@ export function ClientDashboard() {
         for (const [wid, cfg] of Object.entries(rawLayout)) {
           const wId = String(wid);
           const span = normalizeSpan((cfg as any)?.colSpanLg ?? cfg);
-          const heightPx = clampNum((cfg as any)?.heightPx, 180, 1200, NaN);
+          const heightPx = clampNum((cfg as any)?.heightPx, getMinHeightPx(wId), 1200, NaN);
           if (span) wl[wId] = { ...(wl[wId] || {}), colSpanLg: span };
           if (Number.isFinite(heightPx)) wl[wId] = { ...(wl[wId] || {}), heightPx: Math.round(heightPx) };
         }
@@ -1976,8 +1997,14 @@ export function ClientDashboard() {
         allowedResolved = resolveDashboardConfig(cc ? JSON.parse(cc) : null);
         if (!allowedResolved.ids) allowedResolved = resolveDashboardConfig(gc ? JSON.parse(gc) : null);
       }
-      const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
-      const allowedIds = allowedResolved.ids && allowedResolved.ids.length ? allowedResolved.ids : defaultIds;
+      const expandLegacyKpiIds = (ids?: string[] | null) => {
+        const next = (ids || []).flatMap((wid) => wid === 'kpi_flow_stats'
+          ? ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time']
+          : [wid]);
+        return next.filter((wid, index) => next.indexOf(wid) === index);
+      };
+      const defaultIds = ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time', 'flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+      const allowedIds = expandLegacyKpiIds(allowedResolved.ids && allowedResolved.ids.length ? allowedResolved.ids : defaultIds);
       const allowedSet = new Set(allowedIds);
 
       // 2. Seleção ativa do usuário (layout 'client_user') — pode remover widgets permitidos
@@ -1988,16 +2015,15 @@ export function ClientDashboard() {
         userResolved = resolveDashboardConfig(uc ? JSON.parse(uc) : null);
       }
 
-      // Se o usuário tem seleção salva, usa ela (filtrada pelos permitidos); senão usa todos os permitidos.
-      // Sempre garante que TODOS os widgets permitidos pelo admin apareçam (novos widgets entram automaticamente).
-      const baseActiveIds = userResolved.ids && userResolved.ids.length
-        ? userResolved.ids.filter((wid) => allowedSet.has(wid))
-        : allowedIds;
+      // Se o usuário tem seleção salva, usa exatamente ela (filtrada pelos widgets permitidos).
+      // Sem seleção salva válida, cai no conjunto permitido pelo admin/global.
+      const userActiveIds = userResolved.ids && userResolved.ids.length
+        ? expandLegacyKpiIds(userResolved.ids).filter((wid) => allowedSet.has(wid))
+        : null;
 
-      const activeIds = [...baseActiveIds];
-      for (const wid of allowedIds) {
-        if (!activeIds.includes(wid)) activeIds.push(wid);
-      }
+      const activeIds = userActiveIds && userActiveIds.length > 0
+        ? userActiveIds
+        : allowedIds;
 
       // Layout: combina allowed + user (user sobrescreve)
       const mergedLayout = { ...allowedResolved.widgetLayout, ...userResolved.widgetLayout };
@@ -2008,7 +2034,18 @@ export function ClientDashboard() {
       .catch((error) => {
         console.warn('[Dashboard] Erro ao resolver widgets, usando fallback padrao:', error);
         if (!cancelled) {
-          const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+          const defaultIds = [
+            'kpi_total_visitors',
+            'kpi_avg_visitors_day',
+            'kpi_avg_visit_time',
+            'kpi_attention_time',
+            'flow_trend',
+            'hourly_flow',
+            'age_pyramid',
+            'gender_dist',
+            'attributes',
+            'campaigns',
+          ];
           setActiveWidgets(defaultIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[]);
           setWidgetLayout({});
         }
@@ -2065,12 +2102,6 @@ export function ClientDashboard() {
     return { labels: periodSeries.labels, current: periodSeries.values, previous: prev.slice(0, dayCount) };
   }, [periodSeries.labels, periodSeries.values, selectedStartDate, comparePrevVisitorsPerDay]);
 
-  const getStats = () => [
-    { label: 'Total Visitantes',     value: totalVisitors.toLocaleString(),                                       icon: Users     },
-    { label: 'Média Visitantes Dia', value: avgVisitorsPerDay.toLocaleString(),                                   icon: BarChart2 },
-    { label: 'Tempo Médio Visita',   value: formatDuration(avgVisitSeconds),                                      icon: Clock     },
-    { label: 'Tempo de Atenção',     value: avgAttentionSeconds > 0 ? formatDuration(avgAttentionSeconds) : '—', icon: Clock     },
-  ];
 
   const clientName = clientData?.name || 'Carregando...';
   const clientLogo = clientData?.logo;
@@ -2253,26 +2284,11 @@ export function ClientDashboard() {
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        {getStats().map((stat, index) => (
-          <div key={index} className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden group hover:border-gray-700 transition-all">
-            <div className="bg-blue-600/20 p-2 text-center border-b border-blue-600/10">
-              <p className="text-xs text-blue-400 font-bold uppercase tracking-wider">{stat.label}</p>
-            </div>
-            <div className="p-4 text-center">
-              {isLoadingData
-                ? <div className="h-8 bg-gray-800 rounded animate-pulse mx-auto w-24" />
-                : <p className="text-2xl font-bold text-white tracking-tight">{stat.value}</p>}
-            </div>
-          </div>
-        ))}
-      </div>
 
       {/* Widgets */}
       <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden min-h-[400px]">
         {view === 'network' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 items-start">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 items-start content-start gap-4">
             {isLoadingConfig ? (
               <div className="col-span-full flex justify-center py-20">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
@@ -2304,20 +2320,48 @@ export function ClientDashboard() {
                   widgetProps.series = facialExpressionSeries;
                 }
                 if (widget.id === 'chart_device_flow')       {
-                  widgetProps.visitors = deviceFlowVisitors ?? totalVisitors;
-                  widgetProps.passersby = deviceFlowPassersby;
-                  widgetProps.deviceAudience = deviceFlowAudience.map((entry) => {
-                    return { ...entry, label: resolveDeviceFlowLabel(String(entry?.label ?? '')) };
-                  });
-                  widgetProps.trackingData = deviceFlowTracking.map((entry) => ({
-                    ...entry,
-                    label: resolveDeviceFlowLabel(String(entry?.label ?? '')),
-                  }));
+                  // Visitantes: sempre usa o total do KPI (fonte única da verdade — vem do rollup completo)
+                  widgetProps.visitors = totalVisitors;
+
+                  // Passantes: só mostra se vier do rollup e for maior que os visitantes (evita números inflados)
+                  const pfPassersby = Number(deviceFlowPassersby ?? 0);
+                  widgetProps.passersby = (pfPassersby > 0 && pfPassersby > totalVisitors) ? pfPassersby : null;
+
+                  // Rede Global (sem loja ou device selecionado) → agrupa por loja
+                  // Loja selecionada → mostra por dispositivo
+                  const isNetworkView = !selectedStore && deviceIds.length === 0;
+
+                  if (isNetworkView) {
+                    // Agrupa percentuais dos devices pela loja que os contém
+                    const storeAccum = new Map<string, number>();
+                    for (const entry of deviceFlowAudience) {
+                      const rawKey = String(entry?.rawKey ?? entry?.label ?? '').replace(/^Device\s+/i, '');
+                      const storeName = deviceKeyToStoreName.get(rawKey) || resolveDeviceFlowLabel(String(entry?.label ?? ''));
+                      storeAccum.set(storeName, (storeAccum.get(storeName) || 0) + (entry?.value ?? 0));
+                    }
+                    widgetProps.deviceAudience = [...storeAccum.entries()]
+                      .map(([label, value]) => ({ label, value: Number(value.toFixed(1)) }))
+                      .sort((a, b) => b.value - a.value)
+                      .slice(0, 4);
+                    // Tracking Ilha só faz sentido por dispositivo (não em visão de rede)
+                    widgetProps.trackingData = [];
+                  } else {
+                    widgetProps.deviceAudience = deviceFlowAudience
+                      .slice(0, 4)
+                      .map((entry) => ({ ...entry, label: resolveDeviceFlowLabel(String(entry?.label ?? '')) }));
+                    widgetProps.trackingData = deviceFlowTracking.map((entry) => ({
+                      ...entry,
+                      label: resolveDeviceFlowLabel(String(entry?.label ?? '')),
+                    }));
+                  }
                 }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'attributes')                widgetProps.attrData = attributeStats;
-                if (widget.id === 'kpi_flow_stats')          { widgetProps.totalVisitors = totalVisitors; widgetProps.avgVisitorsPerDay = avgVisitorsPerDay; widgetProps.avgVisitSeconds = avgVisitSeconds; }
+                if (widget.id === 'kpi_total_visitors')        widgetProps.totalVisitors = totalVisitors;
+                if (widget.id === 'kpi_avg_visitors_day')      widgetProps.avgVisitorsPerDay = avgVisitorsPerDay;
+                if (widget.id === 'kpi_avg_visit_time')        widgetProps.avgVisitSeconds = avgVisitSeconds;
+                if (widget.id === 'kpi_attention_time')        widgetProps.avgAttentionSeconds = avgAttentionSeconds;
                 if (widget.id === 'chart_age_ranges')          widgetProps.ageData = ageStats;
                 if (widget.id === 'chart_vision')              widgetProps.attrData = attributeStats;
                 if (widget.id === 'chart_facial_hair')         widgetProps.attrData = attributeStats;
@@ -2331,7 +2375,7 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
                 const heightPx = Number(widgetLayout[widget.id]?.heightPx);
-                const defaultHeightPx = widget.id === 'campaigns' ? 560 : NaN;
+                const defaultHeightPx = widget.type === 'kpi' ? 48 : widget.id === 'campaigns' ? 560 : NaN;
                 const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : defaultHeightPx;
                 const widgetStyle = Number.isFinite(resolvedHeightPx) ? { height: Math.round(resolvedHeightPx) } : undefined;
                 return (
