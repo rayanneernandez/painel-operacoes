@@ -148,7 +148,10 @@ export type WidgetType = { id: string; title: string; type: 'chart' | 'table' | 
 export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'chart_facial_expressions', title: 'Expressoes Faciais', type: 'chart', size: 'half', description: 'Serie temporal de expressoes faciais quando disponivel' },
   { id: 'chart_device_flow', title: 'Fluxo e Audiencia Device', type: 'chart', size: 'half', description: 'Resumo visual de fluxo, devices e tracking quando disponivel' },
-  { id: 'kpi_flow_stats',      title: 'Resumo de Fluxo',               type: 'kpi',   size: 'full',  description: 'Total Visitantes, Média Dia, Tempo Médio' },
+  { id: 'kpi_total_visitors',  title: 'Total Visitantes',              type: 'kpi',   size: 'quarter', description: 'Card individual de total de visitantes' },
+  { id: 'kpi_avg_visitors_day',title: 'Média Visitantes Dia',          type: 'kpi',   size: 'quarter', description: 'Card individual de média de visitantes por dia' },
+  { id: 'kpi_avg_visit_time',  title: 'Tempo Médio Visita',            type: 'kpi',   size: 'quarter', description: 'Card individual de tempo médio de visita' },
+  { id: 'kpi_attention_time',  title: 'Tempo de Atenção',              type: 'kpi',   size: 'quarter', description: 'Card individual de tempo médio de atenção' },
   { id: 'flow_trend',          title: 'Média Visitantes por Dia',       type: 'chart', size: 'half',  description: 'Gráfico de linha com fluxo diário da semana' },
   { id: 'hourly_flow',         title: 'Fluxo por Hora',                 type: 'chart', size: 'half',  description: 'Gráfico de linha por gênero (Masculino/Feminino)' },
   { id: 'chart_sales_quarter', title: 'Visitantes — Último Trimestre',  type: 'chart', size: 'half',  description: 'Total de visitantes por mês (últimos 3 meses)' },
@@ -198,15 +201,15 @@ export const WidgetFlowTrend = ({ dailyData, genderData }: { view?: string; dail
   }), [JSON.stringify(maleData), JSON.stringify(femaleData)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div className="flex items-center justify-between mb-3">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Activity size={14} className="text-blue-500" />Média Visitantes por Dia</h3>
         <div className="flex gap-3 text-[10px] text-gray-400">
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: CJ.male }} />Masculino</span>
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: CJ.female }} />Feminino</span>
         </div>
       </div>
-      <CanvasBox><canvas ref={canvasRef} /></CanvasBox>
+      <CanvasBox height="100%" minHeight={120} className="flex-1 min-h-0"><canvas ref={canvasRef} /></CanvasBox>
     </div>
   );
 };
@@ -245,15 +248,15 @@ export const WidgetHourlyFlow = ({ hourlyData, genderData }: { view?: string; ho
   }), [JSON.stringify(maleData), JSON.stringify(femaleData)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div className="flex items-center justify-between mb-3">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Clock size={14} className="text-emerald-500" />Fluxo por Hora</h3>
         <div className="flex gap-3 text-[10px] text-gray-400">
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: CJ.male }} />Masculino</span>
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: CJ.female }} />Feminino</span>
         </div>
       </div>
-      <CanvasBox><canvas ref={canvasRef} /></CanvasBox>
+      <CanvasBox height="100%" minHeight={120} className="flex-1 min-h-0"><canvas ref={canvasRef} /></CanvasBox>
     </div>
   );
 };
@@ -301,15 +304,15 @@ export const WidgetAgePyramid = ({ ageData, totalVisitors }: { view?: string; ag
   }), [JSON.stringify(data)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <div className="flex items-center justify-between mb-3">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider"><Users size={14} className="text-purple-500" />Gênero &amp; Idade</h3>
         <div className="flex gap-3 text-[10px] text-gray-400">
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: CJ.female }} />Feminino</span>
           <span className="flex items-center gap-1"><span className="w-2.5 h-2.5 rounded-sm inline-block" style={{ background: CJ.male }} />Masculino</span>
         </div>
       </div>
-      <CanvasBox><canvas ref={canvasRef} /></CanvasBox>
+      <CanvasBox height="100%" minHeight={120} className="flex-1 min-h-0"><canvas ref={canvasRef} /></CanvasBox>
     </div>
   );
 };
@@ -342,9 +345,9 @@ export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: numbe
   }), [JSON.stringify(vals)]);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider">Distribuição por Faixa Etária</h3>
-      <CanvasBox><canvas ref={canvasRef} /></CanvasBox>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Distribuição por Faixa Etária</h3>
+      <CanvasBox height="100%" minHeight={120} className="flex-1 min-h-0"><canvas ref={canvasRef} /></CanvasBox>
     </div>
   );
 };
@@ -372,13 +375,13 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
   ].filter(s => Number(s.value) > 0);
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <h3 className="font-bold text-white mb-3 flex items-center gap-2 uppercase text-xs tracking-wider flex-shrink-0">
         <Users size={14} className="text-pink-500" />Gênero
       </h3>
       {items.length === 0
-        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={items} totalCount={totalCount} />
+        ? <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <div className="flex-1 min-h-0 flex"><DonutLikeGender items={items} totalCount={totalCount} maxSize={420} /></div>
       }
     </div>
   );
@@ -387,7 +390,7 @@ export const WidgetGenderDist = ({ genderData, totalVisitors }: { view?: string;
 function DonutLikeGender({
   items,
   totalCount,
-  maxSize = 200,
+  maxSize = 420,
 }: {
   items: { label: string; value: number; color: string; count?: number | null }[];
   totalCount?: number | null;
@@ -487,12 +490,12 @@ function DonutLikeGender({
   const onLeave = () => setHover(null);
 
   return (
-    <div className="flex flex-col items-center gap-2 w-full min-w-0">
+    <div className="flex flex-1 flex-col items-center justify-center gap-2 w-full min-w-0 min-h-0">
       {/* Donut SVG — quadrado responsivo, limitado por maxSize */}
       <div
         ref={wrapRef}
-        className="relative mx-auto flex-shrink-0"
-        style={{ width: '100%', maxWidth: maxSize, aspectRatio: '1 / 1' }}
+        className="relative mx-auto flex-shrink min-h-0"
+        style={{ width: '100%', height: '100%', maxWidth: maxSize, maxHeight: maxSize, aspectRatio: '1 / 1' }}
         onMouseMove={onMove}
         onMouseLeave={onLeave}
       >
@@ -601,11 +604,12 @@ export const WidgetVision = ({ attrData }: { attrData?: { label: string; value: 
     }
   }
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Visão</h3>
       {items.length === 0
-        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={items} />}
+        ? <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <div className="flex-1 min-h-0 flex"><DonutLikeGender items={items} maxSize={420} /></div>
+      }
     </div>
   );
 };
@@ -644,11 +648,12 @@ export const WidgetFacialHair = ({ attrData }: { attrData?: { label: string; val
     }
   }
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Pelos Faciais</h3>
       {items.length === 0
-        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={items} />}
+        ? <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <div className="flex-1 min-h-0 flex"><DonutLikeGender items={items} maxSize={420} /></div>
+      }
     </div>
   );
 };
@@ -658,11 +663,12 @@ export const WidgetHairType = ({ hairTypeData }: { hairTypeData?: { label: strin
   const { labels, values, colors } = mapHairData(hairTypeData, HAIR_TYPE_MAP);
   const items = labels.map((l, i) => ({ label: l, value: values[i], color: colors[i] }));
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Tipo de Cabelo</h3>
       {items.length === 0
-        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={items} />}
+        ? <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <div className="flex-1 min-h-0 flex"><DonutLikeGender items={items} maxSize={420} /></div>
+      }
     </div>
   );
 };
@@ -679,11 +685,12 @@ export const WidgetHairColor = ({ hairColorData }: { hairColorData?: { label: st
   const finalItems = restSum > 0 ? [...top, { label: 'Outros', value: restSum, color: '#6b7280' }] : top;
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col overflow-hidden">
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <h3 className="font-bold text-white mb-3 uppercase text-xs tracking-wider flex-shrink-0">Cor de Cabelo</h3>
       {finalItems.length === 0
-        ? <div className="flex items-center justify-center py-12 text-gray-500 text-sm">Sem dados</div>
-        : <DonutLikeGender items={finalItems} />}
+        ? <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Sem dados</div>
+        : <div className="flex-1 min-h-0 flex"><DonutLikeGender items={finalItems} maxSize={420} /></div>
+      }
     </div>
   );
 };
@@ -917,7 +924,7 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
   const activeFilterCount = [campaignFilter, branchFilter, statusFilter].filter((value) => value !== 'all').length;
 
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col" style={{ minHeight: '320px' }}>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full min-h-0 flex flex-col overflow-hidden">
 
       {/* Header */}
       <div className="flex items-center justify-between mb-3 flex-shrink-0">
@@ -993,12 +1000,12 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
 
       {/* Body */}
       {loading ? (
-        <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
+        <div className="flex-1 min-h-0 flex items-center justify-center text-gray-500 text-sm">
           <svg className="animate-spin mr-2" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
           Carregando...
         </div>
       ) : filteredRows.length === 0 ? (
-        <div className="flex-1 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
+        <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
           <p>{lojaFilter ? `Nenhuma campanha para a loja "${lojaFilter}".` : 'Nenhuma campanha disponível.'}</p>
           {!lojaFilter && <p className="text-xs text-gray-600">Aguardando sincronização automática pela API.</p>}
         </div>
@@ -1059,17 +1066,21 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
   );
 };
 
-// ── WidgetKPIFlowStats ───────────────────────────────────────────────────────
-export const WidgetKPIFlowStats = ({ totalVisitors, avgVisitorsPerDay, avgVisitSeconds }: { totalVisitors?: number; avgVisitorsPerDay?: number; avgVisitSeconds?: number }) => {
-  const fmtDur = (s: number) => { const sec=Math.max(0,Math.floor(Number(s)||0)); const m=Math.floor(sec/60); const r=sec%60; return `${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`; };
-  return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex items-center justify-between gap-4 overflow-x-auto">
-      <KPIStat label="Total Visitantes"     value={Number(totalVisitors||0).toLocaleString()} />
-      <KPIStat label="Média Visitantes Dia" value={Number(avgVisitorsPerDay||0).toLocaleString()} color="text-blue-400" />
-      <KPIStat label="Tempo Médio Visita"   value={fmtDur(Number(avgVisitSeconds||0))} color="text-emerald-400" />
+const fmtKpiDuration = (s: number) => { const sec=Math.max(0,Math.floor(Number(s)||0)); const m=Math.floor(sec/60); const r=sec%60; return `${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`; };
+const WidgetSingleKPI = ({ label, value }: { label: string; value: string }) => (
+  <div className="bg-gray-900 border border-gray-800 rounded-lg overflow-hidden group hover:border-gray-700 transition-all h-full min-h-0 flex flex-col">
+    <div className="bg-blue-600/20 px-2 py-1 text-center border-b border-blue-600/10 flex-shrink-0">
+      <p className="text-[9px] text-blue-400 font-bold uppercase tracking-wider leading-tight truncate">{label}</p>
     </div>
-  );
-};
+    <div className="flex-1 min-h-0 flex items-center justify-center px-2 py-1 text-center overflow-hidden">
+      <p className="text-2xl font-bold text-white tracking-tight leading-none truncate">{value}</p>
+    </div>
+  </div>
+);
+export const WidgetKpiTotalVisitors = ({ totalVisitors }: { totalVisitors?: number }) => <WidgetSingleKPI label="Total Visitantes" value={Number(totalVisitors || 0).toLocaleString('pt-BR')} />;
+export const WidgetKpiAvgVisitorsDay = ({ avgVisitorsPerDay }: { avgVisitorsPerDay?: number }) => <WidgetSingleKPI label="Média Visitantes Dia" value={Number(avgVisitorsPerDay || 0).toLocaleString('pt-BR')} />;
+export const WidgetKpiAvgVisitTime = ({ avgVisitSeconds }: { avgVisitSeconds?: number }) => <WidgetSingleKPI label="Tempo Médio Visita" value={fmtKpiDuration(Number(avgVisitSeconds || 0))} />;
+export const WidgetKpiAttentionTime = ({ avgAttentionSeconds }: { avgAttentionSeconds?: number }) => <WidgetSingleKPI label="Tempo de Atenção" value={Number(avgAttentionSeconds || 0) > 0 ? fmtKpiDuration(Number(avgAttentionSeconds || 0)) : '—'} />;
 
 // ── WidgetSalesQuarter ───────────────────────────────────────────────────────
 export const WidgetSalesQuarter = ({
@@ -1107,7 +1118,7 @@ export const WidgetSalesQuarter = ({
       <div className="flex gap-4 text-[10px] text-gray-500 mb-3 flex-none">
         <span className="flex items-center gap-1"><span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: CJ.neutral }} />Visitantes <strong className="text-white ml-1">{loading ? '…' : totalV.toLocaleString('pt-BR')}</strong></span>
       </div>
-      <CanvasBox height={CHART_H} minHeight={CHART_H} className="flex-none">
+      <CanvasBox height="100%" minHeight={120} className="flex-1 min-h-0">
         <canvas ref={canvasRef} className="w-full h-full" />
         {loading ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Carregando...</div>
           : data.length === 0 ? <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm">Sem dados no trimestre</div>
@@ -1246,7 +1257,7 @@ export const WidgetFacialExpressions = ({
           ))}
         </div>
       </div>
-      <CanvasBox className="flex-1 min-h-[220px]">
+      <CanvasBox height="100%" minHeight={120} className="flex-1 min-h-0">
         <canvas ref={canvasRef} />
         {!hasAnyData && (
           <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-sm bg-gray-900/55">
@@ -1268,32 +1279,20 @@ export const WidgetDeviceFlow = ({
   visitors,
   passersby,
   deviceAudience,
-  trackingData,
 }: {
   visitors?: number;
   passersby?: number | null;
   deviceAudience?: DeviceAudienceItem[];
-  trackingData?: DeviceAudienceItem[];
 }) => {
   const safeVisitors = Math.max(0, Number(visitors) || 0);
   const safePassersby = Math.max(0, Number(passersby) || 0);
   const hasFlowRatio = safePassersby > 0;
   const flowPct = hasFlowRatio ? Math.max(0, Math.min(100, (safeVisitors / safePassersby) * 100)) : null;
-  const audiencePalette = ['#ff4d4f', '#d667ff', '#2f7df6', '#ffb703'];
-  const trackingPalette = ['#f8dfcf', '#f2c3a8', '#e89e72', '#cc5d12'];
+  const audiencePalette = ['#ff4d4f', '#d667ff', '#2f7df6', '#ffb703', '#10b981', '#f59e0b', '#6366f1', '#ec4899'];
   const audienceRows = (deviceAudience || []).map((entry, index) => ({
     ...entry,
     color: entry.color || audiencePalette[index % audiencePalette.length],
   }));
-  const incomingTracking = Array.isArray(trackingData) ? trackingData : [];
-  const trackingRows = incomingTracking
-    .filter((entry) => Number(entry?.value ?? 0) > 0)
-    .slice(0, 4)
-    .map((entry, index) => ({
-      label: String(entry?.label ?? '').trim(),
-      value: Number(entry?.value ?? 0),
-      color: entry?.color || trackingPalette[index % trackingPalette.length],
-    }));
 
   const formatPct = (value: number) => `${value.toFixed(1).replace('.', ',')}%`;
   const fluxoBarWidth = flowPct ?? 0;
@@ -1356,26 +1355,26 @@ export const WidgetDeviceFlow = ({
         </div>
       </div>
 
-      {/* ── AUDIENCIA DEVICE ────────────────────────────────────── */}
-      <div className="space-y-2">
+      {/* ── AUDIENCIA DEVICE / LOJA ─────────────────────────────── */}
+      <div className="space-y-2 flex-1 min-h-0">
         <div className="flex items-center gap-3">
           <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Audiencia Device</span>
           <div className="h-px flex-1 bg-gradient-to-r from-fuchsia-400/60 via-fuchsia-300/20 to-transparent" />
         </div>
         {audienceRows.length > 0 ? (
-          <div className="space-y-1.5">
+          <div className="space-y-1.5 overflow-y-auto max-h-64 pr-0.5">
             {audienceRows.map((entry, index) => {
-              const barWidth = Math.max(10, Math.min(100, entry.value));
+              const barWidth = Math.max(4, Math.min(100, entry.value));
               return (
                 <div key={entry.label} className="rounded-xl border border-gray-800/70 bg-gray-950/35 px-2 py-1.5 overflow-hidden">
                   <div className="mb-1 flex items-start gap-2">
-                    <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border border-white/10 bg-gray-950/80 px-1.5 text-[9px] font-bold text-white">
+                    <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full border border-white/10 bg-gray-950/80 px-1.5 text-[9px] font-bold text-white shrink-0">
                       #{index + 1}
                     </span>
                     <div className="min-w-0 flex-1 text-[10px] text-gray-200 leading-tight break-words whitespace-normal">
                       {entry.label}
                     </div>
-                    <span className="rounded-full bg-gray-950/70 px-1.5 py-0.5 text-[10px] font-black text-white shadow-lg">
+                    <span className="rounded-full bg-gray-950/70 px-1.5 py-0.5 text-[10px] font-black text-white shadow-lg shrink-0">
                       {formatPct(entry.value)}
                     </span>
                   </div>
@@ -1396,36 +1395,6 @@ export const WidgetDeviceFlow = ({
           </div>
         )}
       </div>
-
-      {/* ── TRACKING ILHA ───────────────────────────────────────── */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-3">
-          <span className="text-[11px] text-fuchsia-200 font-semibold uppercase tracking-wider">Tracking Ilha</span>
-          <div className="h-px flex-1 bg-gradient-to-r from-fuchsia-400/60 via-fuchsia-300/20 to-transparent" />
-        </div>
-        {trackingRows.length > 0 ? (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5">
-            {trackingRows.map((entry) => (
-              <div
-                key={entry.label}
-                className="rounded-xl border border-black/10 px-1.5 py-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.14)]"
-                style={{ background: `linear-gradient(180deg, ${entry.color}, ${entry.color}ee)` }}
-              >
-                <div className="text-[9px] text-gray-900/80 font-semibold leading-tight break-words whitespace-normal min-h-[2rem] mb-1">
-                  {entry.label}
-                </div>
-                <div className="text-[16px] font-black text-gray-950 leading-none">
-                  {formatPct(entry.value)}
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="rounded-2xl border border-dashed border-gray-800 bg-gray-950/40 px-4 py-6 text-sm text-gray-500 text-center">
-            Sem dados de tracking por ilha.
-          </div>
-        )}
-      </div>
     </div>
   );
 };
@@ -1439,7 +1408,10 @@ export const WIDGET_MAP: Record<string, React.FC<any>> = {
   'gender_dist':         WidgetGenderDist,
   'attributes':          WidgetAttributes,
   'campaigns':           WidgetCampaigns,
-  'kpi_flow_stats':      WidgetKPIFlowStats,
+  'kpi_total_visitors':  WidgetKpiTotalVisitors,
+  'kpi_avg_visitors_day':WidgetKpiAvgVisitorsDay,
+  'kpi_avg_visit_time':  WidgetKpiAvgVisitTime,
+  'kpi_attention_time':  WidgetKpiAttentionTime,
   'chart_sales_quarter': WidgetSalesQuarter,
   'chart_age_ranges':    WidgetAgeRanges,
   'chart_vision':        WidgetVision,

@@ -616,7 +616,7 @@ export function ClientDashboard() {
   // deviceFlowVisitors removido — widget usa totalVisitors (KPI) como fonte única da verdade
   const [deviceFlowPassersby, setDeviceFlowPassersby] = useState<number | null>(null);
   const [deviceFlowAudience, setDeviceFlowAudience] = useState<{ label: string; rawKey?: string; value: number }[]>([]);
-  const [deviceFlowTracking, setDeviceFlowTracking] = useState<{ label: string; value: number }[]>([]);
+  // deviceFlowTracking removido (Tracking Ilha foi substituído por novo gráfico)
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
 
@@ -878,7 +878,7 @@ export function ClientDashboard() {
 
     setDeviceFlowPassersby(null);
     setDeviceFlowAudience([]);
-    setDeviceFlowTracking([]);
+
     setComparePrevVisitorsPerDay({});
   }
 
@@ -978,7 +978,7 @@ export function ClientDashboard() {
 
       setDeviceFlowPassersby(Number(payload?.passersby ?? 0) || null);
       setDeviceFlowAudience(Array.isArray(payload?.deviceAudience) ? payload.deviceAudience : []);
-      setDeviceFlowTracking(Array.isArray(payload?.trackingData) ? payload.trackingData : []);
+
     };
 
     if (cachedHasAudience && cachedHasTracking) {
@@ -2320,40 +2320,34 @@ export function ClientDashboard() {
                   widgetProps.series = facialExpressionSeries;
                 }
                 if (widget.id === 'chart_device_flow')       {
-                  // Visitantes: sempre usa o total do KPI (fonte única da verdade — vem do rollup completo)
+                  // Visitantes: sempre usa o total do KPI (fonte única da verdade)
                   widgetProps.visitors = totalVisitors;
 
-                  // Passantes: só mostra se vier do rollup e for maior que os visitantes (evita números inflados)
-                  const pfPassersby = Number(deviceFlowPassersby ?? 0);
-                  widgetProps.passersby = (pfPassersby > 0 && pfPassersby > totalVisitors) ? pfPassersby : null;
+                  // Passantes: usa o valor computado dos rows do período selecionado (sem filtro)
+                  widgetProps.passersby = deviceFlowPassersby ?? null;
 
-                  // Rede Global (sem loja ou device selecionado) → agrupa por loja
-                  // Loja selecionada → mostra por dispositivo
+                  // Rede Global → agrupa por loja (todas as lojas, sem limite)
+                  // Loja selecionada → mostra por dispositivo (todos os devices da loja)
                   const isNetworkView = !selectedStore && deviceIds.length === 0;
 
                   if (isNetworkView) {
-                    // Agrupa percentuais dos devices pela loja que os contém
                     const storeAccum = new Map<string, number>();
                     for (const entry of deviceFlowAudience) {
                       const rawKey = String(entry?.rawKey ?? entry?.label ?? '').replace(/^Device\s+/i, '');
                       const storeName = deviceKeyToStoreName.get(rawKey) || resolveDeviceFlowLabel(String(entry?.label ?? ''));
                       storeAccum.set(storeName, (storeAccum.get(storeName) || 0) + (entry?.value ?? 0));
                     }
+                    // Todas as lojas ordenadas por percentual (sem corte de top 4)
                     widgetProps.deviceAudience = [...storeAccum.entries()]
                       .map(([label, value]) => ({ label, value: Number(value.toFixed(1)) }))
-                      .sort((a, b) => b.value - a.value)
-                      .slice(0, 4);
-                    // Tracking Ilha só faz sentido por dispositivo (não em visão de rede)
-                    widgetProps.trackingData = [];
+                      .sort((a, b) => b.value - a.value);
                   } else {
+                    // Todos os devices da loja (sem corte)
                     widgetProps.deviceAudience = deviceFlowAudience
-                      .slice(0, 4)
                       .map((entry) => ({ ...entry, label: resolveDeviceFlowLabel(String(entry?.label ?? '')) }));
-                    widgetProps.trackingData = deviceFlowTracking.map((entry) => ({
-                      ...entry,
-                      label: resolveDeviceFlowLabel(String(entry?.label ?? '')),
-                    }));
                   }
+                  // Tracking Ilha removido (será substituído por novo gráfico)
+                  widgetProps.trackingData = [];
                 }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
