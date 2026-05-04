@@ -682,34 +682,13 @@ export function ClientDashboard() {
     });
   }, [deviceNameByMac]);
 
-  const extractDeviceFlowPassersbyCount = useCallback((row: any) => {
-    const raw = row?.raw_data;
-    const candidates = [
-      raw?.tracks_count,
-      raw?.tracks_acount,
-      raw?.contacts_count,
-      raw?.contact_count,
-      raw?.overall_tracks_count,
-      raw?.passerby_body_tracks_count,
-    ];
-
-    let best = 0;
-    for (const candidate of candidates) {
-      const numeric = Math.round(Number(candidate) || 0);
-      if (Number.isFinite(numeric) && numeric > best) best = numeric;
-    }
-
-    const tracksLength = Array.isArray(raw?.tracks) ? raw.tracks.length : 0;
-    if (Number.isFinite(tracksLength) && tracksLength > best) best = tracksLength;
-
-    return best > 0 ? best : 1;
-  }, []);
+  // extractDeviceFlowPassersbyCount removido — somava tracks_count por linha de visita,
+  // gerando passantes inflados (ex: 93k quando o correto é ~10k).
+  // Passantes agora vem exclusivamente do rollup calculado pelo cron.
 
   const buildDeviceFlowFromRows = useCallback((rows: any[], fallback?: any) => {
     const safeRows = Array.isArray(rows) ? rows : [];
     const deviceCounts = new Map<string, number>();
-    const trackingIslands = new Map<string, { label: string; count: number }>();
-    let derivedPassersby = 0;
 
     for (const row of safeRows) {
       const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
@@ -726,53 +705,32 @@ export function ClientDashboard() {
       for (const deviceKey of uniqueDeviceKeys) {
         deviceCounts.set(deviceKey, (deviceCounts.get(deviceKey) ?? 0) + 1);
       }
-
-      const islandKey = [...uniqueDeviceKeys].sort().join('|');
-      if (!islandKey) continue;
-
-      const current = trackingIslands.get(islandKey);
-      trackingIslands.set(islandKey, {
-        label: current?.label || uniqueDeviceKeys.map((deviceKey) => resolveDeviceFlowLabel(`Device ${deviceKey}`)).join(' + '),
-        count: (current?.count ?? 0) + 1,
-      });
-
-      derivedPassersby += extractDeviceFlowPassersbyCount(row);
     }
 
     const totalVisitors = Math.max(Number(fallback?.visitors ?? 0) || 0, safeRows.length);
-    const passersby = Math.max(
-      totalVisitors,
-      derivedPassersby,
-      Number(fallback?.passersby ?? 0) || 0,
-    ) || null;
+
+    // Passantes: usa APENAS o valor do rollup calculado pelo cron (correto).
+    // NÃO soma tracks_count por linha de visita — isso infla o número
+    // porque cada linha já inclui contagens de múltiplas pessoas.
+    const passersby = Number(fallback?.passersby ?? 0) || null;
 
     const deviceAudience = [...deviceCounts.entries()]
       .map(([deviceKey, count]) => ({
         label: resolveDeviceFlowLabel(`Device ${deviceKey}`),
-        rawKey: deviceKey,   // preserva a chave original para agrupamento por loja
+        rawKey: deviceKey,
         value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
         rawCount: count,
       }))
       .sort((a, b) => b.rawCount - a.rawCount)
-      // Não limita a 4 aqui — o corte é feito no render depois de agrupar por loja se necessário
       .map(({ label, rawKey, value }) => ({ label, rawKey, value }));
-
-    const trackingData = [...trackingIslands.values()]
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 4)
-      .map(({ label, count }) => ({
-        label,
-        value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
-      }))
-      .filter((entry) => entry.value > 0);
 
     return {
       visitors: totalVisitors > 0 ? totalVisitors : null,
       passersby,
       deviceAudience,
-      trackingData,
+      trackingData: [],
     };
-  }, [extractDeviceFlowPassersbyCount, resolveDeviceFlowLabel]);
+  }, [resolveDeviceFlowLabel]);
 
   useEffect(() => {
     activeFilterKeyRef.current = [
@@ -2322,31 +2280,41 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_device_flow')       {
                   // Visitantes: sempre usa o total do KPI (fonte única da verdade)
                   widgetProps.visitors = totalVisitors;
-
-                  // Passantes: usa o valor computado dos rows do período selecionado (sem filtro)
+                  // Passantes: vem do rollup calculado pelo cron (correto)
                   widgetProps.passersby = deviceFlowPassersby ?? null;
 
-                  // Rede Global → agrupa por loja (todas as lojas, sem limite)
-                  // Loja selecionada → mostra por dispositivo (todos os devices da loja)
                   const isNetworkView = !selectedStore && deviceIds.length === 0;
 
                   if (isNetworkView) {
-                    const storeAccum = new Map<string, number>();
-                    for (const entry of deviceFlowAudience) {
-                      const rawKey = String(entry?.rawKey ?? entry?.label ?? '').replace(/^Device\s+/i, '');
-                      const storeName = deviceKeyToStoreName.get(rawKey) || resolveDeviceFlowLabel(String(entry?.label ?? ''));
-                      storeAccum.set(storeName, (storeAccum.get(storeName) || 0) + (entry?.value ?? 0));
+                    // Começa com TODAS as lojas do estado stores (inclui as sem dados no período)
+                    const storeVisitors = new Map<string, number>();
+                    for (const s of stores) {
+                      storeVisitors.set(s.name, 0);
                     }
-                    // Todas as lojas ordenadas por percentual (sem corte de top 4)
-                    widgetProps.deviceAudience = [...storeAccum.entries()]
-                      .map(([label, value]) => ({ label, value: Number(value.toFixed(1)) }))
+
+                    // Sobrepõe com os dados reais de visitor_analytics para o período
+                    for (const entry of deviceFlowAudience) {
+                      const rawKey = String(entry?.rawKey ?? '').replace(/^Device\s+/i, '');
+                      const storeName = deviceKeyToStoreName.get(rawKey);
+                      if (!storeName) continue;
+                      // Converte percentual de volta para contagem absoluta
+                      const count = Math.round((entry.value / 100) * totalVisitors);
+                      storeVisitors.set(storeName, (storeVisitors.get(storeName) || 0) + count);
+                    }
+
+                    widgetProps.deviceAudience = [...storeVisitors.entries()]
+                      .map(([label, count]) => ({
+                        label,
+                        value: totalVisitors > 0
+                          ? Number(((count / totalVisitors) * 100).toFixed(1))
+                          : 0,
+                      }))
                       .sort((a, b) => b.value - a.value);
                   } else {
-                    // Todos os devices da loja (sem corte)
+                    // Visão de loja: todos os devices (sem corte)
                     widgetProps.deviceAudience = deviceFlowAudience
                       .map((entry) => ({ ...entry, label: resolveDeviceFlowLabel(String(entry?.label ?? '')) }));
                   }
-                  // Tracking Ilha removido (será substituído por novo gráfico)
                   widgetProps.trackingData = [];
                 }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
