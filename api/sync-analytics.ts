@@ -813,7 +813,11 @@ async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, r
 
   return {
     visitors: Math.max(totalVisitors, Number(audienceSummary?.uniqueVisitors ?? 0) || 0),
-    passersby: Math.max(totalVisitors, derivedPassersby, Number(audienceSummary?.passersby ?? 0) || 0) || null,
+    // Passantes: usa o valor da API Displayforce (overall_tracks_count) quando disponível.
+    // derivedPassersby (soma de tracks_count por linha de visita) é inflado e NÃO deve ser usado.
+    passersby: Number(audienceSummary?.passersby ?? 0) > 0
+      ? Number(audienceSummary!.passersby)
+      : null,
     deviceAudience,
     trackingData,
   };
@@ -1116,7 +1120,11 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
       expressions_hourly: expressionKnown > 0 ? expressionHourlyCount : {},
       device_flow: {
         visitors: totalVisitors,
-        passersby: Math.max(totalVisitors, totalPassersby) || null,
+        // totalPassersby (soma de tracks_count por visita) é inflado — não usar.
+        // O valor correto de passantes vem de fetchDisplayforceAudienceSummary
+        // que usa overall_tracks_count da API; aqui deixamos null para o widget
+        // buscar via live_device_flow quando necessário.
+        passersby: null,
         deviceAudience,
         trackingData,
       },

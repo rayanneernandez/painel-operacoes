@@ -663,13 +663,27 @@ export function ClientDashboard() {
     return map;
   }, [stores]);
 
-  // Mapeia macAddress → nome da loja (para agregar audiência por loja em visão de Rede Global)
+  // macAddress (Displayforce device ID numérico) → nome da loja
+  // Usado quando deviceFlowAudience tem rawKey (dados de visitor_analytics ao vivo)
   const deviceKeyToStoreName = useMemo(() => {
     const map = new Map<string, string>();
     for (const store of stores) {
       for (const camera of store.cameras || []) {
         const key = String((camera as any).macAddress ?? '').trim();
         if (key) map.set(key, store.name);
+      }
+    }
+    return map;
+  }, [stores]);
+
+  // nome da câmera → nome da loja
+  // Fallback para quando deviceFlowAudience vem do cache do rollup (label já resolvido, sem rawKey)
+  const cameraNameToStoreName = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const store of stores) {
+      for (const camera of store.cameras || []) {
+        const name = String(camera?.name ?? '').trim();
+        if (name) map.set(name, store.name);
       }
     }
     return map;
@@ -2288,16 +2302,21 @@ export function ClientDashboard() {
                   if (isNetworkView) {
                     // Começa com TODAS as lojas do estado stores (inclui as sem dados no período)
                     const storeVisitors = new Map<string, number>();
-                    for (const s of stores) {
-                      storeVisitors.set(s.name, 0);
-                    }
+                    for (const s of stores) storeVisitors.set(s.name, 0);
 
-                    // Sobrepõe com os dados reais de visitor_analytics para o período
+                    // Sobrepõe com dados reais de visitor_analytics para o período
                     for (const entry of deviceFlowAudience) {
+                      // Caso 1: dados ao vivo — rawKey é o ID numérico do device (ex: "32")
                       const rawKey = String(entry?.rawKey ?? '').replace(/^Device\s+/i, '');
-                      const storeName = deviceKeyToStoreName.get(rawKey);
+                      let storeName = rawKey ? deviceKeyToStoreName.get(rawKey) : undefined;
+
+                      // Caso 2: dados do cache do rollup — label já é o nome da câmera resolvido
+                      if (!storeName) {
+                        const resolvedLabel = resolveDeviceFlowLabel(String(entry?.label ?? ''));
+                        storeName = cameraNameToStoreName.get(resolvedLabel);
+                      }
+
                       if (!storeName) continue;
-                      // Converte percentual de volta para contagem absoluta
                       const count = Math.round((entry.value / 100) * totalVisitors);
                       storeVisitors.set(storeName, (storeVisitors.get(storeName) || 0) + count);
                     }
