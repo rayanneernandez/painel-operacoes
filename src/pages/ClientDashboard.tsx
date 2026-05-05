@@ -2304,16 +2304,32 @@ export function ClientDashboard() {
                     const storeVisitors = new Map<string, number>();
                     for (const s of stores) storeVisitors.set(s.name, 0);
 
+                    // Índice de lojas por número de filial (ex: "428" → "428 Panvel do Estreito - SC")
+                    // Usado como último fallback quando os outros mapeamentos falham
+                    const storeByNumber = new Map<string, string>();
+                    for (const s of stores) {
+                      const m = s.name.match(/^(\d+)\b/);
+                      if (m) storeByNumber.set(m[1], s.name);
+                    }
+
                     // Sobrepõe com dados reais de visitor_analytics para o período
                     for (const entry of deviceFlowAudience) {
-                      // Caso 1: dados ao vivo — rawKey é o ID numérico do device (ex: "32")
+                      const resolvedLabel = resolveDeviceFlowLabel(String(entry?.label ?? ''));
+
+                      // Caso 1: dados ao vivo — rawKey é o ID numérico do device (ex: "17959")
                       const rawKey = String(entry?.rawKey ?? '').replace(/^Device\s+/i, '');
                       let storeName = rawKey ? deviceKeyToStoreName.get(rawKey) : undefined;
 
-                      // Caso 2: dados do cache do rollup — label já é o nome da câmera resolvido
+                      // Caso 2: cache do rollup — label já é o nome da câmera resolvido
                       if (!storeName) {
-                        const resolvedLabel = resolveDeviceFlowLabel(String(entry?.label ?? ''));
                         storeName = cameraNameToStoreName.get(resolvedLabel);
+                      }
+
+                      // Caso 3: extrai número de filial do label (ex: "428 Dom Estreito - Entrada 1" → "428")
+                      // Cobre dispositivos não sincronizados na tabela devices do banco
+                      if (!storeName) {
+                        const numMatch = resolvedLabel.match(/^(\d+)\b/);
+                        if (numMatch) storeName = storeByNumber.get(numMatch[1]);
                       }
 
                       if (!storeName) continue;
