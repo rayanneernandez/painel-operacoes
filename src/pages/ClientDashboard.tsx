@@ -1106,9 +1106,31 @@ export function ClientDashboard() {
               syncDeviceFlow([rollupPayload]),
             ]);
           } else {
-            // Sem dados para esses dispositivos no período → exibe zeros
-            console.log('[loadData] Sem dados para os dispositivos da loja:', deviceIds);
-            zeroAll();
+            // A API retornou 0 — pode ser que os devices ainda não tenham
+            // sido sincronizados no banco (sync_stores ainda não rodou para esta loja).
+            // Verifica diretamente em visitor_analytics antes de exibir zeros.
+            const { count: directCount } = await withTimeout(
+              supabase
+                .from('visitor_analytics')
+                .select('*', { count: 'exact', head: true })
+                .eq('client_id', id)
+                .in('device_id', deviceIds)
+                .gte('timestamp', startIso)
+                .lte('timestamp', endIso) as any,
+              5000,
+              'visitor_analytics direct count',
+            ) as any;
+
+            if (directCount && directCount > 0) {
+              // Há dados em visitor_analytics — mostra o total e carrega o device flow
+              console.log(`[loadData] visitor_analytics direto: ${directCount} registros para deviceIds`, deviceIds);
+              if (!isCurrent()) return;
+              setTotalVisitors(directCount);
+              await syncDeviceFlow([]);
+            } else {
+              console.log('[loadData] Sem dados em visitor_analytics para os devices da loja:', deviceIds);
+              zeroAll();
+            }
           }
         } catch (e) {
           console.warn('[loadData] Erro no filtro por dispositivo:', e);

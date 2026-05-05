@@ -1579,27 +1579,58 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const devicesByFolder = new Map<string,any[]>();
       devicesData.forEach((d:any) => { const pid=d?.parent_id; if(pid==null)return; const k=String(pid); const arr=devicesByFolder.get(k)||[]; arr.push(d); devicesByFolder.set(k,arr); });
 
+      // Helper para determinar status de conexão do device
+      const parseDevStatus = (d: any): 'online' | 'offline' => {
+        const connRaw = d?.connection_state ?? d?.player_status ?? d?.online ?? d?.is_online
+          ?? d?.connected ?? d?.status ?? d?.state ?? d?.active
+          ?? d?.player_state ?? d?.playback_state ?? d?.activation_state;
+        const connStr = String(connRaw ?? '').toLowerCase().trim();
+        const isOnline = connRaw === true || connRaw === 1 ||
+          ['online','connected','active','reprodução','reproduction','playing',
+           'running','true','1','yes','on','reproduzindo','ativo','activated',
+           'normal','ready','idle'].includes(connStr);
+        return isOnline ? 'online' : 'offline';
+      };
+
+      // Mapa rápido: prefixo numérico do nome da loja → storeId
+      // Ex: "309" → storeId de "309 Panvel Dom Joaquim Posto - RS"
+      const storeNumToId = new Map<string, string>();
+      storesPayload.forEach(s => {
+        const m = String(s.name || '').match(/^(\d+)\b/);
+        if (m) storeNumToId.set(m[1], s.id);
+      });
+
       const devicesPayload: any[] = [];
+      const assignedMacs = new Set<string>();
+
+      // ── Passo 1: matching por parent_id direto (rota principal) ────────────
       folderToStoreId.forEach((storeId, folderId) => {
         const list = devicesByFolder.get(folderId)||[];
         list.forEach((d:any) => {
           const mac=String(d?.id??"").trim(); if(!mac)return;
           const existingId=devIdByStoreMac.get(`${storeId}:${mac}`);
           const extId=Number(mac);
-          // Campos possíveis para status de conexão na API Displayforce
-          const connRaw = d?.connection_state ?? d?.player_status ?? d?.online ?? d?.is_online
-            ?? d?.connected ?? d?.status ?? d?.state ?? d?.active
-            ?? d?.player_state ?? d?.playback_state ?? d?.activation_state;
-          const connStr = String(connRaw ?? '').toLowerCase().trim();
-          // connection_state da Displayforce: true/false, 0/1, "online"/"offline", "connected", etc.
-          // activation_state indica se está ativado (não necessariamente online)
-          const isOnline = connRaw === true || connRaw === 1 ||
-            ['online','connected','active','reprodução','reproduction','playing',
-             'running','true','1','yes','on','reproduzindo','ativo','activated',
-             'normal','ready','idle'].includes(connStr);
-          const devStatus = isOnline ? 'online' : 'offline';
-          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:devStatus });
+          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d) });
+          assignedMacs.add(mac);
         });
+      });
+
+      // ── Passo 2: fallback por prefixo numérico do nome do device ───────────
+      // Captura devices cujo parent_id NÃO bate com nenhuma pasta de loja
+      // (sub-pastas aninhadas, IDs com tipo diferente, etc.)
+      devicesData.forEach((d: any) => {
+        const mac = String(d?.id ?? '').trim();
+        if (!mac || assignedMacs.has(mac)) return; // já atribuído
+        const devName = String(d?.name || '').trim();
+        const m = devName.match(/^(\d+)\b/);
+        if (!m) return;
+        const storeId = storeNumToId.get(m[1]);
+        if (!storeId) return;
+        const existingId = devIdByStoreMac.get(`${storeId}:${mac}`);
+        const extId = Number(mac);
+        devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:devName||mac, type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d) });
+        assignedMacs.add(mac);
+        console.log(`[sync_stores] Device "${devName}" (${mac}) atribuído à loja ${m[1]} via fallback de nome`);
       });
       if (devicesPayload.length > 0) await supabase.from("devices").upsert(devicesPayload);
 
