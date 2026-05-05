@@ -2,6 +2,7 @@ import type { VercelRequest, VercelResponse } from "@vercel/node";
 import crypto from "crypto";
 import { createClient } from "@supabase/supabase-js";
 import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from "./_lib/facialExpressions.js";
+import { processOfflineMonitoring } from "./_lib/offlineMonitoring.js";
 
 const _url = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || "";
 const _key =
@@ -1579,17 +1580,116 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const devicesByFolder = new Map<string,any[]>();
       devicesData.forEach((d:any) => { const pid=d?.parent_id; if(pid==null)return; const k=String(pid); const arr=devicesByFolder.get(k)||[]; arr.push(d); devicesByFolder.set(k,arr); });
 
-      // Helper para determinar status de conexão do device
+      // Helper para determinar status de conexão do device.
+      // Prioriza campos de conectividade real. Campos de playback entram
+      // apenas como fallback para evitar marcar como offline um player
+      // conectado, porém parado/pausado.
+      const normalizeStatusToken = (value: any): string => {
+        if (value == null) return "";
+        if (typeof value === "boolean") return value ? "true" : "false";
+        if (typeof value === "number") return String(value);
+        if (typeof value === "object") {
+          return normalizeStatusToken(
+            value?.connection_state ??
+            value?.status ??
+            value?.state ??
+            value?.value ??
+            value?.label ??
+            value?.name ??
+            value?.title
+          );
+        }
+        return String(value)
+          .normalize("NFD")
+          .replace(/[\u0300-\u036f]/g, "")
+          .toLowerCase()
+          .trim();
+      };
+
+      const ONLINE_STATUS_TOKENS = new Set([
+        "online",
+        "connected",
+        "active",
+        "running",
+        "true",
+        "1",
+        "yes",
+        "on",
+        "reproducao",
+        "reproduction",
+        "playing",
+        "reproduzindo",
+        "ativo",
+        "activated",
+        "normal",
+        "ready",
+        "idle",
+        "standby",
+        "paused",
+        "stopped",
+        "confirmado",
+        "confirmed",
+      ]);
+
+      const OFFLINE_STATUS_TOKENS = new Set([
+        "offline",
+        "disconnected",
+        "inactive",
+        "false",
+        "0",
+        "no",
+        "off",
+        "disabled",
+        "deactivated",
+        "error",
+        "failed",
+        "failure",
+        "unreachable",
+        "not_connected",
+        "not connected",
+      ]);
+
+      const resolveStatusCandidate = (value: any): boolean | null => {
+        if (value == null) return null;
+        if (value === true || value === 1) return true;
+        if (value === false || value === 0) return false;
+
+        const token = normalizeStatusToken(value);
+        if (!token) return null;
+        if (ONLINE_STATUS_TOKENS.has(token)) return true;
+        if (OFFLINE_STATUS_TOKENS.has(token)) return false;
+        return null;
+      };
+
       const parseDevStatus = (d: any): 'online' | 'offline' => {
-        const connRaw = d?.connection_state ?? d?.player_status ?? d?.online ?? d?.is_online
-          ?? d?.connected ?? d?.status ?? d?.state ?? d?.active
-          ?? d?.player_state ?? d?.playback_state ?? d?.activation_state;
-        const connStr = String(connRaw ?? '').toLowerCase().trim();
-        const isOnline = connRaw === true || connRaw === 1 ||
-          ['online','connected','active','reprodução','reproduction','playing',
-           'running','true','1','yes','on','reproduzindo','ativo','activated',
-           'normal','ready','idle'].includes(connStr);
-        return isOnline ? 'online' : 'offline';
+        const connectivityCandidates = [
+          d?.online,
+          d?.is_online,
+          d?.connected,
+          d?.active,
+          d?.connection_state,
+          d?.status,
+          d?.state,
+          d?.activation_state,
+        ];
+
+        for (const candidate of connectivityCandidates) {
+          const resolved = resolveStatusCandidate(candidate);
+          if (resolved !== null) return resolved ? "online" : "offline";
+        }
+
+        const playbackCandidates = [
+          d?.player_status,
+          d?.player_state,
+          d?.playback_state,
+        ];
+
+        for (const candidate of playbackCandidates) {
+          const resolved = resolveStatusCandidate(candidate);
+          if (resolved !== null) return resolved ? "online" : "offline";
+        }
+
+        return "offline";
       };
 
       // Mapa rápido: prefixo numérico do nome da loja → storeId
@@ -1637,7 +1737,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         assignedMacs.add(mac);
         console.log(`[sync_stores] Device "${devName}" (${mac}) atribuído à loja ${m[1]} via fallback de nome`);
       });
-      if (devicesPayload.length > 0) await supabase.from("devices").upsert(devicesPayload);
+      if (devicesPayload.length > 0) {
+        await supabase.from("devices").upsert(devicesPayload);
+      }
 
       // Remove dispositivos de stores não sincronizadas (segurança adicional)
       // Nota: PostgREST NOT IN não usa aspas simples nos valores — usar join sem aspas
@@ -1658,10 +1760,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const diagFolderIds = folders.slice(0, 3).map((f: any) => ({ id: f?.id, name: f?.name }));
       const sampleFolderKeys = [...folderToStoreId.entries()].slice(0, 3).map(([fid, sid]) => ({ folderId: fid, storeId: sid, devicesFound: devicesByFolder.get(fid)?.length ?? 0 }));
       const sampleDevParentIds = devicesData.slice(0, 3).map((d: any) => ({ parent_id: d?.parent_id, name: d?.name }));
+      const monitoringSummary = devicesPayload.length > 0
+        ? await processOfflineMonitoring({
+            supabase,
+            clientId: client_id,
+            storesPayload,
+            devicesPayload,
+          }).catch((monitoringError: any) => {
+            console.error("[sync_stores] Erro no monitoramento offline:", monitoringError?.message ?? monitoringError);
+            return {
+              skipped: true,
+              reason: "monitoring-error",
+              error: monitoringError?.message ?? String(monitoringError),
+            };
+          })
+        : { skipped: true, reason: "no-devices" };
+
       const samplePayload = devicesPayload.slice(0, 3).map(d => ({ store_id: d.store_id, mac: d.mac_address, status: d.status }));
       // Verifica no banco quantos dispositivos existem agora para esses store IDs
       const { count: devCountAfter } = await supabase.from("devices").select("id", { count: "exact", head: true }).in("store_id", storeIds);
-      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length, stores_total: storeIds.length, devices_total_api: devicesData.length, devices_in_db_after: devCountAfter, diag: { device_keys: diagKeys, device_parent_id_sample: diagParentId, folder_id_sample: diagFolderIds, folder_device_match: sampleFolderKeys, device_parent_ids: sampleDevParentIds, payload_sample: samplePayload } });
+      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length, stores_total: storeIds.length, devices_total_api: devicesData.length, devices_in_db_after: devCountAfter, monitoring: monitoringSummary, diag: { device_keys: diagKeys, device_parent_id_sample: diagParentId, folder_id_sample: diagFolderIds, folder_device_match: sampleFolderKeys, device_parent_ids: sampleDevParentIds, payload_sample: samplePayload } });
     }
 
     const now        = new Date();

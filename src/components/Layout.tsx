@@ -10,6 +10,7 @@ import {
   LogOut,
   FileText,
   History,
+  MessageSquare,
   Wifi,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -131,6 +132,12 @@ export function Layout() {
       icon: Wifi, 
       label: 'Dispositivos Online', 
       path: '/dispositivos-online',
+      show: user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)
+    },
+    {
+      icon: MessageSquare,
+      label: 'Alertas WhatsApp',
+      path: '/alertas-whatsapp',
       show: user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)
     },
     { 

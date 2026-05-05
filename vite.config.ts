@@ -11,11 +11,22 @@ import type { ViteDevServer } from 'vite'
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
+function isPlaceholderEnvValue(value: string | undefined) {
+  const normalized = String(value || '').trim().toLowerCase()
+  if (!normalized) return true
+
+  return (
+    normalized.includes('seu-projeto.supabase.co') ||
+    normalized.includes('your-project') ||
+    normalized.includes('coloque_aqui') ||
+    normalized.includes('placeholder')
+  )
+}
+
 // Carrega os arquivos .env manualmente para que process.env tenha
 // SUPABASE_SERVICE_ROLE_KEY, DISPLAYFORCE_EMAIL etc.
-// As variaveis existentes do sistema nao sao sobrescritas.
+// Mantem envs reais do sistema, mas substitui placeholders quebrados.
 function loadDotEnv() {
-  const lockedEnvKeys = new Set(Object.keys(process.env))
   const envFiles = ['.env', '.env.local', '.env.production.local']
 
   for (const envFile of envFiles) {
@@ -26,8 +37,11 @@ function loadDotEnv() {
         const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/)
         if (!match) continue
         const envKey = match[1]
-        if (lockedEnvKeys.has(envKey)) continue
-        process.env[envKey] = match[2].trim().replace(/^["']|["']$/g, '')
+        const nextValue = match[2].trim().replace(/^["']|["']$/g, '')
+        const currentValue = process.env[envKey]
+
+        if (currentValue && !isPlaceholderEnvValue(currentValue)) continue
+        process.env[envKey] = nextValue
       }
     } catch {
       // arquivo opcional

@@ -106,6 +106,25 @@ const DevicesOnlineRoute = () => {
   return <Navigate to="/" replace />;
 };
 
+const WhatsappAlertsRoute = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">Carregando...</div>;
+  }
+
+  if (user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)) {
+    return <DevicesOnline pageMode="whatsapp" />;
+  }
+
+  if (user?.role === 'client') {
+    if (!user.clientId) return <MissingClientLink />;
+    return <Navigate to={`/clientes/${user.clientId}/dashboard`} replace />;
+  }
+
+  return <Navigate to="/" replace />;
+};
+
 function App() {
   return (
     <AuthProvider>
@@ -124,6 +143,7 @@ function App() {
               {/* Rotas liberadas por permissão */}
               <Route path="relatorios" element={<ReportsRoute />} />
               <Route path="dispositivos-online" element={<DevicesOnlineRoute />} />
+              <Route path="alertas-whatsapp" element={<WhatsappAlertsRoute />} />
 
               {/* Rotas administrativas */}
               <Route element={<AdminOnlyRoute />}>

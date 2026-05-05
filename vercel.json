@@ -7,6 +7,9 @@
     "api/cron-sync.ts": {
       "maxDuration": 60
     },
+    "api/cron-monitoring.ts": {
+      "maxDuration": 60
+    },
     "api/sync-analytics.ts": {
       "maxDuration": 60
     }
@@ -22,6 +25,10 @@
     }
   ],
   "crons": [
+    {
+      "path": "/api/cron-monitoring",
+      "schedule": "*/10 * * * *"
+    },
     {
       "path": "/api/cron-sync",
       "schedule": "0 3 * * *"
