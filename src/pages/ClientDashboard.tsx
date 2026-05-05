@@ -1149,50 +1149,69 @@ export function ClientDashboard() {
               syncDeviceFlow([rollupPayload]),
             ]);
           } else {
-            // A API retornou 0 — pode ser que os devices ainda não tenham
-            // sido sincronizados no banco (sync_stores ainda não rodou para esta loja).
-            // Verifica diretamente em visitor_analytics antes de exibir zeros.
-            const { count: directCount } = await withTimeout(
-              supabase
-                .from('visitor_analytics')
-                .select('*', { count: 'exact', head: true })
-                .eq('client_id', id)
-                .in('device_id', deviceIds)
-                .gte('timestamp', startIso)
-                .lte('timestamp', endIso) as any,
-              5000,
-              'visitor_analytics direct count',
-            ) as any;
+            // A API sync-analytics retornou 0/null (pode ser timeout do Vercel).
+            // Computa todas as métricas DIRETAMENTE do visitor_analytics no cliente
+            // para garantir que todos os KPIs e gráficos mostrem dados corretos.
+            const PAGE_ROWS = 1000;
+            const allRows: any[] = [];
+            let rowFrom = 0;
+            while (true) {
+              const { data: rowPage } = await withTimeout(
+                supabase
+                  .from('visitor_analytics')
+                  .select('timestamp,visit_time_seconds,contact_time_seconds,gender,age,raw_data')
+                  .eq('client_id', id)
+                  .in('device_id', deviceIds)
+                  .gte('timestamp', startIso)
+                  .lte('timestamp', endIso)
+                  .order('timestamp', { ascending: true })
+                  .range(rowFrom, rowFrom + PAGE_ROWS - 1) as any,
+                10000,
+                'visitor_analytics rows for device',
+              ) as any;
+              if (!Array.isArray(rowPage) || rowPage.length === 0) break;
+              allRows.push(...rowPage);
+              if (rowPage.length < PAGE_ROWS) break;
+              rowFrom += PAGE_ROWS;
+              if (rowFrom > 50000) break;
+            }
 
-            if (directCount && directCount > 0) {
-              // Há dados mas o rollup retornou null — computa as métricas básicas diretamente
-              console.log(`[loadData] visitor_analytics direto: ${directCount} registros — recalculando rollup`);
-              if (!isCurrent()) return;
-              // Re-solicita rollup via API sem timeout
-              try {
-                const json2 = await fetchJsonWithTimeout('/api/sync-analytics', {
-                  method: 'POST', headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
-                }, 30000, 'sync-analytics devices retry');
-                if (json2?.dashboard && Number(json2.dashboard.total_visitors) > 0) {
-                  const rp = {
-                    total_visitors: json2.dashboard.total_visitors,
-                    avg_visitors_per_day: json2.dashboard.avg_visitors_per_day,
-                    avg_visit_time_seconds: json2.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
-                    avg_attention_seconds: json2.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
-                    visitors_per_day: json2.dashboard.visitors_per_day,
-                    visitors_per_hour_avg: json2.dashboard.visitors_per_hour_avg,
-                    gender_percent: json2.dashboard.gender_percent,
-                    attributes_percent: json2.dashboard.attributes_percent,
-                    age_pyramid_percent: json2.dashboard.age_pyramid_percent,
-                  };
-                  if (!isCurrent()) return;
-                  applyRollup(rp);
-                  await Promise.all([syncExpressions([rp]), syncDeviceFlow([rp])]);
-                  return;
+            if (allRows.length > 0 && isCurrent()) {
+              const total       = allRows.length;
+              const dRange      = Math.max(1, Math.ceil((endAligned.getTime() - startAligned.getTime() + 1) / 86400000));
+              const visitTimes  = allRows.map(r => Number(r.visit_time_seconds) || 0).filter(v => v > 0);
+              const contactTimes= allRows.map(r => Number(r.contact_time_seconds) || 0).filter(v => v > 0);
+              const avgVisit    = visitTimes.length   > 0 ? Math.round(visitTimes.reduce((a,b)=>a+b,0)   / visitTimes.length)   : 0;
+              const avgContact  = contactTimes.length > 0 ? Math.round(contactTimes.reduce((a,b)=>a+b,0) / contactTimes.length) : 0;
+
+              // Hourly distribution
+              const perHourTotal = new Array(24).fill(0);
+              const perDay: Record<string, number> = {};
+              const genderC = { male: 0, female: 0 };
+              allRows.forEach(r => {
+                const ts = new Date(r.timestamp);
+                if (!isNaN(ts.getTime())) {
+                  perHourTotal[ts.getUTCHours()]++;
+                  const dk = ts.toISOString().slice(0, 10);
+                  perDay[dk] = (perDay[dk] ?? 0) + 1;
                 }
-              } catch (_) { /* fallback: mostra só total */ }
-              setTotalVisitors(directCount);
+                const g = r.gender;
+                if (g === 1 || g === 'male')   genderC.male++;
+                if (g === 2 || g === 'female') genderC.female++;
+              });
+              const perHourAvg = perHourTotal.map(v => Math.round(v / dRange));
+              const gTotal = genderC.male + genderC.female;
+
+              setTotalVisitors(total);
+              setAvgVisitorsPerDay(Math.round(total / dRange));
+              setAvgVisitSeconds(avgVisit);
+              setAvgAttentionSeconds(avgContact);
+              setHourlyStats(perHourAvg);
+              setVisitorsPerDayMap(perDay);
+              if (gTotal > 0) setGenderStats([
+                { label: 'Masculino', value: Math.round(genderC.male   / gTotal * 100) },
+                { label: 'Feminino',  value: Math.round(genderC.female / gTotal * 100) },
+              ]);
               await syncDeviceFlow([]);
             } else {
               console.log('[loadData] visitor_analytics vazio para os devices:', deviceIds, '— acionando sync em background');
