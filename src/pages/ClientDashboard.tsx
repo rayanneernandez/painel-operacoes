@@ -1097,6 +1097,28 @@ export function ClientDashboard() {
         await loadDeviceFlowWidget(id, startIso, endIso, deviceIds, isCurrent, candidateRollups);
       };
 
+      // ── Loja selecionada mas cameras ainda não carregadas (race condition) ──
+      // Quando o usuário seleciona uma loja, selectedStore é definido mas
+      // selectedStore.cameras pode ainda estar vazio (refreshClientAndStores
+      // assíncrono). Se cairmos no caminho Rede Global com selectedStore ativo,
+      // mostraríamos dados de TODA a rede para uma loja específica.
+      // → Aguarda até 3s por cameras; se não carregarem, mostra zeros.
+      if (selectedStore && deviceIds.length === 0) {
+        zeroAll();
+        // Aguarda cameras carregarem (até 3 tentativas de 1s)
+        let waited = 0;
+        while (waited < 3 && selectedStore && deviceIds.length === 0) {
+          await new Promise(r => setTimeout(r, 1000));
+          waited++;
+        }
+        if (!isCurrent()) return;
+        if (deviceIds.length === 0) {
+          // Ainda sem cameras → dispara sync e fica em zero (evita dados de rede global)
+          syncStoresFromServer(true).catch(() => {});
+          return;
+        }
+      }
+
       // ── Filtro por dispositivo (loja selecionada com dispositivos) ───────
       // Se há IDs de dispositivo, filtra exclusivamente por eles.
       // Limpa imediatamente os dados antigos (rede global) para não mostrar
