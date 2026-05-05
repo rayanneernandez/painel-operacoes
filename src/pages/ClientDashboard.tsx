@@ -718,28 +718,55 @@ export function ClientDashboard() {
    * 3. prefixo numérico do label              → store.name
    */
   const resolveDeviceToStore = useCallback((deviceKey: string): string | undefined => {
-    // 1. ID numérico direto
     let sName = deviceKeyToStoreName.get(deviceKey);
     if (sName) return sName;
-    // 2. Nome da câmera (resolve "Device 17959" → "309 Dom Joaquim - Entrada 1")
     const resolved = resolveDeviceFlowLabel(`Device ${deviceKey}`);
     sName = cameraNameToStoreName.get(resolved);
     if (sName) return sName;
-    // 3. Prefixo numérico do label resolvido
     const m = resolved.match(/^(\d+)\b/);
     if (m) sName = storeByNumber.get(m[1]);
     return sName;
   }, [deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber]);
 
-  const buildDeviceFlowFromRows = useCallback((
-    rows: any[],
-    fallback?: any,
-    groupByStore?: boolean,
-  ) => {
+  /**
+   * Audiência por loja — recomputa automaticamente quando deviceFlowAudience
+   * OU stores mudam. Isso resolve a race condition onde stores ainda estava
+   * vazio quando buildDeviceFlowFromRows foi chamado pela primeira vez.
+   */
+  const deviceFlowAudienceByStore = useMemo(() => {
+    // Inicia todas as lojas a 0 (garante que apareçam mesmo sem dados no período)
+    const storeAccum = new Map<string, number>();
+    for (const s of stores) storeAccum.set(s.name, 0);
+
+    for (const entry of deviceFlowAudience) {
+      // Caso 1: rawKey = ID numérico do device (dados ao vivo)
+      const rawKey = String(entry?.rawKey ?? '').replace(/^Device\s+/i, '');
+      let storeName: string | undefined = rawKey ? deviceKeyToStoreName.get(rawKey) : undefined;
+
+      // Caso 2: label já é nome da câmera (dados do cache do rollup)
+      if (!storeName) {
+        const resolvedLabel = resolveDeviceFlowLabel(String(entry?.label ?? ''));
+        storeName = cameraNameToStoreName.get(resolvedLabel);
+        // Caso 3: prefixo numérico do label ("428 Dom Estreito - Cam" → "428")
+        if (!storeName) {
+          const m = resolvedLabel.match(/^(\d+)\b/);
+          if (m) storeName = storeByNumber.get(m[1]);
+        }
+      }
+
+      if (!storeName) continue;
+      storeAccum.set(storeName, (storeAccum.get(storeName) || 0) + entry.value);
+    }
+
+    return [...storeAccum.entries()]
+      .map(([label, value]) => ({ label, value: Number(value.toFixed(1)) }))
+      .sort((a, b) => b.value - a.value);
+  }, [deviceFlowAudience, stores, deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber]);
+
+  const buildDeviceFlowFromRows = useCallback((rows: any[], fallback?: any) => {
     const safeRows = Array.isArray(rows) ? rows : [];
     const passersby = Number(fallback?.passersby ?? 0) || null;
 
-    /** Extrai as chaves de device de uma linha de visitor_analytics */
     const getDeviceKeys = (row: any): string[] => {
       const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
       const keys = rawDevices.map((v: any) => String(v ?? '').trim()).filter(Boolean);
@@ -748,33 +775,8 @@ export function ClientDashboard() {
       return fb ? [fb] : [];
     };
 
-    if (groupByStore) {
-      // ── Agrega diretamente por loja ──────────────────────────────────────
-      // Inicializa TODAS as lojas com 0 para garantir que apareçam mesmo sem dados
-      const storeCounts = new Map<string, number>();
-      for (const s of stores) storeCounts.set(s.name, 0);
-
-      for (const row of safeRows) {
-        for (const dk of getDeviceKeys(row)) {
-          const sName = resolveDeviceToStore(dk);
-          if (!sName) continue;
-          storeCounts.set(sName, (storeCounts.get(sName) || 0) + 1);
-        }
-      }
-
-      const totalV = Math.max(Number(fallback?.visitors ?? 0) || 0, safeRows.length);
-      const audience = [...storeCounts.entries()]
-        .map(([label, count]) => ({
-          label,
-          rawKey: undefined as string | undefined,
-          value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
-        }))
-        .sort((a, b) => b.value - a.value);
-
-      return { visitors: totalV > 0 ? totalV : null, passersby, deviceAudience: audience, trackingData: [] };
-    }
-
-    // ── Agrega por dispositivo (visão de loja específica) ────────────────
+    // Sempre agrega por device (store-independent)
+    // O mapeamento device→loja acontece no useMemo deviceFlowAudienceByStore
     const deviceCounts = new Map<string, number>();
     for (const row of safeRows) {
       for (const dk of getDeviceKeys(row)) {
@@ -792,7 +794,7 @@ export function ClientDashboard() {
       .sort((a, b) => b.value - a.value);
 
     return { visitors: totalVisitors > 0 ? totalVisitors : null, passersby, deviceAudience, trackingData: [] };
-  }, [resolveDeviceFlowLabel, resolveDeviceToStore, stores]);
+  }, [resolveDeviceFlowLabel]);
 
   useEffect(() => {
     activeFilterKeyRef.current = [
@@ -1039,9 +1041,7 @@ export function ClientDashboard() {
         from += PAGE;
       }
 
-      // groupByStore = true quando Rede Global (sem filtro de device)
-      // → buildDeviceFlowFromRows agrega diretamente por loja com todas iniciadas a 0
-      const rebuilt = buildDeviceFlowFromRows(allRows, cached, deviceFilter.length === 0);
+      const rebuilt = buildDeviceFlowFromRows(allRows, cached);
       if (!isCurrent()) return;
       applyDeviceFlowState(rebuilt);
 
@@ -2345,14 +2345,18 @@ export function ClientDashboard() {
                   widgetProps.series = facialExpressionSeries;
                 }
                 if (widget.id === 'chart_device_flow')       {
-                  widgetProps.visitors   = totalVisitors;
-                  widgetProps.passersby  = deviceFlowPassersby ?? null;
-                  // deviceFlowAudience já vem no nível correto:
-                  // - Rede Global (groupByStore=true): entradas por LOJA com todos os stores a 0
-                  // - Loja selecionada (groupByStore=false): entradas por DEVICE
-                  // Labels já resolvidos — só repassa diretamente
-                  widgetProps.deviceAudience = deviceFlowAudience;
-                  widgetProps.trackingData   = [];
+                  widgetProps.visitors  = totalVisitors;
+                  widgetProps.passersby = deviceFlowPassersby ?? null;
+                  const isNetworkView   = !selectedStore && deviceIds.length === 0;
+                  widgetProps.deviceAudience = isNetworkView
+                    // Rede Global: useMemo deviceFlowAudienceByStore (reage a stores E audience)
+                    ? deviceFlowAudienceByStore
+                    // Loja selecionada: por device com label resolvido
+                    : deviceFlowAudience.map(e => ({
+                        ...e,
+                        label: resolveDeviceFlowLabel(String(e?.label ?? '')),
+                      }));
+                  widgetProps.trackingData = [];
                 }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
