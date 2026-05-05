@@ -1159,7 +1159,7 @@ export function ClientDashboard() {
               const { data: rowPage } = await withTimeout(
                 supabase
                   .from('visitor_analytics')
-                  .select('timestamp,visit_time_seconds,contact_time_seconds,gender,age,raw_data')
+                  .select('timestamp,visit_time_seconds,contact_time_seconds,gender,age,attributes,raw_data')
                   .eq('client_id', id)
                   .in('device_id', deviceIds)
                   .gte('timestamp', startIso)
@@ -1238,7 +1238,50 @@ export function ClientDashboard() {
                 { label: 'Feminino',  value: Math.round(genderC.female / gTotal * 100) },
               ]);
               if (ageStatsBuilt.length > 0) setAgeStats(ageStatsBuilt);
-              await syncDeviceFlow([]);
+
+              // ── Atributos: óculos, pelos faciais, tipo/cor de cabelo ────────
+              const glassesC: Record<string,number> = {};
+              const facialC:  Record<string,number> = {};
+              const hairTypeC:Record<string,number> = {};
+              const hairColorC:Record<string,number>= {};
+              let attrTotal = 0;
+
+              allRows.forEach(r => {
+                let attrs: any = null;
+                if (r.attributes) {
+                  try { attrs = typeof r.attributes === 'string' ? JSON.parse(r.attributes) : r.attributes; } catch { /* skip */ }
+                }
+                if (!attrs && r.raw_data) {
+                  try { const rd = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data; attrs = rd?.attributes || rd; } catch { /* skip */ }
+                }
+                if (!attrs) return;
+                attrTotal++;
+                const inc = (m: Record<string,number>, k: string | undefined | null) => { if (k && k !== 'unknown') m[k] = (m[k] ?? 0) + 1; };
+                inc(glassesC,   attrs.glasses   ?? attrs.glasses_category);
+                inc(facialC,    attrs.facial_hair ?? attrs.beard ?? attrs.facial_hair_category);
+                inc(hairTypeC,  attrs.hair_type  ?? attrs.hair_type_category);
+                inc(hairColorC, attrs.hair_color ?? attrs.hair_color_category);
+              });
+
+              if (attrTotal > 0) {
+                const toPct = (m: Record<string,number>) =>
+                  Object.entries(m).map(([label, count]) => ({ label, value: Math.round(count / attrTotal * 100) }))
+                    .sort((a,b) => b.value - a.value);
+
+                const glassesList   = toPct(glassesC);
+                const facialList    = toPct(facialC);
+                const combinedAttrs = [...glassesList, ...facialList];
+                if (combinedAttrs.length > 0) setAttributeStats(combinedAttrs);
+                const htList = toPct(hairTypeC);
+                const hcList = toPct(hairColorC);
+                if (htList.length > 0) setHairTypeData(htList);
+                if (hcList.length > 0) setHairColorData(hcList);
+              }
+
+              await Promise.all([
+                syncExpressions([]),
+                syncDeviceFlow([]),
+              ]);
             } else {
               console.log('[loadData] visitor_analytics vazio para os devices:', deviceIds, '— acionando sync em background');
               // Dispara sync em background para popular visitor_analytics com dados do Displayforce
