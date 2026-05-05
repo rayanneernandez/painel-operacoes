@@ -1240,42 +1240,101 @@ export function ClientDashboard() {
               if (ageStatsBuilt.length > 0) setAgeStats(ageStatsBuilt);
 
               // ── Atributos: óculos, pelos faciais, tipo/cor de cabelo ────────
-              const glassesC: Record<string,number> = {};
-              const facialC:  Record<string,number> = {};
-              const hairTypeC:Record<string,number> = {};
-              const hairColorC:Record<string,number>= {};
-              let attrTotal = 0;
+              // O formato esperado pelos widgets é IDÊNTICO ao produzido por applyRollup:
+              //   Visão:       entradas com label '_glasses_none', '_glasses_usual', etc.
+              //   PelosFaciais: entradas com label '_facial_beard', '_facial_shaved', etc.
+              //   Totais:       'Óculos' e 'Barba' (percentual do total com essa feição)
+              const glassesC:  Record<string,number> = {};
+              const facialC:   Record<string,number> = {};
+              const hairTypeC: Record<string,number> = {};
+              const hairColorC:Record<string,number> = {};
+              let glassesKnown = 0, facialKnown = 0, htKnown = 0, hcKnown = 0;
+              let glassesWith = 0, facialWith = 0;
+
+              const parseAttrs = (r: any): any => {
+                if (r.attributes) {
+                  try { return typeof r.attributes === 'string' ? JSON.parse(r.attributes) : r.attributes; } catch { /* skip */ }
+                }
+                if (r.raw_data) {
+                  try {
+                    const rd = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data;
+                    return rd?.attributes ?? null;
+                  } catch { /* skip */ }
+                }
+                return null;
+              };
+
+              const isPresent = (k: string) =>
+                k && k !== 'unknown' && k !== 'false' && k !== '0';
+              const isWithGlasses = (k: string) =>
+                isPresent(k) && k !== 'none' && k !== 'no_glasses';
+              const isWithFacial = (k: string) =>
+                isPresent(k) && k !== 'shaved' && k !== 'none' && k !== 'no_beard';
 
               allRows.forEach(r => {
-                let attrs: any = null;
-                if (r.attributes) {
-                  try { attrs = typeof r.attributes === 'string' ? JSON.parse(r.attributes) : r.attributes; } catch { /* skip */ }
-                }
-                if (!attrs && r.raw_data) {
-                  try { const rd = typeof r.raw_data === 'string' ? JSON.parse(r.raw_data) : r.raw_data; attrs = rd?.attributes || rd; } catch { /* skip */ }
-                }
+                const attrs = parseAttrs(r);
                 if (!attrs) return;
-                attrTotal++;
-                const inc = (m: Record<string,number>, k: string | undefined | null) => { if (k && k !== 'unknown') m[k] = (m[k] ?? 0) + 1; };
-                inc(glassesC,   attrs.glasses   ?? attrs.glasses_category);
-                inc(facialC,    attrs.facial_hair ?? attrs.beard ?? attrs.facial_hair_category);
-                inc(hairTypeC,  attrs.hair_type  ?? attrs.hair_type_category);
-                inc(hairColorC, attrs.hair_color ?? attrs.hair_color_category);
+
+                const g = String(attrs.glasses ?? attrs.glasses_category ?? '').toLowerCase().trim();
+                if (g && g !== 'unknown') {
+                  glassesKnown++;
+                  glassesC[g] = (glassesC[g] ?? 0) + 1;
+                  if (isWithGlasses(g)) glassesWith++;
+                }
+
+                const f = String(attrs.facial_hair ?? attrs.beard ?? attrs.facial_hair_category ?? '').toLowerCase().trim();
+                if (f && f !== 'unknown') {
+                  facialKnown++;
+                  facialC[f] = (facialC[f] ?? 0) + 1;
+                  if (isWithFacial(f)) facialWith++;
+                }
+
+                const ht = String(attrs.hair_type ?? attrs.hair_type_category ?? '').toLowerCase().trim();
+                if (ht && ht !== 'unknown') {
+                  htKnown++;
+                  hairTypeC[ht] = (hairTypeC[ht] ?? 0) + 1;
+                }
+
+                const hc = String(attrs.hair_color ?? attrs.hair_color_category ?? '').toLowerCase().trim();
+                if (hc && hc !== 'unknown') {
+                  hcKnown++;
+                  hairColorC[hc] = (hairColorC[hc] ?? 0) + 1;
+                }
               });
 
-              if (attrTotal > 0) {
-                const toPct = (m: Record<string,number>) =>
-                  Object.entries(m).map(([label, count]) => ({ label, value: Math.round(count / attrTotal * 100) }))
-                    .sort((a,b) => b.value - a.value);
+              if (glassesKnown > 0 || facialKnown > 0) {
+                const glassesPct = glassesKnown > 0 ? Math.round(glassesWith / glassesKnown * 100) : 0;
+                const facialPct  = facialKnown  > 0 ? Math.round(facialWith  / facialKnown  * 100) : 0;
 
-                const glassesList   = toPct(glassesC);
-                const facialList    = toPct(facialC);
-                const combinedAttrs = [...glassesList, ...facialList];
-                if (combinedAttrs.length > 0) setAttributeStats(combinedAttrs);
-                const htList = toPct(hairTypeC);
-                const hcList = toPct(hairColorC);
-                if (htList.length > 0) setHairTypeData(htList);
-                if (hcList.length > 0) setHairColorData(hcList);
+                const attrStats: { label: string; value: number }[] = [
+                  { label: 'Óculos',      value: glassesPct },
+                  { label: 'Barba',       value: facialPct  },
+                  { label: 'Máscara',     value: 0 },
+                  { label: 'Chapéu/Boné', value: 0 },
+                  // Entradas categóricas com prefixo (_glasses_ / _facial_) para os widgets
+                  ...Object.entries(glassesC).map(([k, cnt]) => ({
+                    label: `_glasses_${k}`,
+                    value: Math.round(cnt / glassesKnown * 100),
+                  })).filter(e => e.value > 0),
+                  ...Object.entries(facialC).map(([k, cnt]) => ({
+                    label: `_facial_${k}`,
+                    value: Math.round(cnt / facialKnown * 100),
+                  })).filter(e => e.value > 0),
+                ];
+                setAttributeStats(attrStats);
+              }
+
+              if (htKnown > 0) {
+                setHairTypeData(
+                  Object.entries(hairTypeC).map(([label, cnt]) => ({ label, value: Math.round(cnt / htKnown * 100) }))
+                    .sort((a,b) => b.value - a.value).slice(0, 4)
+                );
+              }
+              if (hcKnown > 0) {
+                setHairColorData(
+                  Object.entries(hairColorC).map(([label, cnt]) => ({ label, value: Math.round(cnt / hcKnown * 100) }))
+                    .sort((a,b) => b.value - a.value).slice(0, 4)
+                );
               }
 
               await Promise.all([
