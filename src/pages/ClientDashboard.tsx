@@ -1963,16 +1963,13 @@ export function ClientDashboard() {
       }
 
       // ── Filtro por dispositivo (loja selecionada) ─────────────────────
-      // Usa o período SELECIONADO pelo usuário (não a semana inteira),
-      // para que o gráfico seja consistente com os KPIs filtrados.
-      const selStart = alignUtcStartOfDay(selectedStartDate).toISOString();
-      const selEnd   = alignUtcEndOfDay(selectedEndDate).toISOString();
-
+      // Usa a SEMANA INTEIRA mas filtrada pelos devices da loja selecionada.
+      // Assim o gráfico mostra o padrão semanal real daquela loja.
       const visPerDayDevice: Record<string, number> = {};
       let from = 0; const page = 1000;
       while (true) {
         const { data, error } = await supabase.from('visitor_analytics').select('timestamp')
-          .eq('client_id', id).gte('timestamp', selStart).lte('timestamp', selEnd)
+          .eq('client_id', id).gte('timestamp', startIso).lte('timestamp', endIso)
           .in('device_id', deviceIds).order('timestamp', { ascending: true }).range(from, from + page - 1);
         if (error || !data || data.length === 0) break;
         (data as any[]).forEach((r: any) => {
