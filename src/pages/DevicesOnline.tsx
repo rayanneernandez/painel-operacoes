@@ -485,40 +485,39 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
     syncInFlightRef.current = true;
     writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'running' });
+    setSyncWarning(null);
 
-    try {
-      const response = await fetch('/api/sync-analytics', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ client_id: clientId, sync_stores: true }),
-      });
-      let payload: any = null;
-      try {
-        payload = await response.json();
-      } catch {
-        payload = null;
-      }
+    // Fire-and-forget: não bloqueia a UI aguardando o sync.
+    // Redes grandes (ex: Assai com 134 devices) podem demorar > 60s → 504.
+    // O painel exibe o último status do banco enquanto o sync roda em background.
+    // Refreshes automáticos em 20s e 65s buscam os dados atualizados.
+    fetch('/api/sync-analytics', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: clientId, sync_stores: true }),
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (response.ok) {
+          setSyncWarning(null);
+          writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: Date.now(), status: 'success' });
+        } else if (response.status !== 504) {
+          // 504 é esperado para redes grandes — não exibe erro nesses casos
+          const detail = payload?.details || payload?.error || payload?.message || `HTTP ${response.status}`;
+          setSyncWarning(`Status atualizado do banco. Detalhe do sync: ${detail}`);
+          writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'error' });
+        }
+      })
+      .catch(() => {
+        writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'error' });
+      })
+      .finally(() => { syncInFlightRef.current = false; });
 
-      if (!response.ok) {
-        const detail =
-          payload?.details ||
-          payload?.error ||
-          payload?.message ||
-          `HTTP ${response.status}`;
-        throw new Error(formatUnknownErrorDetail(detail));
-      }
+    // Refreshes agendados para capturar dados após o sync terminar em background
+    setTimeout(() => refresh(), 20000);
+    setTimeout(() => refresh(), 65000);
 
-      setSyncWarning(null);
-      writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: Date.now(), status: 'success' });
-      return payload;
-    } catch (error: any) {
-      const detail = formatUnknownErrorDetail(error?.message || error);
-      setSyncWarning(`Falha ao sincronizar com a DisplayForce agora. O painel esta exibindo o ultimo status salvo. Detalhe: ${detail}`);
-      writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'error' });
-      return null;
-    } finally {
-      syncInFlightRef.current = false;
-    }
+    return { skipped: false, reason: 'started-background' as const };
   };
 
   const refresh = async () => {
