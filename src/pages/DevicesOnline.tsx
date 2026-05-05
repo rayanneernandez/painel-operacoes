@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
   BellRing,
@@ -21,12 +21,13 @@ import supabase from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 
 type DbClient = { id: string; name: string };
+type DeviceStatus = 'online' | 'offline' | 'not_connected';
 type DeviceRow = {
   id: string;
   name: string;
   type: string;
   mac_address: string | null;
-  status: 'online' | 'offline';
+  status: DeviceStatus;
   store_id: string;
 };
 type StoreRow = {
@@ -46,7 +47,7 @@ type UiDevice = {
   name: string;
   type: string;
   macAddress: string;
-  status: 'online' | 'offline';
+  status: DeviceStatus;
 };
 
 type UiStore = {
@@ -122,6 +123,12 @@ const EMPTY_INTEGRATION_STATUS: IntegrationStatus = {
 };
 
 const SELECTED_CLIENT_STORAGE_KEY = 'globalia-monitoring-selected-client-id';
+const DISPLAY_SYNC_META_KEY_PREFIX = 'globalia-display-sync-meta:';
+const DISPLAY_SYNC_AUTO_INTERVAL_MS = 10 * 60 * 1000;
+const DISPLAY_SYNC_SHARED_COOLDOWN_MS = 10 * 60 * 1000;
+const DISPLAY_SYNC_RUNNING_TTL_MS = 45 * 1000;
+const OVERVIEW_DB_POLL_MS = 15 * 1000;
+const WHATSAPP_DB_POLL_MS = 30 * 1000;
 
 const OFFLINE_REASON_SUGGESTIONS = [
   'Manutencao programada na loja',
@@ -209,6 +216,62 @@ function formatUnknownErrorDetail(value: unknown): string {
   return String(value);
 }
 
+function getDeviceStatusPriority(status: DeviceStatus) {
+  if (status === 'offline') return 3;
+  if (status === 'not_connected') return 2;
+  return 0;
+}
+
+function getDeviceStatusLabel(status: DeviceStatus) {
+  if (status === 'not_connected') return 'Nao conectado';
+  if (status === 'offline') return 'Offline';
+  return 'Online';
+}
+
+function getDeviceStatusDotClass(status: DeviceStatus) {
+  if (status === 'offline') return 'bg-red-500';
+  if (status === 'not_connected') return 'bg-amber-400';
+  return 'bg-emerald-500 animate-pulse';
+}
+
+function getDeviceStatusBadgeClass(status: DeviceStatus) {
+  if (status === 'offline') return 'bg-red-950/30 text-red-300 border-red-800';
+  if (status === 'not_connected') return 'bg-amber-950/30 text-amber-300 border-amber-800';
+  return 'bg-emerald-950/30 text-emerald-300 border-emerald-800';
+}
+
+type DisplaySyncMeta = {
+  startedAt?: number;
+  finishedAt?: number;
+  status?: 'running' | 'success' | 'error';
+};
+
+function getDisplaySyncMetaKey(clientId: string) {
+  return `${DISPLAY_SYNC_META_KEY_PREFIX}${clientId}`;
+}
+
+function readDisplaySyncMeta(clientId: string): DisplaySyncMeta | null {
+  if (typeof window === 'undefined' || !clientId) return null;
+
+  try {
+    const raw = window.localStorage.getItem(getDisplaySyncMetaKey(clientId));
+    if (!raw) return null;
+    return JSON.parse(raw) as DisplaySyncMeta;
+  } catch {
+    return null;
+  }
+}
+
+function writeDisplaySyncMeta(clientId: string, meta: DisplaySyncMeta) {
+  if (typeof window === 'undefined' || !clientId) return;
+
+  try {
+    window.localStorage.setItem(getDisplaySyncMetaKey(clientId), JSON.stringify(meta));
+  } catch {
+    // noop
+  }
+}
+
 type DevicesOnlineProps = {
   pageMode?: DevicesOnlinePageMode;
 };
@@ -256,6 +319,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   const [reasonDrafts, setReasonDrafts] = useState<Record<string, string>>({});
   const [isGuideExpanded, setIsGuideExpanded] = useState(false);
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
+  const syncInFlightRef = useRef(false);
   const [contactForm, setContactForm] = useState({
     responsibleName: '',
     phoneNumber: '',
@@ -398,7 +462,30 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     }
   };
 
-  const triggerStoreSync = async (clientId: string) => {
+  const triggerStoreSync = async (clientId: string, options?: { force?: boolean }) => {
+    if (!clientId) return null;
+
+    const force = Boolean(options?.force);
+    const nowMs = Date.now();
+    const syncMeta = readDisplaySyncMeta(clientId);
+    const lastStartedAt = Number(syncMeta?.startedAt || 0);
+    const lastFinishedAt = Number(syncMeta?.finishedAt || 0);
+    const sharedSyncRunning = lastStartedAt > lastFinishedAt && nowMs - lastStartedAt < DISPLAY_SYNC_RUNNING_TTL_MS;
+    const withinCooldown = lastFinishedAt > 0 && nowMs - lastFinishedAt < DISPLAY_SYNC_SHARED_COOLDOWN_MS;
+
+    if (!force) {
+      if (syncInFlightRef.current || sharedSyncRunning) {
+        return { skipped: true, reason: 'in-flight' as const };
+      }
+
+      if (withinCooldown) {
+        return { skipped: true, reason: 'cooldown' as const };
+      }
+    }
+
+    syncInFlightRef.current = true;
+    writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'running' });
+
     try {
       const response = await fetch('/api/sync-analytics', {
         method: 'POST',
@@ -422,11 +509,15 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       }
 
       setSyncWarning(null);
+      writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: Date.now(), status: 'success' });
       return payload;
     } catch (error: any) {
       const detail = formatUnknownErrorDetail(error?.message || error);
       setSyncWarning(`Falha ao sincronizar com a DisplayForce agora. O painel esta exibindo o ultimo status salvo. Detalhe: ${detail}`);
+      writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'error' });
       return null;
+    } finally {
+      syncInFlightRef.current = false;
     }
   };
 
@@ -509,7 +600,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
           const key = mac ? `mac:${mac}` : `id:${row.id}`;
           const previous = map.get(key);
           if (!previous) map.set(key, row);
-          else if (previous.status !== 'online' && row.status === 'online') map.set(key, row);
+          else if (getDeviceStatusPriority(row.status) > getDeviceStatusPriority(previous.status)) map.set(key, row);
         }
 
         return [...map.values()]
@@ -553,7 +644,9 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
     const run = async () => {
       if (!activeClientId) return;
-      await triggerStoreSync(activeClientId);
+      if (!isWhatsappPage) {
+        await triggerStoreSync(activeClientId);
+      }
       if (cancelled) return;
       await refresh();
     };
@@ -565,22 +658,24 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   }, [activeClientId, isWhatsappPage]);
 
   useEffect(() => {
-    if (!isWhatsappPage || !activeClientId) return;
-    void loadMonitoringData(activeClientId);
-  }, [activeClientId, isWhatsappPage]);
-
-  useEffect(() => {
     if (!activeClientId) return;
 
     const dbPollId = window.setInterval(() => {
       void refresh();
-    }, 10000);
+    }, isWhatsappPage ? WHATSAPP_DB_POLL_MS : OVERVIEW_DB_POLL_MS);
 
-    const apiSyncId = window.setInterval(() => {
-      void triggerStoreSync(activeClientId).then(() => refresh());
-    }, 60 * 1000);
+    const apiSyncId = !isWhatsappPage
+      ? window.setInterval(() => {
+          void triggerStoreSync(activeClientId).then(() => refresh());
+        }, DISPLAY_SYNC_AUTO_INTERVAL_MS)
+      : null;
 
     const onFocus = () => {
+      if (isWhatsappPage) {
+        void refresh();
+        return;
+      }
+
       void triggerStoreSync(activeClientId).then(() => refresh());
     };
 
@@ -588,20 +683,8 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
     return () => {
       window.clearInterval(dbPollId);
-      window.clearInterval(apiSyncId);
+      if (apiSyncId) window.clearInterval(apiSyncId);
       window.removeEventListener('focus', onFocus);
-    };
-  }, [activeClientId, isWhatsappPage]);
-
-  useEffect(() => {
-    if (!isWhatsappPage || !activeClientId) return;
-
-    const monitoringInterval = window.setInterval(() => {
-      void loadMonitoringData(activeClientId);
-    }, 30000);
-
-    return () => {
-      window.clearInterval(monitoringInterval);
     };
   }, [activeClientId, isWhatsappPage]);
 
@@ -628,14 +711,25 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       (acc, store) => acc + store.devices.filter((device) => device.status === 'online').length,
       0
     );
-    const offline = Math.max(0, total - online);
+    const offline = stores.reduce(
+      (acc, store) => acc + store.devices.filter((device) => device.status === 'offline').length,
+      0
+    );
+    const notConnected = stores.reduce(
+      (acc, store) => acc + store.devices.filter((device) => device.status === 'not_connected').length,
+      0
+    );
 
     return {
       total,
       online,
       offline,
+      notConnected,
+      confirmed: online + offline,
       onlinePct: total > 0 ? (online / total) * 100 : 0,
       offlinePct: total > 0 ? (offline / total) * 100 : 0,
+      notConnectedPct: total > 0 ? (notConnected / total) * 100 : 0,
+      confirmedPct: total > 0 ? ((online + offline) / total) * 100 : 0,
     };
   }, [stores]);
 
@@ -873,7 +967,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
       if (error) throw error;
 
-      await triggerStoreSync(activeClientId);
+      await triggerStoreSync(activeClientId, { force: true });
       await loadMonitoringData(activeClientId);
 
       showFeedback(
@@ -900,7 +994,8 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         ) : (
           stores.map((store) => {
             const onlineCount = store.devices.filter((device) => device.status === 'online').length;
-            const offlineCount = store.devices.filter((device) => device.status !== 'online').length;
+            const offlineCount = store.devices.filter((device) => device.status === 'offline').length;
+            const notConnectedCount = store.devices.filter((device) => device.status === 'not_connected').length;
 
             return (
               <div key={store.id} className="bg-gray-950 rounded-xl border border-gray-800 overflow-hidden">
@@ -930,6 +1025,10 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                         <span className="w-2 h-2 rounded-full bg-red-500" />
                         {offlineCount}
                       </span>
+                      <span className="inline-flex items-center gap-1 text-amber-300">
+                        <span className="w-2 h-2 rounded-full bg-amber-400" />
+                        {notConnectedCount}
+                      </span>
                     </div>
                     {expandedStore === store.id ? (
                       <ChevronUp size={18} className="text-gray-500" />
@@ -954,9 +1053,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                           >
                             <div className="flex items-center gap-2 min-w-0">
                               <div
-                                className={`w-2 h-2 rounded-full ${
-                                  device.status === 'online' ? 'bg-emerald-500 animate-pulse' : 'bg-red-500'
-                                }`}
+                                className={`w-2 h-2 rounded-full ${getDeviceStatusDotClass(device.status)}`}
                               />
                               <div className="min-w-0">
                                 <p className="text-xs font-medium text-gray-200 truncate">{device.name}</p>
@@ -966,8 +1063,8 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                               </div>
                             </div>
 
-                            <span className="text-[10px] bg-gray-900 text-gray-400 px-2 py-0.5 rounded border border-gray-800 uppercase">
-                              {device.status === 'online' ? 'Online' : 'Offline'}
+                            <span className={`text-[10px] px-2 py-0.5 rounded border uppercase ${getDeviceStatusBadgeClass(device.status)}`}>
+                              {getDeviceStatusLabel(device.status)}
                             </span>
                           </div>
                         ))}
@@ -985,6 +1082,9 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
       <aside className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-fit lg:sticky lg:top-6">
         <h3 className="text-sm font-bold text-white mb-4">Estatisticas dos dispositivos</h3>
+        <p className="text-[11px] text-gray-500 mb-3">
+          Confirmados: {deviceStats.confirmed.toLocaleString()} / {deviceStats.total.toLocaleString()}
+        </p>
 
         <div className="grid grid-cols-1 gap-3">
           <div className="bg-gray-950 border border-gray-800 rounded-lg p-3">
@@ -1001,13 +1101,25 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
           <div className="bg-gray-950 border border-gray-800 rounded-lg p-3">
             <div className="flex items-center justify-between">
-              <p className="text-[10px] uppercase tracking-wider text-gray-500">Nao conectados</p>
+              <p className="text-[10px] uppercase tracking-wider text-gray-500">Offline</p>
               <p className="text-xs text-gray-300 font-medium">
                 {deviceStats.offline.toLocaleString()} / {deviceStats.total.toLocaleString()}
               </p>
             </div>
             <div className="mt-2 h-2 rounded bg-gray-800 overflow-hidden">
               <div className="h-full bg-red-500" style={{ width: `${deviceStats.offlinePct}%` }} />
+            </div>
+          </div>
+
+          <div className="bg-gray-950 border border-gray-800 rounded-lg p-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] uppercase tracking-wider text-gray-500">Nao conectados</p>
+              <p className="text-xs text-gray-300 font-medium">
+                {deviceStats.notConnected.toLocaleString()} / {deviceStats.total.toLocaleString()}
+              </p>
+            </div>
+            <div className="mt-2 h-2 rounded bg-gray-800 overflow-hidden">
+              <div className="h-full bg-amber-400" style={{ width: `${deviceStats.notConnectedPct}%` }} />
             </div>
           </div>
         </div>
@@ -1363,9 +1475,12 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
             {alerts.map((alert) => {
               const offlineMinutes = diffMinutesFromNow(alert.first_detected_at);
               const waitingWindow = !alert.notified_at && !alert.resolved_at && offlineMinutes < 30;
+              const endedWithoutResolution = Boolean(alert.resolved_at) && alert.status === 'cancelled';
 
               const badgeClass = alert.resolved_at
-                ? 'border-emerald-700 bg-emerald-950/30 text-emerald-300'
+                ? endedWithoutResolution
+                  ? 'border-gray-700 bg-gray-900 text-gray-300'
+                  : 'border-emerald-700 bg-emerald-950/30 text-emerald-300'
                 : alert.notified_at
                   ? 'border-red-700 bg-red-950/30 text-red-200'
                   : waitingWindow
@@ -1373,7 +1488,9 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                     : 'border-gray-700 bg-gray-950 text-gray-300';
 
               const badgeLabel = alert.resolved_at
-                ? 'Resolvido'
+                ? endedWithoutResolution
+                  ? 'Encerrado'
+                  : 'Resolvido'
                 : alert.notified_at
                   ? 'WhatsApp enviado'
                   : waitingWindow
@@ -1405,7 +1522,9 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                         <p className="mt-1">{formatDateTime(alert.notified_at)}</p>
                       </div>
                       <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Resolucao</p>
+                        <p className="text-[10px] uppercase tracking-wider text-gray-500">
+                          {endedWithoutResolution ? 'Encerrado em' : 'Resolucao'}
+                        </p>
                         <p className="mt-1">{formatDateTime(alert.resolved_at)}</p>
                       </div>
                     </div>
@@ -1582,7 +1701,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
           <button
             onClick={() => {
               if (!activeClientId) return;
-              void triggerStoreSync(activeClientId).then(() => refresh());
+              void triggerStoreSync(activeClientId, { force: true }).then(() => refresh());
             }}
             disabled={loading || !activeClientId}
             className="h-[40px] w-[40px] flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors disabled:opacity-50"

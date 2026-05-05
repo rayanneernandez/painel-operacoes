@@ -17,6 +17,7 @@ const supabase = createClient(_url, _key, {
 type ClientApiConfig = {
   api_endpoint: string; analytics_endpoint: string; api_key: string;
   custom_header_key?: string | null; custom_header_value?: string | null;
+  device_endpoint?: string | null; folder_endpoint?: string | null;
   collection_start?: string | null; collection_end?: string | null;
   collect_tracks?: boolean; collect_face_quality?: boolean;
   collect_glasses?: boolean; collect_beard?: boolean;
@@ -1465,6 +1466,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // ── sync_stores ──────────────────────────────────────────────────────────
     if (sync_stores === true) {
       const base = (cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "");
+      const folderEndpoint = cfg.folder_endpoint?.trim() || "/public/v1/device-folder/list";
+      const legacyFolderEndpoint = "/public/v1/folder/list";
+      const deviceEndpoint = cfg.device_endpoint?.trim() || "/public/v1/device/list";
       const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
       const ck = cfg.custom_header_key?.trim(); const cv = cfg.custom_header_value?.trim();
       if (ck && cv) headers[ck] = cv; else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
@@ -1474,7 +1478,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Busca paginada de uma URL (usePost=true força POST para que params sejam enviados no body)
       const fetchAllPages = async (url: string, bodyBase: any, usePost = false): Promise<any[]> => {
         const all: any[] = [];
-        let offset = 0; const limit = 500;
+        let offset = 0; const limit = 1000;
         while (true) {
           const body = { ...bodyBase, limit, offset };
           let r: Response;
@@ -1497,18 +1501,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return all;
       };
 
-      // Tenta device-folder/list (nome correto da API), com fallback para folder/list
-      let folders = await fetchAllPages(`${base}/public/v1/device-folder/list`,
-        { id:[], name:[], parent_ids:[], recursive:true });
+      // Usa POST direto conforme a documentacao para evitar um GET desperdicado
+      // antes do fallback.
+      let folders = await fetchAllPages(`${base}${folderEndpoint}`,
+        { id:[], name:[], parent_ids:[], recursive:true }, true);
       if (folders.length === 0) {
-        folders = await fetchAllPages(`${base}/public/v1/folder/list`,
-          { id:[], name:[], parent_ids:[], recursive:true });
+        folders = await fetchAllPages(`${base}${legacyFolderEndpoint}`,
+          { id:[], name:[], parent_ids:[], recursive:true }, true);
       }
       console.log(`[sync_stores] Lojas encontradas: ${folders.length}`);
 
-      // Busca dispositivos com os campos corretos conforme a API Displayforce
-      const devicesData = await fetchAllPages(`${base}/public/v1/device/list`,
-        { id:[], name:[], parent_ids:[], recursive:true }, true);
+      // A documentacao da API permite restringir os campos retornados.
+      // Isso reduz payload e risco de excesso sem perder a acuracia do status.
+      const devicesData = await fetchAllPages(`${base}${deviceEndpoint}`, {
+        id: [],
+        name: [],
+        parent_ids: [],
+        recursive: true,
+        params: [
+          "id",
+          "name",
+          "parent_id",
+          "address",
+          "status",
+          "state",
+          "online",
+          "connected",
+          "is_online",
+          "activation_state",
+          "activation_date",
+          "connection_state",
+          "player_status",
+          "player_state",
+          "playback_state",
+          "last_online",
+        ],
+      }, true);
       console.log(`[sync_stores] Dispositivos encontrados: ${devicesData.length}`);
       // Log do primeiro dispositivo para diagnóstico de campos disponíveis
       if (devicesData.length > 0) {
@@ -1606,7 +1634,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .trim();
       };
 
-      const ONLINE_STATUS_TOKENS = new Set([
+      const DOC_CONNECTION_ONLINE_TOKENS = new Set(["online"]);
+      const DOC_CONNECTION_OFFLINE_TOKENS = new Set(["offline"]);
+      const DOC_PLAYER_PLAYBACK_TOKENS = new Set([
+        "playback",
+        "reproducao",
+        "reproduction",
+        "playing",
+        "reproduzindo",
+      ]);
+      const DOC_PLAYER_ISSUE_TOKENS = new Set([
+        "empty",
+        "pause",
+        "paused",
+        "problem",
+        "offline",
+      ]);
+
+      const resolveDocConnectionState = (value: any): "online" | "offline" | null => {
+        if (value == null) return null;
+        if (value === true || value === 1) return "online";
+        if (value === false || value === 0) return "offline";
+
+        const token = normalizeStatusToken(value);
+        if (!token) return null;
+        if (DOC_CONNECTION_ONLINE_TOKENS.has(token)) return "online";
+        if (DOC_CONNECTION_OFFLINE_TOKENS.has(token)) return "offline";
+        return null;
+      };
+
+      const resolveDocPlayerState = (value: any): "playback" | "issue" | null => {
+        if (value == null) return null;
+        const token = normalizeStatusToken(value);
+        if (!token) return null;
+        if (DOC_PLAYER_PLAYBACK_TOKENS.has(token)) return "playback";
+        if (DOC_PLAYER_ISSUE_TOKENS.has(token)) return "issue";
+        return null;
+      };
+
+      const hasDeviceConnectionHistory = (device: any) => {
+        const lastOnlineRaw = String(device?.last_online ?? "").trim();
+        const activationDateRaw = String(device?.activation_date ?? "").trim();
+        const activationState = device?.activation_state;
+
+        const hasLastOnline = Boolean(lastOnlineRaw && Number.isFinite(Date.parse(lastOnlineRaw)));
+        const hasActivationDate = Boolean(activationDateRaw && Number.isFinite(Date.parse(activationDateRaw)));
+        const isActivated = activationState === true || normalizeStatusToken(activationState) === "true";
+
+        return hasLastOnline || hasActivationDate || isActivated;
+      };
+
+      const CONNECTED_STATUS_TOKENS = new Set([
         "online",
         "connected",
         "active",
@@ -1615,81 +1693,125 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "1",
         "yes",
         "on",
-        "reproducao",
-        "reproduction",
-        "playing",
-        "reproduzindo",
         "ativo",
         "activated",
-        "normal",
-        "ready",
-        "idle",
-        "standby",
-        "paused",
-        "stopped",
         "confirmado",
         "confirmed",
       ]);
 
-      const OFFLINE_STATUS_TOKENS = new Set([
-        "offline",
+      const NOT_CONNECTED_STATUS_TOKENS = new Set([
+        "not_connected",
+        "not connected",
+        "nao conectado",
+        "não conectado",
         "disconnected",
+        "desconectado",
+        "sem conexao",
+        "sem conexão",
         "inactive",
+        "disabled",
+        "deactivated",
         "false",
         "0",
         "no",
+      ]);
+
+      const ONLINE_PLAYBACK_STATUS_TOKENS = new Set([
+        "online",
+        "reproducao",
+        "reproduction",
+        "playing",
+        "reproduzindo",
+        "normal",
+      ]);
+
+      const OFFLINE_STATUS_TOKENS = new Set([
+        "offline",
         "off",
-        "disabled",
-        "deactivated",
         "error",
         "failed",
         "failure",
         "unreachable",
-        "not_connected",
-        "not connected",
+        "stopped",
+        "paused",
+        "idle",
+        "standby",
       ]);
 
-      const resolveStatusCandidate = (value: any): boolean | null => {
+      const resolveConnectivityCandidate = (value: any): "online" | "not_connected" | null => {
         if (value == null) return null;
-        if (value === true || value === 1) return true;
-        if (value === false || value === 0) return false;
+        if (value === true || value === 1) return "online";
+        if (value === false || value === 0) return "not_connected";
 
         const token = normalizeStatusToken(value);
         if (!token) return null;
-        if (ONLINE_STATUS_TOKENS.has(token)) return true;
-        if (OFFLINE_STATUS_TOKENS.has(token)) return false;
+        if (CONNECTED_STATUS_TOKENS.has(token)) return "online";
+        if (NOT_CONNECTED_STATUS_TOKENS.has(token)) return "not_connected";
         return null;
       };
 
-      const parseDevStatus = (d: any): 'online' | 'offline' => {
-        const connectivityCandidates = [
-          d?.online,
-          d?.is_online,
-          d?.connected,
-          d?.active,
-          d?.connection_state,
-          d?.status,
-          d?.state,
-          d?.activation_state,
-        ];
+      const resolvePlaybackCandidate = (value: any): "online" | "offline" | null => {
+        if (value == null) return null;
 
-        for (const candidate of connectivityCandidates) {
-          const resolved = resolveStatusCandidate(candidate);
-          if (resolved !== null) return resolved ? "online" : "offline";
-        }
+        const token = normalizeStatusToken(value);
+        if (!token) return null;
+        if (ONLINE_PLAYBACK_STATUS_TOKENS.has(token)) return "online";
+        if (OFFLINE_STATUS_TOKENS.has(token)) return "offline";
+        return null;
+      };
 
-        const playbackCandidates = [
+      const LAST_ONLINE_OFFLINE_GRACE_MS = 20 * 60 * 1000;
+
+      const resolveLastOnlineFallback = (value: any): "online" | "offline" | null => {
+        const raw = String(value ?? "").trim();
+        if (!raw) return null;
+        const timestamp = Date.parse(raw);
+        if (!Number.isFinite(timestamp)) return null;
+        return Date.now() - timestamp > LAST_ONLINE_OFFLINE_GRACE_MS ? "offline" : "online";
+      };
+
+      const parseDevStatus = (d: any): 'online' | 'offline' | 'not_connected' => {
+        const connectionState =
+          resolveDocConnectionState(d?.connection_state) ??
+          resolveDocConnectionState(d?.online) ??
+          resolveDocConnectionState(d?.is_online) ??
+          resolveDocConnectionState(d?.connected);
+
+        const playerCandidates = [
           d?.player_status,
           d?.player_state,
           d?.playback_state,
+          d?.status,
+          d?.state,
         ];
 
-        for (const candidate of playbackCandidates) {
-          const resolved = resolveStatusCandidate(candidate);
-          if (resolved !== null) return resolved ? "online" : "offline";
+        let playerState: "playback" | "issue" | null = null;
+        for (const candidate of playerCandidates) {
+          const resolved = resolveDocPlayerState(candidate);
+          if (resolved) {
+            playerState = resolved;
+            break;
+          }
         }
 
-        return "offline";
+        const wasEverConnected = hasDeviceConnectionHistory(d);
+
+        if (connectionState === "online" && playerState === "issue") {
+          return "offline";
+        }
+
+        if (connectionState === "online") {
+          return "online";
+        }
+
+        if (connectionState === "offline") {
+          return wasEverConnected ? "offline" : "not_connected";
+        }
+
+        if (playerState === "playback") return "online";
+        if (playerState === "issue") return wasEverConnected ? "offline" : "not_connected";
+
+        return wasEverConnected ? "offline" : "not_connected";
       };
 
       // Mapa rápido: prefixo numérico do nome da loja → storeId

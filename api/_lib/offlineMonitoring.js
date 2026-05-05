@@ -250,7 +250,13 @@ export async function processOfflineMonitoring({
     const deviceId = safeTrim(rawDevice.id);
     if (!deviceId) continue;
 
-    const currentStatus = safeTrim(rawDevice.status).toLowerCase() === "online" ? "online" : "offline";
+    const rawStatus = safeTrim(rawDevice.status).toLowerCase();
+    const currentStatus =
+      rawStatus === "online"
+        ? "online"
+        : rawStatus === "not_connected" || rawStatus === "not connected"
+          ? "not_connected"
+          : "offline";
     const storeId = safeTrim(rawDevice.store_id);
     const alert = alertByDeviceId.get(deviceId);
     const storeName = storeNameById.get(storeId) || safeTrim(alert?.store_name) || "Loja sem nome";
@@ -397,13 +403,14 @@ export async function processOfflineMonitoring({
 
     if (!alert) continue;
 
+    const movedBackOnline = currentStatus === "online";
     const update = {
       id: alert.id,
       client_id: clientId,
       store_id: storeId || alert.store_id || null,
       device_id: deviceId,
       alert_type: "offline",
-      status: alert.notified_at ? "resolved" : "cancelled",
+      status: movedBackOnline && alert.notified_at ? "resolved" : "cancelled",
       device_name: deviceName,
       store_name: storeName,
       client_name: resolvedClientName || null,
@@ -425,7 +432,7 @@ export async function processOfflineMonitoring({
       updated_at: nowIso,
     };
 
-    if (resolutionEnabled && alert.notified_at && !alert.resolution_sent_at && zapConfig.configured) {
+    if (movedBackOnline && resolutionEnabled && alert.notified_at && !alert.resolution_sent_at && zapConfig.configured) {
       const recipients = resolveRecipients(contactsData || [], storeId || alert.store_id);
       if (recipients.length > 0) {
         const sendResult = await sendMessageToRecipients(
@@ -451,7 +458,7 @@ export async function processOfflineMonitoring({
     }
 
     updates.push(update);
-    if (alert.notified_at) summary.resolved += 1;
+    if (movedBackOnline && alert.notified_at) summary.resolved += 1;
     else summary.cancelled += 1;
   }
 

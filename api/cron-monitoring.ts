@@ -25,6 +25,15 @@ function buildOrigin(req: VercelRequest) {
   return host.startsWith("http") ? host : `${protocol}://${host}`;
 }
 
+function rotateConfigs<T extends { client_id: string }>(configs: T[]) {
+  if (configs.length <= 1) return configs;
+
+  const sorted = [...configs].sort((a, b) => String(a.client_id).localeCompare(String(b.client_id)));
+  const slot = Math.floor(Date.now() / 600_000);
+  const startIndex = slot % sorted.length;
+  return [...sorted.slice(startIndex), ...sorted.slice(0, startIndex)];
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Cache-Control", "no-store");
 
@@ -66,8 +75,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     );
 
     const results = [];
+    const orderedConfigs = rotateConfigs(activeConfigs);
 
-    for (const cfg of activeConfigs) {
+    for (const cfg of orderedConfigs) {
       if (Date.now() - startedAt > 55_000) {
         results.push({
           client_id: cfg.client_id,
