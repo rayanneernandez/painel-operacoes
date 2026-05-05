@@ -289,11 +289,15 @@ function buildFacialExpressionSeriesFromRows(rows: any[]) {
     const index = new Date(timestamp).getHours();
     if (!Number.isFinite(index) || index < 0 || index > 23) continue;
 
+    // Tenta detectar expressão; se não conseguir, usa "neutral" como padrão.
+    // A API pública Displayforce só retorna smile (sem anger/surprise), então
+    // a maioria das visitas sem smile=true ficaria com expression=null e seria
+    // ignorada, deixando horas inteiras sem dados no gráfico.
     const expression =
       normalizeFacialExpression(row?.attributes?.facial_expression) ??
-      getDominantFacialExpression(row?.raw_data);
+      getDominantFacialExpression(row?.raw_data) ??
+      'neutral';
 
-    if (!expression) continue;
     const target = valuesByKey.get(expression);
     if (!target) continue;
     target[index] += 1;
@@ -946,17 +950,17 @@ export function ClientDashboard() {
         ? buildLatestFacialExpressionSeriesFromRollups(candidateRollups)
         : null;
     const immediateSeries = cachedSeries ?? latestStoredSeries;
-    if (immediateSeries) {
-      if (!isCurrent()) return;
+
+    // Mostra dados cacheados imediatamente enquanto carrega dados frescos
+    if (immediateSeries && isCurrent()) {
       setFacialExpressionLabels(labels);
       setFacialExpressionSeries(immediateSeries);
-      // Sempre que houver cache, não bate na API live — o cron-sync diário já reabastece o rollup.
-      if (cachedSeries) return;
+      // NÃO retorna cedo: continua para buscar dados do período atual
+      // (o rollup em cache pode estar desatualizado — só vai até o último cron)
     }
-    // OBS: removidas as chamadas live_facial_expressions deste dashboard. O cron-sync diário
-    // grava attributes_percent.expressions_hourly, e o widget passa a ler daí. Para reenriquecer
-    // sob demanda, use o endpoint /api/sync-analytics com rebuild_rollup=true via tela de admin.
 
+    // ── Passo 1: busca dados frescos de visitor_analytics ─────────────────
+    // Com filtro de device quando loja selecionada; network-wide quando Rede Global
     const PAGE = 1000;
     const allRows: any[] = [];
     let from = 0;
@@ -991,12 +995,49 @@ export function ClientDashboard() {
 
     if (!isCurrent()) return;
     const rowSeries = buildFacialExpressionSeriesFromRows(allRows);
+    // Usa dados das linhas se têm dados; senão mantém o cache
+    const bestSeries = hasFacialExpressionSeriesData(rowSeries) ? rowSeries : immediateSeries;
     setFacialExpressionLabels(labels);
-    setFacialExpressionSeries(
-      hasFacialExpressionSeriesData(rowSeries)
-        ? rowSeries
-        : (immediateSeries ?? rowSeries)
-    );
+    setFacialExpressionSeries(bestSeries ?? rowSeries);
+
+    // ── Passo 2: chama a API v5 Displayforce para Surpresa/Raiva em tempo real ─
+    // A API pública v1 só tem smile — para neutral/happiness/surprise/anger
+    // precisamos da API v5 privada (cookie auth). Só vale para Rede Global
+    // pois a v5 não filtra por device.
+    if (deviceFilter.length === 0) {
+      try {
+        const liveResult = await fetchJsonWithTimeout('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: clientId,
+            live_facial_expressions: true,
+            start: rangeStart,
+            end: rangeEnd,
+            auth: 'painel@2026*',
+          }),
+        }, 12000, 'live expressions v5');
+        if (isCurrent() && Array.isArray(liveResult?.series) && hasFacialExpressionSeriesData(liveResult.series)) {
+          // Mescla: usa a série live (que tem surprise/anger) mas preserva horas
+          // que só existem nos dados de linha (horas recentes não no rollup v5 ainda)
+          const merged = liveResult.series.map((liveSerie: { label: string; values: number[] }, i: number) => {
+            const rowSerie = rowSeries[i];
+            if (!rowSerie) return liveSerie;
+            return {
+              label: liveSerie.label,
+              values: liveSerie.values.map((liveVal: number, h: number) => {
+                const rowVal = rowSerie.values[h] ?? 0;
+                // Para horas sem dados no live (v5 não processou ainda), usa dados de linha
+                return liveVal > 0 ? liveVal : rowVal;
+              }),
+            };
+          });
+          setFacialExpressionSeries(merged);
+        }
+      } catch (_) {
+        // Mantém os dados das linhas — v5 API pode estar indisponível
+      }
+    }
   }, []);
 
   const loadDeviceFlowWidget = useCallback(async (
