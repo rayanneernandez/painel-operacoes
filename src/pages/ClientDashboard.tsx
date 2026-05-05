@@ -712,10 +712,29 @@ export function ClientDashboard() {
   }, [stores]);
 
   /**
+   * Extrai número de filial de um label de device.
+   * Suporta os formatos observados na Displayforce:
+   *   "428 Dom Estreito - Entrada 1"   → "428"  (começa com número)
+   *   "Filial 387 - Câmera Entrada 1"  → "387"  (padrão "Filial NNN")
+   *   "Filial 21/455 - Caixa"          → "455"  (padrão "Filial NN/NNN" — usa nº após /)
+   */
+  const extractStoreNumber = useCallback((label: string): string | null => {
+    // Formato 1: começa com dígitos
+    const direct = label.match(/^(\d+)\b/);
+    if (direct) return direct[1];
+    // Formato 2: "Filial NNN" ou "Filial NN/NNN" — captura o último número
+    // Ex: "Filial 21/455" → captura "455" (ignora o prefixo "21/")
+    const filial = label.match(/\bfilial\s+(?:\d+\/)?(\d+)\b/i);
+    if (filial) return filial[1];
+    return null;
+  }, []);
+
+  /**
    * Resolve o device key para o nome da loja usando 3 estratégias em cascata:
    * 1. mac_address (ID numérico Displayforce) → store.name
-   * 2. nome da câmera resolvido                → store.name
-   * 3. prefixo numérico do label              → store.name
+   * 2. nome da câmera resolvido               → store.name
+   * 3. número de filial no label              → store.name
+   *    Detecta tanto "428 ..." quanto "Filial 428 ..."
    */
   const resolveDeviceToStore = useCallback((deviceKey: string): string | undefined => {
     let sName = deviceKeyToStoreName.get(deviceKey);
@@ -723,10 +742,10 @@ export function ClientDashboard() {
     const resolved = resolveDeviceFlowLabel(`Device ${deviceKey}`);
     sName = cameraNameToStoreName.get(resolved);
     if (sName) return sName;
-    const m = resolved.match(/^(\d+)\b/);
-    if (m) sName = storeByNumber.get(m[1]);
+    const num = extractStoreNumber(resolved);
+    if (num) sName = storeByNumber.get(num);
     return sName;
-  }, [deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber]);
+  }, [deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber, extractStoreNumber]);
 
   /**
    * Audiência por loja — recomputa automaticamente quando deviceFlowAudience
@@ -747,10 +766,10 @@ export function ClientDashboard() {
       if (!storeName) {
         const resolvedLabel = resolveDeviceFlowLabel(String(entry?.label ?? ''));
         storeName = cameraNameToStoreName.get(resolvedLabel);
-        // Caso 3: prefixo numérico do label ("428 Dom Estreito - Cam" → "428")
+        // Caso 3: número de filial no label ("428 Dom Estreito" → "428" / "Filial 428" → "428")
         if (!storeName) {
-          const m = resolvedLabel.match(/^(\d+)\b/);
-          if (m) storeName = storeByNumber.get(m[1]);
+          const num = extractStoreNumber(resolvedLabel);
+          if (num) storeName = storeByNumber.get(num);
         }
       }
 
@@ -761,7 +780,7 @@ export function ClientDashboard() {
     return [...storeAccum.entries()]
       .map(([label, value]) => ({ label, value: Number(value.toFixed(1)) }))
       .sort((a, b) => b.value - a.value);
-  }, [deviceFlowAudience, stores, deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber]);
+  }, [deviceFlowAudience, stores, deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber, extractStoreNumber]);
 
   const buildDeviceFlowFromRows = useCallback((rows: any[], fallback?: any) => {
     const safeRows = Array.isArray(rows) ? rows : [];
@@ -1128,7 +1147,21 @@ export function ClientDashboard() {
               setTotalVisitors(directCount);
               await syncDeviceFlow([]);
             } else {
-              console.log('[loadData] Sem dados em visitor_analytics para os devices da loja:', deviceIds);
+              console.log('[loadData] visitor_analytics vazio para os devices:', deviceIds, '— acionando sync em background');
+              // Dispara sync em background para popular visitor_analytics com dados do Displayforce
+              // (os devices podem ter sido adicionados ao banco pelo sync_stores recente)
+              fetch('/api/sync-analytics', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  client_id: id,
+                  background_sync: true,
+                  force_full_sync: false,
+                  devices: deviceIds,
+                  start: startIso,
+                  end: endIso,
+                }),
+              }).catch(() => {}); // fire-and-forget
               zeroAll();
             }
           }

@@ -1615,14 +1615,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         });
       });
 
-      // ── Passo 2: fallback por prefixo numérico do nome do device ───────────
-      // Captura devices cujo parent_id NÃO bate com nenhuma pasta de loja
-      // (sub-pastas aninhadas, IDs com tipo diferente, etc.)
+      // ── Passo 2: fallback por número de filial no nome do device ──────────
+      // Captura devices cujo parent_id NÃO bate com nenhuma pasta de loja.
+      // Suporta dois formatos:
+      //   "428 Dom Estreito - Entrada 1"  → prefixo numérico direto
+      //   "Filial 428 - Entrada 1"        → padrão "Filial NNN" da Displayforce
       devicesData.forEach((d: any) => {
         const mac = String(d?.id ?? '').trim();
         if (!mac || assignedMacs.has(mac)) return; // já atribuído
         const devName = String(d?.name || '').trim();
-        const m = devName.match(/^(\d+)\b/);
+        // Formatos: "428 Dom Estreito - Entrada" | "Filial 387 - Cam" | "Filial 21/455 - Caixa"
+        const directNum = devName.match(/^(\d+)\b/);
+        const filialNum  = devName.match(/\bfilial\s+(?:\d+\/)?(\d+)\b/i); // "21/455" → "455"
+        const m = directNum || filialNum;
         if (!m) return;
         const storeId = storeNumToId.get(m[1]);
         if (!storeId) return;
