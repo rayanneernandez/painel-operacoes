@@ -700,51 +700,99 @@ export function ClientDashboard() {
   // gerando passantes inflados (ex: 93k quando o correto é ~10k).
   // Passantes agora vem exclusivamente do rollup calculado pelo cron.
 
-  const buildDeviceFlowFromRows = useCallback((rows: any[], fallback?: any) => {
+  // Índice rápido: prefixo numérico do nome da loja → store.name completo
+  // Ex: "309" → "309 Panvel Dom Joaquim Posto - RS"
+  const storeByNumber = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const s of stores) {
+      const m = s.name.match(/^(\d+)\b/);
+      if (m) map.set(m[1], s.name);
+    }
+    return map;
+  }, [stores]);
+
+  /**
+   * Resolve o device key para o nome da loja usando 3 estratégias em cascata:
+   * 1. mac_address (ID numérico Displayforce) → store.name
+   * 2. nome da câmera resolvido                → store.name
+   * 3. prefixo numérico do label              → store.name
+   */
+  const resolveDeviceToStore = useCallback((deviceKey: string): string | undefined => {
+    // 1. ID numérico direto
+    let sName = deviceKeyToStoreName.get(deviceKey);
+    if (sName) return sName;
+    // 2. Nome da câmera (resolve "Device 17959" → "309 Dom Joaquim - Entrada 1")
+    const resolved = resolveDeviceFlowLabel(`Device ${deviceKey}`);
+    sName = cameraNameToStoreName.get(resolved);
+    if (sName) return sName;
+    // 3. Prefixo numérico do label resolvido
+    const m = resolved.match(/^(\d+)\b/);
+    if (m) sName = storeByNumber.get(m[1]);
+    return sName;
+  }, [deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber]);
+
+  const buildDeviceFlowFromRows = useCallback((
+    rows: any[],
+    fallback?: any,
+    groupByStore?: boolean,
+  ) => {
     const safeRows = Array.isArray(rows) ? rows : [];
-    const deviceCounts = new Map<string, number>();
+    const passersby = Number(fallback?.passersby ?? 0) || null;
 
-    for (const row of safeRows) {
+    /** Extrai as chaves de device de uma linha de visitor_analytics */
+    const getDeviceKeys = (row: any): string[] => {
       const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
-      const normalizedDeviceKeys = rawDevices
-        .map((value: any) => String(value ?? '').trim())
-        .filter(Boolean);
-      const uniqueDeviceKeys: string[] = normalizedDeviceKeys.length > 0
-        ? Array.from(new Set<string>(normalizedDeviceKeys))
-        : (() => {
-            const fallbackKey = String(row?.device_id ?? '').trim();
-            return fallbackKey ? [fallbackKey] : [];
-          })();
+      const keys = rawDevices.map((v: any) => String(v ?? '').trim()).filter(Boolean);
+      if (keys.length > 0) return Array.from(new Set<string>(keys));
+      const fb = String(row?.device_id ?? '').trim();
+      return fb ? [fb] : [];
+    };
 
-      for (const deviceKey of uniqueDeviceKeys) {
-        deviceCounts.set(deviceKey, (deviceCounts.get(deviceKey) ?? 0) + 1);
+    if (groupByStore) {
+      // ── Agrega diretamente por loja ──────────────────────────────────────
+      // Inicializa TODAS as lojas com 0 para garantir que apareçam mesmo sem dados
+      const storeCounts = new Map<string, number>();
+      for (const s of stores) storeCounts.set(s.name, 0);
+
+      for (const row of safeRows) {
+        for (const dk of getDeviceKeys(row)) {
+          const sName = resolveDeviceToStore(dk);
+          if (!sName) continue;
+          storeCounts.set(sName, (storeCounts.get(sName) || 0) + 1);
+        }
+      }
+
+      const totalV = Math.max(Number(fallback?.visitors ?? 0) || 0, safeRows.length);
+      const audience = [...storeCounts.entries()]
+        .map(([label, count]) => ({
+          label,
+          rawKey: undefined as string | undefined,
+          value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
+        }))
+        .sort((a, b) => b.value - a.value);
+
+      return { visitors: totalV > 0 ? totalV : null, passersby, deviceAudience: audience, trackingData: [] };
+    }
+
+    // ── Agrega por dispositivo (visão de loja específica) ────────────────
+    const deviceCounts = new Map<string, number>();
+    for (const row of safeRows) {
+      for (const dk of getDeviceKeys(row)) {
+        deviceCounts.set(dk, (deviceCounts.get(dk) ?? 0) + 1);
       }
     }
 
     const totalVisitors = Math.max(Number(fallback?.visitors ?? 0) || 0, safeRows.length);
-
-    // Passantes: usa APENAS o valor do rollup calculado pelo cron (correto).
-    // NÃO soma tracks_count por linha de visita — isso infla o número
-    // porque cada linha já inclui contagens de múltiplas pessoas.
-    const passersby = Number(fallback?.passersby ?? 0) || null;
-
     const deviceAudience = [...deviceCounts.entries()]
       .map(([deviceKey, count]) => ({
         label: resolveDeviceFlowLabel(`Device ${deviceKey}`),
         rawKey: deviceKey,
         value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
-        rawCount: count,
       }))
-      .sort((a, b) => b.rawCount - a.rawCount)
-      .map(({ label, rawKey, value }) => ({ label, rawKey, value }));
+      .sort((a, b) => b.value - a.value);
 
-    return {
-      visitors: totalVisitors > 0 ? totalVisitors : null,
-      passersby,
-      deviceAudience,
-      trackingData: [],
-    };
-  }, [resolveDeviceFlowLabel]);
+    return { visitors: totalVisitors > 0 ? totalVisitors : null, passersby, deviceAudience, trackingData: [] };
+  }, [resolveDeviceFlowLabel, resolveDeviceToStore, stores]);
 
   useEffect(() => {
     activeFilterKeyRef.current = [
@@ -991,7 +1039,9 @@ export function ClientDashboard() {
         from += PAGE;
       }
 
-      const rebuilt = buildDeviceFlowFromRows(allRows, cached);
+      // groupByStore = true quando Rede Global (sem filtro de device)
+      // → buildDeviceFlowFromRows agrega diretamente por loja com todas iniciadas a 0
+      const rebuilt = buildDeviceFlowFromRows(allRows, cached, deviceFilter.length === 0);
       if (!isCurrent()) return;
       applyDeviceFlowState(rebuilt);
 
@@ -2295,65 +2345,14 @@ export function ClientDashboard() {
                   widgetProps.series = facialExpressionSeries;
                 }
                 if (widget.id === 'chart_device_flow')       {
-                  // Visitantes: sempre usa o total do KPI (fonte única da verdade)
-                  widgetProps.visitors = totalVisitors;
-                  // Passantes: vem do rollup calculado pelo cron (correto)
-                  widgetProps.passersby = deviceFlowPassersby ?? null;
-
-                  const isNetworkView = !selectedStore && deviceIds.length === 0;
-
-                  if (isNetworkView) {
-                    // Começa com TODAS as lojas do estado stores (inclui as sem dados no período)
-                    const storeVisitors = new Map<string, number>();
-                    for (const s of stores) storeVisitors.set(s.name, 0);
-
-                    // Índice de lojas por número de filial (ex: "428" → "428 Panvel do Estreito - SC")
-                    // Usado como último fallback quando os outros mapeamentos falham
-                    const storeByNumber = new Map<string, string>();
-                    for (const s of stores) {
-                      const m = s.name.match(/^(\d+)\b/);
-                      if (m) storeByNumber.set(m[1], s.name);
-                    }
-
-                    // Sobrepõe com dados reais de visitor_analytics para o período
-                    for (const entry of deviceFlowAudience) {
-                      const resolvedLabel = resolveDeviceFlowLabel(String(entry?.label ?? ''));
-
-                      // Caso 1: dados ao vivo — rawKey é o ID numérico do device (ex: "17959")
-                      const rawKey = String(entry?.rawKey ?? '').replace(/^Device\s+/i, '');
-                      let storeName = rawKey ? deviceKeyToStoreName.get(rawKey) : undefined;
-
-                      // Caso 2: cache do rollup — label já é o nome da câmera resolvido
-                      if (!storeName) {
-                        storeName = cameraNameToStoreName.get(resolvedLabel);
-                      }
-
-                      // Caso 3: extrai número de filial do label (ex: "428 Dom Estreito - Entrada 1" → "428")
-                      // Cobre dispositivos não sincronizados na tabela devices do banco
-                      if (!storeName) {
-                        const numMatch = resolvedLabel.match(/^(\d+)\b/);
-                        if (numMatch) storeName = storeByNumber.get(numMatch[1]);
-                      }
-
-                      if (!storeName) continue;
-                      const count = Math.round((entry.value / 100) * totalVisitors);
-                      storeVisitors.set(storeName, (storeVisitors.get(storeName) || 0) + count);
-                    }
-
-                    widgetProps.deviceAudience = [...storeVisitors.entries()]
-                      .map(([label, count]) => ({
-                        label,
-                        value: totalVisitors > 0
-                          ? Number(((count / totalVisitors) * 100).toFixed(1))
-                          : 0,
-                      }))
-                      .sort((a, b) => b.value - a.value);
-                  } else {
-                    // Visão de loja: todos os devices (sem corte)
-                    widgetProps.deviceAudience = deviceFlowAudience
-                      .map((entry) => ({ ...entry, label: resolveDeviceFlowLabel(String(entry?.label ?? '')) }));
-                  }
-                  widgetProps.trackingData = [];
+                  widgetProps.visitors   = totalVisitors;
+                  widgetProps.passersby  = deviceFlowPassersby ?? null;
+                  // deviceFlowAudience já vem no nível correto:
+                  // - Rede Global (groupByStore=true): entradas por LOJA com todos os stores a 0
+                  // - Loja selecionada (groupByStore=false): entradas por DEVICE
+                  // Labels já resolvidos — só repassa diretamente
+                  widgetProps.deviceAudience = deviceFlowAudience;
+                  widgetProps.trackingData   = [];
                 }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
