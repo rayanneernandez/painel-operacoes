@@ -30,6 +30,26 @@ const DEFAULT_SPAN: Record<WidgetType['size'], Span> = {
   full:    12,
 };
 
+const getMinHeightPx = (widgetId: string) => {
+  const widget = AVAILABLE_WIDGETS.find((w) => w.id === widgetId);
+  if (!widget) return 80;
+  if (widget.type === 'kpi') return 12;
+  if (widget.type === 'table') return 120;
+  return 80;
+};
+
+const getDefaultHeightPx = (widget: WidgetType) => {
+  if (widget.type === 'kpi') return 48;
+  if (widget.id === 'campaigns') return 560;
+  return undefined;
+};
+
+const getResizeStepPx = (widgetId: string) => {
+  const widget = AVAILABLE_WIDGETS.find((w) => w.id === widgetId);
+  if (widget?.type === 'kpi') return 1;
+  return 10;
+};
+
 type WidgetConfig = {
   widget: WidgetType;
   colSpanLg: Span;
@@ -96,7 +116,7 @@ export function ClientDashboardConfig() {
               for (const [wid, val] of Object.entries(rawLayout)) {
                 const wId = String(wid);
                 const spanN = Number((val as any)?.colSpanLg ?? val);
-                const heightPx = clampNum((val as any)?.heightPx, 180, 1200, NaN);
+                const heightPx = clampNum((val as any)?.heightPx, getMinHeightPx(wId), 1200, NaN);
                 if ((SPANS as readonly number[]).includes(spanN)) layout[wId] = { ...(layout[wId] || {}), colSpanLg: spanN as Span };
                 if (Number.isFinite(heightPx)) layout[wId] = { ...(layout[wId] || {}), heightPx: Math.round(heightPx) };
               }
@@ -138,8 +158,14 @@ export function ClientDashboardConfig() {
           allowed = parseConfig(cc ? JSON.parse(cc) : gc ? JSON.parse(gc) : null);
         }
 
-        const defaultIds = ['kpi_flow_stats', 'flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
-        const allowedIds = allowed.ids && allowed.ids.length ? allowed.ids : defaultIds;
+        const expandLegacyKpiIds = (ids?: string[] | null) => {
+          const next = (ids || []).flatMap((wid) => wid === 'kpi_flow_stats'
+            ? ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time']
+            : [wid]);
+          return next.filter((wid, index) => next.indexOf(wid) === index);
+        };
+        const defaultIds = ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time', 'flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+        const allowedIds = expandLegacyKpiIds(allowed.ids && allowed.ids.length ? allowed.ids : defaultIds);
         const allowedSet = new Set(allowedIds);
         const allowedWidgets = AVAILABLE_WIDGETS.filter((w) => allowedSet.has(w.id));
 
@@ -156,7 +182,7 @@ export function ClientDashboardConfig() {
           userCfg = parseConfig(uc ? JSON.parse(uc) : null);
         }
 
-        const baseIds = userCfg.ids && userCfg.ids.length ? userCfg.ids : allowedIds;
+        const baseIds = userCfg.ids && userCfg.ids.length ? expandLegacyKpiIds(userCfg.ids) : allowedIds;
         const activeIds = baseIds.filter((wid) => allowedSet.has(wid));
 
         const active: WidgetConfig[] = activeIds
@@ -165,7 +191,7 @@ export function ClientDashboardConfig() {
           .map((w) => ({
             widget: w!,
             colSpanLg: (userCfg.layout[w!.id]?.colSpanLg ?? allowed.layout[w!.id]?.colSpanLg ?? DEFAULT_SPAN[w!.size]) as Span,
-            heightPx: userCfg.layout[w!.id]?.heightPx ?? allowed.layout[w!.id]?.heightPx,
+            heightPx: userCfg.layout[w!.id]?.heightPx ?? allowed.layout[w!.id]?.heightPx ?? getDefaultHeightPx(w!),
           }));
 
         const activeIdSet = new Set(activeIds);
@@ -192,7 +218,7 @@ export function ClientDashboardConfig() {
 
   // ── Ações ─────────────────────────────────────────────────────────────────
   const addWidget = (widget: WidgetType) => {
-    setActiveWidgets([...activeWidgets, { widget, colSpanLg: DEFAULT_SPAN[widget.size] }]);
+    setActiveWidgets([...activeWidgets, { widget, colSpanLg: DEFAULT_SPAN[widget.size], heightPx: getDefaultHeightPx(widget) }]);
     setAvailableWidgets(availableWidgets.filter((w) => w.id !== widget.id));
   };
 
@@ -214,6 +240,23 @@ export function ClientDashboardConfig() {
     setActiveWidgets(activeWidgets.map((c) =>
       c.widget.id === widgetId ? { ...c, colSpanLg: span } : c
     ));
+  };
+
+  const setHeightPx = (widgetId: string, raw: number) => {
+    const minHeight = getMinHeightPx(widgetId);
+    const next = Math.max(minHeight, Math.min(1200, Math.round(raw)));
+    setActiveWidgets((prev) => prev.map((c) => c.widget.id === widgetId ? { ...c, heightPx: next } : c));
+  };
+
+  const adjustHeight = (widgetId: string, direction: 'up' | 'down') => {
+    const minHeight = getMinHeightPx(widgetId);
+    const step = Math.max(1, getResizeStepPx(widgetId)) * (getResizeStepPx(widgetId) === 1 ? 6 : 2);
+    setActiveWidgets((prev) => prev.map((c) => {
+      if (c.widget.id !== widgetId) return c;
+      const current = Number.isFinite(Number(c.heightPx)) ? Number(c.heightPx) : (getDefaultHeightPx(c.widget) ?? minHeight);
+      const next = direction === 'up' ? current + step : current - step;
+      return { ...c, heightPx: Math.max(minHeight, Math.min(1200, next)) };
+    }));
   };
 
 
@@ -239,8 +282,10 @@ export function ClientDashboardConfig() {
       return;
     }
 
-    const nextHeight = Math.min(1200, Math.max(180, r.startHeight + (e.clientY - r.startY)));
-    const snappedH = Math.round(nextHeight / 10) * 10;
+    const minHeight = getMinHeightPx(r.widgetId);
+    const nextHeight = Math.min(1200, Math.max(minHeight, r.startHeight + (e.clientY - r.startY)));
+    const step = Math.max(1, getResizeStepPx(r.widgetId));
+    const snappedH = Math.max(minHeight, Math.round(nextHeight / step) * step);
     setActiveWidgets((prev) => prev.map((c) => c.widget.id === r.widgetId ? { ...c, heightPx: snappedH } : c));
   }, [closestSpan]);
 
@@ -493,6 +538,48 @@ export function ClientDashboardConfig() {
                   <ChevronDown size={11} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none" />
                 </div>
 
+                {/* Altura (px) */}
+                <div className="flex items-center gap-1 flex-shrink-0" title="Altura do widget (px)">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const minH = getMinHeightPx(cfg.widget.id);
+                      const step = Math.max(1, getResizeStepPx(cfg.widget.id));
+                      const current = Number.isFinite(Number(cfg.heightPx)) ? Number(cfg.heightPx) : (getDefaultHeightPx(cfg.widget) ?? minH);
+                      setHeightPx(cfg.widget.id, current - step);
+                    }}
+                    className="h-7 w-7 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors"
+                    aria-label="Diminuir altura"
+                  >
+                    -
+                  </button>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    value={Number.isFinite(Number(cfg.heightPx)) ? String(Math.round(Number(cfg.heightPx))) : ''}
+                    placeholder={String(getDefaultHeightPx(cfg.widget) ?? '')}
+                    onChange={(e) => {
+                      const n = Number(e.target.value);
+                      if (!Number.isFinite(n)) return;
+                      setHeightPx(cfg.widget.id, n);
+                    }}
+                    className="h-7 w-16 bg-gray-800 border border-gray-700 rounded-lg px-2 text-xs text-white focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const minH = getMinHeightPx(cfg.widget.id);
+                      const step = Math.max(1, getResizeStepPx(cfg.widget.id));
+                      const current = Number.isFinite(Number(cfg.heightPx)) ? Number(cfg.heightPx) : (getDefaultHeightPx(cfg.widget) ?? minH);
+                      setHeightPx(cfg.widget.id, current + step);
+                    }}
+                    className="h-7 w-7 rounded-lg bg-gray-800 border border-gray-700 text-gray-300 hover:text-white hover:bg-gray-700 transition-colors"
+                    aria-label="Aumentar altura"
+                  >
+                    +
+                  </button>
+                </div>
+
                 {/* Blocos visuais de largura — clicáveis */}
                 <div className="hidden sm:flex items-center gap-1 flex-shrink-0">
                   {SPANS.map((s) => (
@@ -586,7 +673,14 @@ export function ClientDashboardConfig() {
               const mdSpan = spanLg >= 8 ? 'md:col-span-2' : 'md:col-span-1';
               const isDragging = draggedIndex === index;
               const heightPx = Number(cfg.heightPx);
-              const widgetStyle = Number.isFinite(heightPx) ? { height: Math.round(heightPx) } : undefined;
+              const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : getDefaultHeightPx(widget);
+              const widgetStyle = Number.isFinite(Number(resolvedHeightPx)) ? { height: Math.round(Number(resolvedHeightPx)) } : undefined;
+
+              const previewProps: any = { view: 'network', clientId: id };
+              if (widget.id === 'kpi_total_visitors')   previewProps.totalVisitors = 128940;
+              if (widget.id === 'kpi_avg_visitors_day') previewProps.avgVisitorsPerDay = 1842;
+              if (widget.id === 'kpi_avg_visit_time')   previewProps.avgVisitSeconds = 54;
+              if (widget.id === 'kpi_attention_time')   previewProps.avgAttentionSeconds = 18;
 
               return (
                 <div
@@ -597,17 +691,36 @@ export function ClientDashboardConfig() {
                   onDragOver={(e) => handleDragOver(e, index)}
                   onDragEnd={handleDragEnd}
                   style={widgetStyle}
-                  className={`col-span-1 ${mdSpan} ${lgSpan} self-start relative group transition-all duration-300 flex flex-col ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-emerald-500 rounded-xl' : ''}`}
+                  className={`col-span-1 ${mdSpan} ${lgSpan} self-start relative group transition-all duration-300 flex flex-col min-h-0 overflow-hidden ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-emerald-500 rounded-xl' : ''}`}
                 >
-                  <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-gray-900/90 p-1.5 rounded-lg backdrop-blur-sm border border-gray-700 shadow-xl cursor-move">
-                    <div className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Arrastar para mover">
+                  <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-gray-900/90 p-1.5 rounded-lg backdrop-blur-sm border border-gray-700 shadow-xl">
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); adjustHeight(widget.id, 'down'); }}
+                      className="p-1.5 text-gray-300 hover:text-white hover:bg-gray-800 rounded transition-colors"
+                      title="Diminuir altura"
+                    >
+                      <ArrowUp size={14} />
+                    </button>
+                    <button
+                      type="button"
+                      onMouseDown={(e) => e.stopPropagation()}
+                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); adjustHeight(widget.id, 'up'); }}
+                      className="p-1.5 text-gray-300 hover:text-white hover:bg-gray-800 rounded transition-colors"
+                      title="Aumentar altura"
+                    >
+                      <ArrowDown size={14} />
+                    </button>
+                    <div className="w-px h-6 bg-gray-700 mx-0.5" />
+                    <div className="p-1.5 text-gray-400 hover:text-white transition-colors cursor-move" title="Arrastar para mover">
                       <GripVertical size={16} />
                     </div>
                     <button
                       type="button"
                       onMouseDown={(e) => e.stopPropagation()}
                       onClick={(e) => { e.preventDefault(); e.stopPropagation(); removeWidget(widget); }}
-                      className="p-1.5 hover:bg-red-500/20 rounded text-gray-300 hover:text-red-400 ml-1 border-l border-gray-700 pl-2 transition-colors"
+                      className="p-1.5 hover:bg-red-500/20 rounded text-gray-300 hover:text-red-400 transition-colors"
                       title="Remover"
                     >
                       <X size={14} />
@@ -628,7 +741,7 @@ export function ClientDashboardConfig() {
                   />
 
                   <div className={`${isDragging ? 'pointer-events-none' : ''} flex-1 min-h-0`}>
-                    <Component view="network" clientId={id} />
+                    <Component {...previewProps} />
                   </div>
                 </div>
               );

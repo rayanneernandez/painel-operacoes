@@ -129,6 +129,20 @@ export function Settings() {
     return Math.min(max, Math.max(min, n));
   };
 
+  const getMinHeightPx = (widgetId: string) => {
+    const w = AVAILABLE_WIDGETS.find((x) => x.id === widgetId);
+    if (!w) return 80;
+    if (w.type === 'kpi') return 12;
+    if (w.type === 'table') return 120;
+    return 80;
+  };
+
+  const getResizeStepPx = (widgetId: string) => {
+    const w = AVAILABLE_WIDGETS.find((x) => x.id === widgetId);
+    if (w?.type === 'kpi') return 1;
+    return 10;
+  };
+
   const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> } => {
     const ids = Array.isArray(widgetsConfig)
       ? widgetsConfig.filter((x) => typeof x === 'string')
@@ -142,7 +156,7 @@ export function Settings() {
       for (const [wid, cfg] of Object.entries(rawLayout)) {
         const id = String(wid);
         const span = normalizeSpan((cfg as any)?.colSpanLg ?? cfg);
-        const heightPx = clampNum((cfg as any)?.heightPx, 180, 1200, NaN);
+        const heightPx = clampNum((cfg as any)?.heightPx, getMinHeightPx(id), 1200, NaN);
 
         if (span) wl[id] = { ...(wl[id] || {}), colSpanLg: span };
         if (Number.isFinite(heightPx)) wl[id] = { ...(wl[id] || {}), heightPx: Math.round(heightPx) };
@@ -273,8 +287,10 @@ export function Settings() {
       return;
     }
 
-    const nextHeight = clampNum(r.startHeight + (e.clientY - r.startY), 180, 1200, r.startHeight);
-    const snappedH = Math.round(nextHeight / 10) * 10;
+    const minH = getMinHeightPx(r.widgetId);
+    const step = Math.max(1, getResizeStepPx(r.widgetId));
+    const nextHeight = clampNum(r.startHeight + (e.clientY - r.startY), minH, 1200, r.startHeight);
+    const snappedH = Math.max(minH, Math.round(nextHeight / step) * step);
 
     setWidgetLayout((prev) => {
       const next = { ...prev };
@@ -382,7 +398,7 @@ export function Settings() {
       const widgetLayoutPayload: Record<string, { colSpanLg?: number; heightPx?: number }> = {};
       Object.entries(widgetLayout).forEach(([wid, cfg]) => {
         const span = normalizeSpan((cfg as any)?.colSpanLg);
-        const h = clampNum((cfg as any)?.heightPx, 180, 1200, NaN);
+        const h = clampNum((cfg as any)?.heightPx, getMinHeightPx(wid), 1200, NaN);
         if (span) widgetLayoutPayload[wid] = { ...(widgetLayoutPayload[wid] || {}), colSpanLg: span };
         if (Number.isFinite(h)) widgetLayoutPayload[wid] = { ...(widgetLayoutPayload[wid] || {}), heightPx: Math.round(h) };
       });
