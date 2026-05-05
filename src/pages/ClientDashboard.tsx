@@ -1184,10 +1184,21 @@ export function ClientDashboard() {
               const avgVisit    = visitTimes.length   > 0 ? Math.round(visitTimes.reduce((a,b)=>a+b,0)   / visitTimes.length)   : 0;
               const avgContact  = contactTimes.length > 0 ? Math.round(contactTimes.reduce((a,b)=>a+b,0) / contactTimes.length) : 0;
 
-              // Hourly distribution
+              // Distribuições horárias, diárias, gênero e faixa etária
               const perHourTotal = new Array(24).fill(0);
               const perDay: Record<string, number> = {};
               const genderC = { male: 0, female: 0 };
+              const ageBuckets: Record<string, { m: number; f: number }> = {
+                '<18':{m:0,f:0},'18-24':{m:0,f:0},'25-34':{m:0,f:0},'35-44':{m:0,f:0},
+                '45-54':{m:0,f:0},'55-64':{m:0,f:0},'65+':{m:0,f:0},
+              };
+              const toAgeBucket = (age: number) => {
+                if (age < 18) return '<18'; if (age < 25) return '18-24';
+                if (age < 35) return '25-34'; if (age < 45) return '35-44';
+                if (age < 55) return '45-54'; if (age < 65) return '55-64';
+                return '65+';
+              };
+
               allRows.forEach(r => {
                 const ts = new Date(r.timestamp);
                 if (!isNaN(ts.getTime())) {
@@ -1196,11 +1207,25 @@ export function ClientDashboard() {
                   perDay[dk] = (perDay[dk] ?? 0) + 1;
                 }
                 const g = r.gender;
-                if (g === 1 || g === 'male')   genderC.male++;
-                if (g === 2 || g === 'female') genderC.female++;
+                const isMale   = g === 1 || g === 'male';
+                const isFemale = g === 2 || g === 'female';
+                if (isMale)   genderC.male++;
+                if (isFemale) genderC.female++;
+                const ageVal = Number(r.age);
+                if (Number.isFinite(ageVal) && ageVal > 0) {
+                  const bucket = toAgeBucket(ageVal);
+                  if (isMale)   ageBuckets[bucket].m++;
+                  else if (isFemale) ageBuckets[bucket].f++;
+                }
               });
+
               const perHourAvg = perHourTotal.map(v => Math.round(v / dRange));
               const gTotal = genderC.male + genderC.female;
+
+              // Constrói ageStats no formato esperado pelo WidgetAgePyramid
+              const ageStatsBuilt = Object.entries(ageBuckets)
+                .filter(([, v]) => v.m + v.f > 0)
+                .map(([age, v]) => ({ age, m: Math.round(v.m / Math.max(total,1) * 100), f: Math.round(v.f / Math.max(total,1) * 100) }));
 
               setTotalVisitors(total);
               setAvgVisitorsPerDay(Math.round(total / dRange));
@@ -1212,6 +1237,7 @@ export function ClientDashboard() {
                 { label: 'Masculino', value: Math.round(genderC.male   / gTotal * 100) },
                 { label: 'Feminino',  value: Math.round(genderC.female / gTotal * 100) },
               ]);
+              if (ageStatsBuilt.length > 0) setAgeStats(ageStatsBuilt);
               await syncDeviceFlow([]);
             } else {
               console.log('[loadData] visitor_analytics vazio para os devices:', deviceIds, '— acionando sync em background');
@@ -1937,23 +1963,27 @@ export function ClientDashboard() {
       }
 
       // ── Filtro por dispositivo (loja selecionada) ─────────────────────
-      const days = [0, 0, 0, 0, 0, 0, 0];
+      // Usa o período SELECIONADO pelo usuário (não a semana inteira),
+      // para que o gráfico seja consistente com os KPIs filtrados.
+      const selStart = alignUtcStartOfDay(selectedStartDate).toISOString();
+      const selEnd   = alignUtcEndOfDay(selectedEndDate).toISOString();
+
+      const visPerDayDevice: Record<string, number> = {};
       let from = 0; const page = 1000;
       while (true) {
         const { data, error } = await supabase.from('visitor_analytics').select('timestamp')
-          .eq('client_id', id).gte('timestamp', startIso).lte('timestamp', endIso)
+          .eq('client_id', id).gte('timestamp', selStart).lte('timestamp', selEnd)
           .in('device_id', deviceIds).order('timestamp', { ascending: true }).range(from, from + page - 1);
         if (error || !data || data.length === 0) break;
         (data as any[]).forEach((r: any) => {
-          const t = new Date(r.timestamp); if (isNaN(t.getTime())) return;
-          const localDay = t.getDay(); const idx = localDay === 0 ? 6 : localDay - 1;
-          days[idx] += 1;
+          const dk = r.timestamp ? formatLocalDateKey(r.timestamp) : '';
+          if (dk) visPerDayDevice[dk] = (visPerDayDevice[dk] ?? 0) + 1;
         });
         if (data.length < page) break;
         from += page; if (from > 20000) break;
       }
 
-      setDailyStats(days);
+      setDailyStats(toWeekDays(visPerDayDevice));
     } catch (e) {
       console.warn('[Dashboard] Erro semana:', e);
       setDailyStats([0, 0, 0, 0, 0, 0, 0]);
