@@ -609,15 +609,18 @@ function mergeStoredRollupAttributes(existingAttributes: any, nextAttributes: an
   const mergedDeviceFlow = (existingDeviceFlow || nextDeviceFlow)
     ? {
         visitors: nextDeviceFlow?.visitors ?? existingDeviceFlow?.visitors ?? 0,
-        passersby: nextDeviceFlow?.passersby ?? existingDeviceFlow?.passersby ?? null,
+        // Usa o valor mais recente de passersby (incluindo null explícito) para
+        // substituir valores antigos inflados. ?? manteria o valor antigo; por
+        // isso verificamos se nextDeviceFlow existe antes de usar o existente.
+        passersby: nextDeviceFlow
+          ? (nextDeviceFlow.passersby ?? null)
+          : (existingDeviceFlow?.passersby ?? null),
         deviceAudience:
           Array.isArray(nextDeviceFlow?.deviceAudience) && nextDeviceFlow.deviceAudience.length > 0
             ? nextDeviceFlow.deviceAudience
             : (Array.isArray(existingDeviceFlow?.deviceAudience) ? existingDeviceFlow.deviceAudience : []),
-        trackingData:
-          Array.isArray(nextDeviceFlow?.trackingData) && nextDeviceFlow.trackingData.length > 0
-            ? nextDeviceFlow.trackingData
-            : (Array.isArray(existingDeviceFlow?.trackingData) ? existingDeviceFlow.trackingData : []),
+        // trackingData: sempre usa o novo (vazio) — seção foi removida do widget
+        trackingData: [],
       }
     : null;
 

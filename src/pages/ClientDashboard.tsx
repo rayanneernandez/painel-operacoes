@@ -953,10 +953,13 @@ export function ClientDashboard() {
 
     };
 
-    if (cachedHasAudience && cachedHasTracking) {
-      if (!isCurrent()) return;
+    // Mostra dados do rollup como preview rápido enquanto o fresh carrega,
+    // mas NUNCA retorna cedo: o rollup representa o período completo de coleta,
+    // não o período filtrado na tela. Sem o fetch fresco, lojas que só tiveram
+    // visitas no período selecionado (mas não na época do rollup) aparecem zeradas.
+    if (cachedHasAudience && isCurrent()) {
       applyDeviceFlowState(cached);
-      if (Number(cached?.passersby ?? 0) > 0) return;
+      // Continua abaixo para sobrescrever com dados do período selecionado
     }
 
     try {
