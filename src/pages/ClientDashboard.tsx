@@ -1099,8 +1099,10 @@ export function ClientDashboard() {
 
       // ── Filtro por dispositivo (loja selecionada com dispositivos) ───────
       // Se há IDs de dispositivo, filtra exclusivamente por eles.
-      // Mostra zeros se não houver dados — NÃO cai nos dados da rede global.
+      // Limpa imediatamente os dados antigos (rede global) para não mostrar
+      // dados de uma loja diferente enquanto a API responde.
       if (deviceIds.length > 0) {
+        zeroAll();
         try {
           const json = await fetchJsonWithTimeout('/api/sync-analytics', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1974,6 +1976,14 @@ export function ClientDashboard() {
   }, [id, refreshClientAndStores]);
 
   useEffect(() => { refreshClientAndStores(); }, [refreshClientAndStores]);
+
+  // ── Limpa dados imediatamente quando muda a loja selecionada ─────────────
+  // Evita que dados da Rede Global ou de outra loja fiquem visíveis
+  // enquanto loadData ainda está buscando os dados filtrados.
+  useEffect(() => {
+    zeroAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedStore?.id, selectedCamera?.id]);
 
   // ── Inicialização principal — roda 1x ao montar ──────────────────────────
   useEffect(() => {
