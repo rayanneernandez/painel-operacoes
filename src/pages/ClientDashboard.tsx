@@ -1165,9 +1165,33 @@ export function ClientDashboard() {
             ) as any;
 
             if (directCount && directCount > 0) {
-              // Há dados em visitor_analytics — mostra o total e carrega o device flow
-              console.log(`[loadData] visitor_analytics direto: ${directCount} registros para deviceIds`, deviceIds);
+              // Há dados mas o rollup retornou null — computa as métricas básicas diretamente
+              console.log(`[loadData] visitor_analytics direto: ${directCount} registros — recalculando rollup`);
               if (!isCurrent()) return;
+              // Re-solicita rollup via API sem timeout
+              try {
+                const json2 = await fetchJsonWithTimeout('/api/sync-analytics', {
+                  method: 'POST', headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true, devices: deviceIds }),
+                }, 30000, 'sync-analytics devices retry');
+                if (json2?.dashboard && Number(json2.dashboard.total_visitors) > 0) {
+                  const rp = {
+                    total_visitors: json2.dashboard.total_visitors,
+                    avg_visitors_per_day: json2.dashboard.avg_visitors_per_day,
+                    avg_visit_time_seconds: json2.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+                    avg_attention_seconds: json2.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
+                    visitors_per_day: json2.dashboard.visitors_per_day,
+                    visitors_per_hour_avg: json2.dashboard.visitors_per_hour_avg,
+                    gender_percent: json2.dashboard.gender_percent,
+                    attributes_percent: json2.dashboard.attributes_percent,
+                    age_pyramid_percent: json2.dashboard.age_pyramid_percent,
+                  };
+                  if (!isCurrent()) return;
+                  applyRollup(rp);
+                  await Promise.all([syncExpressions([rp]), syncDeviceFlow([rp])]);
+                  return;
+                }
+              } catch (_) { /* fallback: mostra só total */ }
               setTotalVisitors(directCount);
               await syncDeviceFlow([]);
             } else {
@@ -1654,6 +1678,9 @@ export function ClientDashboard() {
 
   const loadQuarterData = useCallback(async () => {
     if (!id) return;
+    // Race condition guard: se loja selecionada mas cameras ainda não carregadas,
+    // não mostra dados de rede global
+    if (selectedStore && deviceIds.length === 0) return;
     setIsLoadingQuarter(true);
     try {
       const months = quarterMonthsForFilter(selectedStartDate, selectedEndDate);
@@ -1753,6 +1780,7 @@ export function ClientDashboard() {
 
   const loadCompareData = useCallback(async () => {
     if (!id) return;
+    if (selectedStore && deviceIds.length === 0) return;
     const dayCount = Math.max(1, Math.floor((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1);
     const prevEnd   = new Date(selectedStartDate.getTime() - 1);
     const prevStart = new Date(prevEnd.getTime() - (dayCount - 1) * 86400000);
@@ -1799,6 +1827,7 @@ export function ClientDashboard() {
 
   const loadWeekFlowData = useCallback(async () => {
     if (!id) return;
+    if (selectedStore && deviceIds.length === 0) { setDailyStats([0,0,0,0,0,0,0]); return; }
 
     // ── Regra do gráfico/KPI "Média Visitantes" ───────────────────────────
     // O gráfico e a média devem respeitar exatamente o período filtrado.
