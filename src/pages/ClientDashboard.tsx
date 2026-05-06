@@ -1004,12 +1004,12 @@ export function ClientDashboard() {
     // visitor_analytics pode ter dados só até o último cron (~6h). As expressões
     // ficariam desatualizadas. Este trigger busca dados frescos em background
     // e atualiza o gráfico ~30s depois.
-    const todaySP = formatSaoPauloDateKey(new Date());
-    const rangeEndDay = formatSaoPauloDateKey(rangeEnd);
-    const rangeStartDay = formatSaoPauloDateKey(rangeStart);
-    const touchesToday = rangeStartDay <= todaySP && rangeEndDay >= todaySP;
-    const currentSPHour = getSaoPauloHour(new Date());
-    const rowsHaveCurrentHour = allRows.some(r => getSaoPauloHour(r.timestamp) === currentSPHour);
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const rangeEndDay = String(rangeEnd).slice(0, 10);
+    const rangeStartDay = String(rangeStart).slice(0, 10);
+    const touchesToday = rangeStartDay <= todayStr && rangeEndDay >= todayStr;
+    const currentHour = new Date().getHours();
+    const rowsHaveCurrentHour = allRows.some(r => new Date(r.timestamp).getHours() === currentHour);
 
     if (touchesToday && !rowsHaveCurrentHour) {
       fetch('/api/sync-analytics', {
