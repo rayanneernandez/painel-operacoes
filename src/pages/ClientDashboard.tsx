@@ -2435,12 +2435,16 @@ export function ClientDashboard() {
       const allowedIds = expandLegacyKpiIds(allowedResolved.ids && allowedResolved.ids.length ? allowedResolved.ids : defaultIds);
       const allowedSet = new Set(allowedIds);
 
-      // 2. Seleção ativa do usuário (layout 'client_user') — pode remover widgets permitidos
-      let userConfig = await fetchConfig('client_user');
-      let userResolved = resolveDashboardConfig(userConfig);
-      if (!userResolved.ids) {
-        const uc = localStorage.getItem(`dashboard-config-user-${id}`);
-        userResolved = resolveDashboardConfig(uc ? JSON.parse(uc) : null);
+      // 2. Seleção ativa do usuário (layout 'client_user') — só vale para usuário cliente.
+      // Admin deve enxergar exatamente o que foi salvo em Settings (global/client).
+      let userResolved = resolveDashboardConfig(null);
+      if (authUser?.role === 'client') {
+        const userConfig = await fetchConfig('client_user');
+        userResolved = resolveDashboardConfig(userConfig);
+        if (!userResolved.ids) {
+          const uc = localStorage.getItem(`dashboard-config-user-${id}`);
+          userResolved = resolveDashboardConfig(uc ? JSON.parse(uc) : null);
+        }
       }
 
       // Se o usuário tem seleção salva, usa exatamente ela (filtrada pelos widgets permitidos).
@@ -2453,22 +2457,10 @@ export function ClientDashboard() {
         ? userActiveIds
         : allowedIds;
 
-      const configuredIds = new Set([
-        ...(allowedResolved.ids ?? []),
-        ...(userResolved.ids ?? []),
-      ]);
-      const newWidgetIds = AVAILABLE_WIDGETS
-        .map((widget) => widget.id)
-        .filter((widgetId) => !configuredIds.has(widgetId));
-      const finalActiveIds = [...activeIds];
-      for (const widgetId of newWidgetIds) {
-        if (!finalActiveIds.includes(widgetId)) finalActiveIds.push(widgetId);
-      }
-
       // Layout: combina allowed + user (user sobrescreve)
       const mergedLayout = { ...allowedResolved.widgetLayout, ...userResolved.widgetLayout };
 
-      const active = finalActiveIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
+      const active = activeIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
       if (!cancelled) { setActiveWidgets(active); setWidgetLayout(mergedLayout); }
     })()
       .catch((error) => {
