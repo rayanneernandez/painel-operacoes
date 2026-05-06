@@ -1881,16 +1881,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const lastOnlineFallback = resolveLastOnlineFallback(d?.last_online);
         const hasConfirmedSignal = Boolean(connectionState || playerState || fallbackConnectivity || wasEverConnected);
 
-        if (explicitVisibleStatus === "not_connected" && !connectionState) {
+        // A coluna visivel "Status" da DisplayForce e a referencia principal para
+        // espelhar o painel deles. Os campos tecnicos entram como fallback quando
+        // esse texto nao vier preenchido.
+        if (explicitVisibleStatus === "not_connected") {
           return "not_connected";
-        }
-
-        if (connectionState === "offline") {
-          return "offline";
-        }
-
-        if (connectionState === "online") {
-          return "online";
         }
 
         if (explicitVisibleStatus === "offline") {
@@ -1898,6 +1893,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
 
         if (explicitVisibleStatus === "online") {
+          return "online";
+        }
+
+        if (connectionState === "offline") {
+          return "offline";
+        }
+
+        if (connectionState === "online") {
           return "online";
         }
 

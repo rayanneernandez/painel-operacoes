@@ -105,6 +105,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         alertId: String(body.alertId || "").trim(),
         force: action === "send_offline_now" || Boolean(body.force),
         contactId: String(body.contactId || "").trim(),
+        manualNumber: String(body.manualNumber || "").trim(),
+        manualResponsibleName: String(body.manualResponsibleName || "").trim(),
       });
 
       return res.status(200).json({

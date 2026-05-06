@@ -26,6 +26,19 @@ function formatDateTime(value) {
   }
 }
 
+function formatDelayLabel(delayMinutes) {
+  const minutes = parsePositiveInt(delayMinutes, 60);
+  if (minutes % (24 * 60) === 0) {
+    const days = minutes / (24 * 60);
+    return `${days} dia${days > 1 ? "s" : ""}`;
+  }
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours}h`;
+  }
+  return `${minutes} minutos`;
+}
+
 function minutesBetween(startValue, endValue) {
   const startMs = Date.parse(String(startValue));
   const endMs = Date.parse(String(endValue));
@@ -54,7 +67,42 @@ function buildOfflineAlertMessage({
   }
 
   lines.push(`Offline desde: ${formatDateTime(offlineSince)}`);
-  lines.push(`Tempo minimo confirmado: ${delayMinutes} minutos`);
+  lines.push(`Tempo minimo confirmado: ${formatDelayLabel(delayMinutes)}`);
+  lines.push("");
+  lines.push("O dispositivo segue offline apos a janela de validacao do monitoramento.");
+  lines.push("Monitoramento Global IA");
+
+  return lines.join("\n");
+}
+
+function buildGroupedOfflineAlertMessage({
+  clientName,
+  storeName,
+  alerts,
+  delayMinutes,
+}) {
+  const normalizedAlerts = Array.isArray(alerts) ? alerts : [];
+  const lines = [
+    normalizedAlerts.length > 1 ? "ALERTA: dispositivos offline" : "ALERTA: dispositivo offline",
+    "",
+    `Rede: ${clientName || "Nao informada"}`,
+    `Loja: ${storeName || "Nao informada"}`,
+    "",
+  ];
+
+  normalizedAlerts.forEach((alert, index) => {
+    lines.push(`Dispositivo: ${safeTrim(alert.device_name) || "Sem nome"}`);
+    if (safeTrim(alert.mac_address)) {
+      lines.push(`MAC/ID: ${safeTrim(alert.mac_address)}`);
+    }
+    lines.push(`Offline desde: ${formatDateTime(alert.first_detected_at)}`);
+    if (index < normalizedAlerts.length - 1) {
+      lines.push("");
+    }
+  });
+
+  lines.push("");
+  lines.push(`Tempo minimo confirmado: ${formatDelayLabel(delayMinutes)}`);
   lines.push("");
   lines.push("O dispositivo segue offline apos a janela de validacao do monitoramento.");
   lines.push("Monitoramento Global IA");
@@ -207,6 +255,7 @@ function buildAlertUpsertPayload({
     last_seen_offline_at: alert.last_seen_offline_at || alert.first_detected_at,
     last_seen_online_at: alert.last_seen_online_at || null,
     notified_at: alert.notified_at || null,
+    last_notification_sent_at: alert.last_notification_sent_at || null,
     notification_attempts: Number(alert.notification_attempts || 0),
     notified_contact_count: Number(alert.notified_contact_count || 0),
     resolution_sent_at: alert.resolution_sent_at || null,
@@ -222,6 +271,68 @@ function buildAlertUpsertPayload({
   };
 }
 
+function getSuccessfulNotificationCount(alert) {
+  if (!alert?.notified_at) return 0;
+  const attempts = Number(alert?.notification_attempts || 0);
+  return attempts > 0 ? attempts : 1;
+}
+
+function getLastNotificationSentAt(alert) {
+  return safeTrim(alert?.last_notification_sent_at) || safeTrim(alert?.notified_at) || "";
+}
+
+function getNextNotificationIntervalMinutes(sentCount, offlineDelayMinutes) {
+  if (sentCount <= 0) return offlineDelayMinutes;
+  if (sentCount === 1 || sentCount === 2) return 24 * 60;
+  return 3 * 24 * 60;
+}
+
+function isAlertDueForDispatch(alert, nowIso, offlineDelayMinutes) {
+  const sentCount = getSuccessfulNotificationCount(alert);
+  if (sentCount <= 0) {
+    return minutesBetween(alert.first_detected_at, nowIso) >= offlineDelayMinutes;
+  }
+
+  const lastSentAt = getLastNotificationSentAt(alert);
+  if (!lastSentAt) return false;
+  return (
+    minutesBetween(lastSentAt, nowIso) >=
+    getNextNotificationIntervalMinutes(sentCount, offlineDelayMinutes)
+  );
+}
+
+function buildAlertGroupKey(alert) {
+  return safeTrim(alert?.store_id) || "__network__";
+}
+
+function groupAlertsByStore(alerts) {
+  const groups = new Map();
+
+  for (const alert of Array.isArray(alerts) ? alerts : []) {
+    const key = buildAlertGroupKey(alert);
+    const existing = groups.get(key);
+    if (!existing) {
+      groups.set(key, {
+        key,
+        storeId: safeTrim(alert?.store_id) || null,
+        storeName: safeTrim(alert?.store_name) || "Rede inteira",
+        clientName: safeTrim(alert?.client_name) || "",
+        alerts: [alert],
+      });
+      continue;
+    }
+
+    existing.alerts.push(alert);
+  }
+
+  return [...groups.values()].map((group) => ({
+    ...group,
+    alerts: [...group.alerts].sort(
+      (a, b) => Date.parse(String(a.first_detected_at || "")) - Date.parse(String(b.first_detected_at || ""))
+    ),
+  }));
+}
+
 export async function dispatchPendingOfflineAlerts({
   supabase,
   clientId,
@@ -229,11 +340,13 @@ export async function dispatchPendingOfflineAlerts({
   alertId = "",
   force = false,
   contactId = "",
+  manualNumber = "",
+  manualResponsibleName = "",
 }) {
   const zapConfig = getZapResponderConfigFromEnv();
   const offlineDelayMinutes = parsePositiveInt(
     process.env.MONITORING_OFFLINE_DELAY_MINUTES,
-    30
+    60
   );
 
   if (!clientId || !supabase) {
@@ -251,11 +364,12 @@ export async function dispatchPendingOfflineAlerts({
 
   const allContacts = contactsResult.contacts || [];
   const explicitContactId = safeTrim(contactId);
+  const explicitManualNumber = normalizeBrazilPhone(manualNumber);
   const explicitContact = explicitContactId
     ? allContacts.find((contact) => safeTrim(contact.id) === explicitContactId)
     : null;
 
-  if (explicitContactId && !explicitContact) {
+  if (!explicitManualNumber && explicitContactId && !explicitContact) {
     return {
       skipped: true,
       reason: "contact-not-found",
@@ -269,9 +383,8 @@ export async function dispatchPendingOfflineAlerts({
     .eq("client_id", clientId)
     .eq("alert_type", "offline")
     .is("resolved_at", null)
-    .is("notified_at", null)
     .order("first_detected_at", { ascending: true })
-    .limit(100);
+    .limit(500);
 
   if (safeTrim(alertId)) {
     alertsQuery = alertsQuery.eq("id", safeTrim(alertId));
@@ -302,72 +415,129 @@ export async function dispatchPendingOfflineAlerts({
     return summary;
   }
 
+  let groupedAlerts = groupAlertsByStore(pendingAlerts);
+  if (safeTrim(alertId)) {
+    const targetAlert = pendingAlerts.find((alert) => safeTrim(alert.id) === safeTrim(alertId));
+    if (!targetAlert) {
+      return summary;
+    }
+
+    const targetGroupKey = buildAlertGroupKey(targetAlert);
+    groupedAlerts = groupedAlerts.filter((group) => group.key === targetGroupKey);
+  }
+
   const updates = [];
 
-  for (const alert of pendingAlerts) {
-    summary.processed += 1;
+  for (const group of groupedAlerts) {
+    const alertsForSend = (force ? group.alerts : group.alerts.filter((alert) => isAlertDueForDispatch(alert, nowIso, offlineDelayMinutes))).sort(
+      (a, b) => Date.parse(String(a.first_detected_at || "")) - Date.parse(String(b.first_detected_at || ""))
+    );
 
-    const elapsedMinutes = minutesBetween(alert.first_detected_at, nowIso);
-    if (!force && elapsedMinutes < offlineDelayMinutes) {
-      summary.skippedWaiting += 1;
+    summary.processed += group.alerts.length;
+
+    if (alertsForSend.length === 0) {
+      summary.skippedWaiting += group.alerts.length;
       continue;
     }
 
-    summary.eligible += 1;
+    summary.eligible += alertsForSend.length;
 
-    const recipients = explicitContact
-      ? dedupeContacts([explicitContact])
-      : resolveRecipients(allContacts, alert.store_id);
-
-    const update = buildAlertUpsertPayload({
-      alert,
-      nowIso,
-      overrides: {
-        notification_attempts: Number(alert.notification_attempts || 0) + 1,
-        status: "pending",
-      },
-    });
+    const recipients = explicitManualNumber
+      ? dedupeContacts([
+          {
+            id: "manual",
+            client_id: clientId,
+            store_id: group.storeId,
+            responsible_name: safeTrim(manualResponsibleName) || "Contato avulso",
+            phone_number: explicitManualNumber,
+            phone_e164: explicitManualNumber,
+            enabled: true,
+            receive_offline_alerts: true,
+          },
+        ])
+      : explicitContact
+        ? dedupeContacts([explicitContact])
+        : resolveRecipients(allContacts, group.storeId);
 
     if (!zapConfig.configured) {
-      update.last_notification_error = `Configuracao pendente: ${zapConfig.missing.join(", ")}`;
-      summary.errors.push(update.last_notification_error);
-      updates.push(update);
+      const errorMessage = `Configuracao pendente: ${zapConfig.missing.join(", ")}`;
+      summary.errors.push(errorMessage);
+      for (const alert of alertsForSend) {
+        updates.push(
+          buildAlertUpsertPayload({
+            alert,
+            nowIso,
+            overrides: {
+              status: getSuccessfulNotificationCount(alert) > 0 ? "notified" : "pending",
+              last_notification_error: errorMessage,
+            },
+          })
+        );
+      }
       continue;
     }
 
     if (recipients.length === 0) {
-      update.last_notification_error = "Nenhum contato ativo para a loja/rede";
-      summary.errors.push(update.last_notification_error);
-      updates.push(update);
+      const errorMessage = "Nenhum contato ativo para a loja/rede";
+      summary.errors.push(errorMessage);
+      for (const alert of alertsForSend) {
+        updates.push(
+          buildAlertUpsertPayload({
+            alert,
+            nowIso,
+            overrides: {
+              status: getSuccessfulNotificationCount(alert) > 0 ? "notified" : "pending",
+              last_notification_error: errorMessage,
+            },
+          })
+        );
+      }
       continue;
     }
 
     const sendResult = await sendMessageToRecipients(
       recipients,
-      buildOfflineAlertMessage({
-        clientName: resolvedClientName || alert.client_name,
-        storeName: alert.store_name,
-        deviceName: alert.device_name,
-        macAddress: alert.mac_address,
-        offlineSince: alert.first_detected_at,
+      buildGroupedOfflineAlertMessage({
+        clientName: resolvedClientName || group.clientName,
+        storeName: group.storeName,
+        alerts: alertsForSend,
         delayMinutes: offlineDelayMinutes,
       })
     );
 
+    const errorMessage =
+      sendResult.failures.length > 0
+        ? sendResult.failures.join(" | ").slice(0, 800)
+        : null;
+
     if (sendResult.sentCount > 0) {
-      update.status = "notified";
-      update.notified_at = nowIso;
-      update.notified_contact_count = sendResult.sentCount;
-      update.last_notification_error =
-        sendResult.failures.length > 0 ? sendResult.failures.join(" | ").slice(0, 800) : null;
       summary.sent += 1;
     } else {
-      update.last_notification_error =
-        sendResult.failures.join(" | ").slice(0, 800) || "Falha ao enviar alerta";
-      summary.errors.push(update.last_notification_error);
+      summary.errors.push(errorMessage || "Falha ao enviar alerta");
     }
 
-    updates.push(update);
+    for (const alert of alertsForSend) {
+      const previousSentCount = getSuccessfulNotificationCount(alert);
+      updates.push(
+        buildAlertUpsertPayload({
+          alert,
+          nowIso,
+          overrides: {
+            status:
+              sendResult.sentCount > 0 || previousSentCount > 0 ? "notified" : "pending",
+            notified_at: sendResult.sentCount > 0 ? alert.notified_at || nowIso : alert.notified_at || null,
+            last_notification_sent_at:
+              sendResult.sentCount > 0 ? nowIso : alert.last_notification_sent_at || null,
+            notification_attempts:
+              sendResult.sentCount > 0 ? previousSentCount + 1 : previousSentCount,
+            notified_contact_count:
+              sendResult.sentCount > 0 ? sendResult.sentCount : Number(alert.notified_contact_count || 0),
+            last_notification_error:
+              sendResult.sentCount > 0 ? errorMessage : errorMessage || "Falha ao enviar alerta",
+          },
+        })
+      );
+    }
   }
 
   if (updates.length > 0) {
@@ -390,7 +560,7 @@ export async function processOfflineMonitoring({
   const zapConfig = getZapResponderConfigFromEnv();
   const offlineDelayMinutes = parsePositiveInt(
     process.env.MONITORING_OFFLINE_DELAY_MINUTES,
-    30
+    60
   );
   const resolutionEnabled =
     safeTrim(process.env.MONITORING_SEND_RESOLUTION || "true").toLowerCase() !== "false";
@@ -486,6 +656,7 @@ export async function processOfflineMonitoring({
           offline_reason_sent_at: null,
           first_detected_at: nowIso,
           last_seen_offline_at: nowIso,
+          last_notification_sent_at: null,
           created_at: nowIso,
           updated_at: nowIso,
         });
@@ -507,6 +678,7 @@ export async function processOfflineMonitoring({
         first_detected_at: alert.first_detected_at,
         last_seen_offline_at: nowIso,
         notified_at: alert.notified_at || null,
+        last_notification_sent_at: alert.last_notification_sent_at || null,
         notification_attempts: Number(alert.notification_attempts || 0),
         notified_contact_count: Number(alert.notified_contact_count || 0),
         resolution_sent_at: alert.resolution_sent_at || null,
@@ -518,48 +690,6 @@ export async function processOfflineMonitoring({
         created_at: alert.created_at || nowIso,
         updated_at: nowIso,
       };
-
-      const shouldNotify =
-        !alert.notified_at &&
-        minutesBetween(alert.first_detected_at, nowIso) >= offlineDelayMinutes;
-
-      if (shouldNotify) {
-        const recipients = resolveRecipients(contactsData || [], storeId);
-        update.notification_attempts += 1;
-
-        if (!zapConfig.configured) {
-          update.last_notification_error = `Configuracao pendente: ${zapConfig.missing.join(", ")}`;
-          summary.errors.push(update.last_notification_error);
-        } else if (recipients.length === 0) {
-          update.last_notification_error = "Nenhum contato ativo para a loja/rede";
-          summary.errors.push(update.last_notification_error);
-        } else {
-          const sendResult = await sendMessageToRecipients(
-            recipients,
-            buildOfflineAlertMessage({
-              clientName: resolvedClientName,
-              storeName,
-              deviceName,
-              macAddress,
-              offlineSince: alert.first_detected_at,
-              delayMinutes: offlineDelayMinutes,
-            })
-          );
-
-          if (sendResult.sentCount > 0) {
-            update.status = "notified";
-            update.notified_at = nowIso;
-            update.notified_contact_count = sendResult.sentCount;
-            update.last_notification_error =
-              sendResult.failures.length > 0 ? sendResult.failures.join(" | ").slice(0, 800) : null;
-            summary.notified += 1;
-          } else {
-            update.last_notification_error =
-              sendResult.failures.join(" | ").slice(0, 800) || "Falha ao enviar alerta";
-            summary.errors.push(update.last_notification_error);
-          }
-        }
-      }
 
       const shouldSendReasonUpdate =
         Boolean(alert.notified_at) &&
@@ -623,6 +753,7 @@ export async function processOfflineMonitoring({
       last_seen_offline_at: alert.last_seen_offline_at || alert.first_detected_at,
       last_seen_online_at: nowIso,
       notified_at: alert.notified_at || null,
+      last_notification_sent_at: alert.last_notification_sent_at || null,
       notification_attempts: Number(alert.notification_attempts || 0),
       notified_contact_count: Number(alert.notified_contact_count || 0),
       resolution_sent_at: alert.resolution_sent_at || null,
@@ -676,6 +807,17 @@ export async function processOfflineMonitoring({
       .from("device_offline_alerts")
       .upsert(updates, { onConflict: "id" });
     if (error) throw error;
+  }
+
+  const dispatchSummary = await dispatchPendingOfflineAlerts({
+    supabase,
+    clientId,
+    clientName: resolvedClientName,
+  });
+
+  summary.notified = Number(dispatchSummary?.sent || 0);
+  if (Array.isArray(dispatchSummary?.errors) && dispatchSummary.errors.length > 0) {
+    summary.errors.push(...dispatchSummary.errors);
   }
 
   return summary;

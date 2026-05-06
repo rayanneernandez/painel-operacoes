@@ -95,6 +95,7 @@ type OfflineAlertRow = {
   last_seen_offline_at: string | null;
   last_seen_online_at: string | null;
   notified_at: string | null;
+  last_notification_sent_at?: string | null;
   notified_contact_count: number | null;
   resolution_sent_at: string | null;
   resolved_at: string | null;
@@ -129,6 +130,9 @@ const DISPLAY_SYNC_SHARED_COOLDOWN_MS = 10 * 60 * 1000;
 const DISPLAY_SYNC_RUNNING_TTL_MS = 45 * 1000;
 const OVERVIEW_DB_POLL_MS = 15 * 1000;
 const WHATSAPP_DB_POLL_MS = 30 * 1000;
+const OFFLINE_VALIDATION_MINUTES = 60;
+const OFFLINE_REPEAT_AFTER_FIRST_HOURS = 24;
+const OFFLINE_REPEAT_AFTER_THIRD_DAYS = 3;
 
 const OFFLINE_REASON_SUGGESTIONS = [
   'Manutencao programada na loja',
@@ -404,8 +408,8 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   const [reasonDrafts, setReasonDrafts] = useState<Record<string, string>>({});
   const [expandedReasonAlerts, setExpandedReasonAlerts] = useState<Record<string, boolean>>({});
   const [manualAlertContactIds, setManualAlertContactIds] = useState<Record<string, string>>({});
+  const [manualAlertPhones, setManualAlertPhones] = useState<Record<string, string>>({});
   const [isGuideExpanded, setIsGuideExpanded] = useState(false);
-  const [historyStoreFilter, setHistoryStoreFilter] = useState('');
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [isSyncingDisplay, setIsSyncingDisplay] = useState(false);
   const syncInFlightRef = useRef(false);
@@ -438,17 +442,6 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       return next;
     });
   }, [alerts]);
-
-  useEffect(() => {
-    setHistoryStoreFilter('');
-  }, [activeClientId]);
-
-  useEffect(() => {
-    if (!historyStoreFilter) return;
-    if (!storeOptions.some((store) => store.id === historyStoreFilter)) {
-      setHistoryStoreFilter('');
-    }
-  }, [historyStoreFilter, storeOptions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -523,7 +516,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
           .order('created_at', { ascending: false }),
         supabase
           .from('device_offline_alerts')
-          .select('id, client_id, store_id, device_id, alert_type, status, client_name, store_name, device_name, mac_address, first_detected_at, last_seen_offline_at, last_seen_online_at, notified_at, notified_contact_count, resolution_sent_at, resolved_at, notification_attempts, last_notification_error, offline_reason, offline_reason_updated_at, offline_reason_sent_at, created_at')
+          .select('id, client_id, store_id, device_id, alert_type, status, client_name, store_name, device_name, mac_address, first_detected_at, last_seen_offline_at, last_seen_online_at, notified_at, last_notification_sent_at, notified_contact_count, resolution_sent_at, resolved_at, notification_attempts, last_notification_error, offline_reason, offline_reason_updated_at, offline_reason_sent_at, created_at')
           .eq('client_id', clientId)
           .order('created_at', { ascending: false })
           .limit(150),
@@ -847,7 +840,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   );
 
   const duePendingAlerts = useMemo(
-    () => activeAlerts.filter((alert) => diffMinutesFromNow(alert.first_detected_at) >= 30),
+    () => activeAlerts.filter((alert) => diffMinutesFromNow(alert.first_detected_at) >= OFFLINE_VALIDATION_MINUTES),
     [activeAlerts]
   );
 
@@ -916,16 +909,6 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     };
   }, [stores]);
 
-  const alertHistory = useMemo(
-    () => alerts.filter((alert) => Boolean(alert.notified_at) || Boolean(alert.resolved_at)),
-    [alerts]
-  );
-
-  const filteredAlertHistory = useMemo(() => {
-    if (!historyStoreFilter) return alertHistory;
-    return alertHistory.filter((alert) => alert.store_id === historyStoreFilter);
-  }, [alertHistory, historyStoreFilter]);
-
   const monitoringStats = useMemo(() => {
     const enabledContacts = contacts.filter((contact) => contact.enabled).length;
     const pendingAlerts = activeAlerts.length;
@@ -939,7 +922,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       notifiedAlerts,
       resolvedAlerts,
     };
-  }, [activeAlerts, alertHistory, alerts, contacts]);
+  }, [activeAlerts, alerts, contacts]);
 
   const resolveStoreName = (storeId: string | null) => {
     if (!storeId) return 'Rede inteira';
@@ -976,7 +959,9 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         ? resolveStoreName(contactForm.storeId)
         : `Todas as lojas da rede ${previewClientName}`;
     const previewResponsible = contactForm.responsibleName.trim() || 'Responsavel da operacao';
-    const previewOfflineAt = formatDateTime(new Date(Date.now() - 30 * 60 * 1000).toISOString());
+    const previewOfflineAtA = formatDateTime(new Date(Date.now() - 65 * 60 * 1000).toISOString());
+    const previewOfflineAtB = formatDateTime(new Date(Date.now() - 63 * 60 * 1000).toISOString());
+    const previewOfflineAtC = formatDateTime(new Date(Date.now() - 60 * 60 * 1000).toISOString());
     const previewReason = 'Internet da loja indisponivel';
 
     return {
@@ -990,14 +975,23 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         'Se voce recebeu esta mensagem, o canal do ZapResponder esta pronto para os alertas automaticos de dispositivos offline.',
       ]),
       offline: joinMessageLines([
-        'ALERTA: dispositivo offline',
+        'ALERTA: dispositivos offline',
         '',
         `Rede: ${previewClientName}`,
         `Loja: ${previewStoreName}`,
         'Dispositivo: Player vitrine entrada',
         'MAC/ID: 00:1B:44:11:3A:B7',
-        `Offline desde: ${previewOfflineAt}`,
-        'Tempo minimo confirmado: 30 minutos',
+        `Offline desde: ${previewOfflineAtA}`,
+        '',
+        'Dispositivo: Player vitrine lateral',
+        'MAC/ID: 00:1B:44:11:3A:B8',
+        `Offline desde: ${previewOfflineAtB}`,
+        '',
+        'Dispositivo: Totem autoatendimento',
+        'MAC/ID: 00:1B:44:11:3A:B9',
+        `Offline desde: ${previewOfflineAtC}`,
+        '',
+        `Tempo minimo confirmado: ${OFFLINE_VALIDATION_MINUTES / 60}h`,
         '',
         'O dispositivo segue offline apos a janela de validacao do monitoramento.',
         'Monitoramento Global IA',
@@ -1165,6 +1159,8 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       alertId?: string;
       force?: boolean;
       contactId?: string;
+      manualNumber?: string;
+      manualResponsibleName?: string;
       silentWhenNoop?: boolean;
       successTitle?: string;
       successMessage?: string;
@@ -1179,6 +1175,8 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         alertId: options?.alertId || '',
         force: Boolean(options?.force),
         contactId: options?.contactId || '',
+        manualNumber: options?.manualNumber || '',
+        manualResponsibleName: options?.manualResponsibleName || '',
       }),
     });
 
@@ -1200,7 +1198,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       showFeedback(
         'Nenhum envio realizado',
         Number(summary.skippedWaiting || 0) > 0
-          ? 'Esse incidente ainda esta dentro da janela de validacao antes do envio automatico.'
+          ? 'Esse incidente ainda esta dentro da janela de 1 hora antes do envio automatico.'
           : 'Ainda nao havia nenhum alerta elegivel para envio.',
         'info'
       );
@@ -1211,6 +1209,17 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
   const handleSendAlertNow = async (alert: OfflineAlertRow) => {
     if (!activeClientId) return;
+
+    const manualPhoneInput = String(manualAlertPhones[alert.id] || '').trim();
+    const manualNumber = normalizeBrazilPhone(manualPhoneInput);
+    if (manualPhoneInput && (manualNumber.length < 12 || manualNumber.length > 13)) {
+      showFeedback(
+        'Numero invalido',
+        'Informe um WhatsApp valido com DDD para usar o envio avulso.',
+        'error'
+      );
+      return;
+    }
 
     setSendingAlertId(alert.id);
     try {
@@ -1223,10 +1232,14 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         alertId: alert.id,
         force: true,
         contactId: selectedContactId,
+        manualNumber,
+        manualResponsibleName: manualNumber ? 'Contato avulso' : '',
         successTitle: 'Alerta enviado agora',
-        successMessage: selectedContact
-          ? `O alerta foi enviado imediatamente para ${selectedContact.responsible_name}.`
-          : 'O alerta foi enviado imediatamente usando o contato padrao da loja/rede.',
+        successMessage: manualNumber
+          ? `O alerta foi enviado imediatamente para ${manualPhoneInput}. Se houver outros dispositivos offline da mesma loja, eles foram consolidados na mesma mensagem.`
+          : selectedContact
+          ? `O alerta foi enviado imediatamente para ${selectedContact.responsible_name}. Se houver outros dispositivos offline da mesma loja, eles foram consolidados na mesma mensagem.`
+          : 'O alerta foi enviado imediatamente usando o contato padrao da loja/rede. Se houver outros dispositivos offline da mesma loja, eles foram consolidados na mesma mensagem.',
       });
     } catch (error: any) {
       showFeedback('Falha no envio imediato', error?.message || String(error), 'error');
@@ -1447,7 +1460,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
             Alertas pendentes
           </div>
           <p className="text-2xl font-bold text-white mt-3">{monitoringStats.pendingAlerts}</p>
-          <p className="text-xs text-gray-500 mt-1">Aguardando janela de 30 minutos ou contato</p>
+          <p className="text-xs text-gray-500 mt-1">Aguardando janela de 1 hora ou contato</p>
         </div>
 
         <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
@@ -1689,17 +1702,17 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
               <div className="rounded-xl border border-amber-800/60 bg-amber-950/20 p-4">
                 <p className="text-sm font-semibold text-amber-200">Alerta real</p>
                 <p className="text-xs text-amber-100/80 mt-2">
-                  Se o dispositivo ficar offline e continuar assim por 30 minutos, o card em
-                  <strong> Incidentes em andamento</strong> muda para <strong>WhatsApp enviado</strong> e o horario aparece em
-                  <strong> Primeiro envio</strong>.
+                  Se o dispositivo ficar offline e continuar assim por 1 hora, o primeiro WhatsApp sai com os
+                  devices daquela loja consolidados em uma unica mensagem. Depois disso, se continuar offline, o
+                  reenvio acontece {OFFLINE_REPEAT_AFTER_FIRST_HOURS}h depois; a partir do terceiro envio, o intervalo vira para a cada {OFFLINE_REPEAT_AFTER_THIRD_DAYS} dias.
                 </p>
               </div>
 
               <div className="rounded-xl border border-emerald-800/60 bg-emerald-950/20 p-4">
                 <p className="text-sm font-semibold text-emerald-200">Resolucao</p>
                 <p className="text-xs text-emerald-100/80 mt-2">
-                  Quando o dispositivo volta ao normal, ele sai da lista principal e vai para o <strong>Log de incidentes</strong>,
-                  com o horario final em <strong>Voltou online</strong>.
+                  Quando o dispositivo volta ao normal, ele sai da lista principal e passa a aparecer em
+                  <strong> Logs de Acesso &gt; Monitoramento offline</strong>, com o horario final em <strong>Voltou online</strong>.
                 </p>
               </div>
             </div>
@@ -1721,7 +1734,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
               </div>
 
               <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-                <p className="text-sm font-semibold text-white">Mensagem de alerta offline</p>
+                <p className="text-sm font-semibold text-white">Mensagem de alerta offline agrupada</p>
                 <pre className="mt-3 whitespace-pre-wrap break-words text-xs text-gray-300 font-mono leading-5">
                   {whatsappMessagePreview.offline}
                 </pre>
@@ -1749,7 +1762,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         <div className="flex items-center justify-between gap-3">
           <div>
             <h3 className="text-sm font-bold text-white">Pendentes de envio</h3>
-            <p className="text-xs text-gray-500 mt-1">So dispositivos offline que ainda nao tiveram o WhatsApp disparado.</p>
+            <p className="text-xs text-gray-500 mt-1">So dispositivos offline que ainda nao tiveram o primeiro WhatsApp disparado.</p>
           </div>
         </div>
 
@@ -1761,8 +1774,10 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
           <div className="mt-4 space-y-3">
             {activeAlerts.map((alert) => {
               const offlineMinutes = diffMinutesFromNow(alert.first_detected_at);
-              const waitingWindow = !alert.notified_at && offlineMinutes < 30;
-              const scheduledNotificationAt = new Date(Date.parse(alert.first_detected_at) + 30 * 60 * 1000).toISOString();
+              const waitingWindow = !alert.notified_at && offlineMinutes < OFFLINE_VALIDATION_MINUTES;
+              const scheduledNotificationAt = new Date(
+                Date.parse(alert.first_detected_at) + OFFLINE_VALIDATION_MINUTES * 60 * 1000
+              ).toISOString();
               const availableContacts = getManualContactsForAlert(alert);
               const isReasonExpanded = Boolean(expandedReasonAlerts[alert.id]);
 
@@ -1771,7 +1786,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                 : 'border-emerald-700 bg-emerald-950/30 text-emerald-200';
 
               const badgeLabel = waitingWindow
-                ? `Envia em ${Math.max(0, 30 - offlineMinutes)} min`
+                ? `Envia em ${Math.max(0, OFFLINE_VALIDATION_MINUTES - offlineMinutes)} min`
                 : 'Pronto para enviar';
 
               return (
@@ -1906,6 +1921,22 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                               </option>
                             ))}
                           </select>
+                          <input
+                            type="tel"
+                            value={manualAlertPhones[alert.id] ?? ''}
+                            onChange={(event) =>
+                              setManualAlertPhones((prev) => ({
+                                ...prev,
+                                [alert.id]: event.target.value,
+                              }))
+                            }
+                            placeholder="Ou envie uma unica vez para outro numero"
+                            className="mt-2 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-emerald-500"
+                          />
+                          <p className="mt-2 text-[11px] leading-5 text-gray-500">
+                            Se preencher um numero aqui, o envio imediato usa esse WhatsApp so desta vez, sem cadastrar contato.
+                            Se houver outros devices offline da mesma loja, eles vao juntos na mesma mensagem.
+                          </p>
 
                           <button
                             type="button"
@@ -1918,7 +1949,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                           </button>
                         </div>
                         <p className="mt-2 text-[11px] leading-5 text-gray-500">
-                          O motivo fica registrado no painel. O envio imediato permite disparar esse alerta agora, sem esperar a janela automatica.
+                          O motivo fica registrado no painel. O envio imediato permite disparar esse alerta agora, sem esperar a janela automatica de 1 hora.
                         </p>
                       </div>
                     </div>
@@ -1936,112 +1967,6 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         )}
       </section>
 
-      <section className="bg-gray-900 border border-gray-800 rounded-xl p-4">
-        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
-          <div>
-            <h3 className="text-sm font-bold text-white">Log de incidentes</h3>
-            <p className="text-xs text-gray-500 mt-1">
-              Historico de quando o dispositivo caiu, quando o WhatsApp saiu e quando voltou ao normal.
-            </p>
-          </div>
-
-          <div className="w-full lg:w-[320px]">
-            <label className="text-[11px] uppercase tracking-wider text-gray-500 block mb-1">Filtrar loja da rede</label>
-            <select
-              value={historyStoreFilter}
-              onChange={(event) => setHistoryStoreFilter(event.target.value)}
-              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-emerald-500"
-            >
-              <option value="">Toda a rede selecionada</option>
-              {storeOptions.map((store) => (
-                <option key={store.id} value={store.id}>
-                  {store.name} - {store.city}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {filteredAlertHistory.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-gray-800 bg-gray-950/50 p-8 text-center text-sm text-gray-500 mt-4">
-            Nenhum incidente encerrado encontrado para este filtro.
-          </div>
-        ) : (
-          <div className="mt-4 space-y-3">
-            {filteredAlertHistory.map((alert) => {
-              const stillOfflineAfterSend = Boolean(alert.notified_at) && !alert.resolved_at;
-              const endedWithoutResolution = alert.status === 'cancelled';
-              const historyBadgeClass = stillOfflineAfterSend
-                ? 'border-red-700 bg-red-950/30 text-red-200'
-                : endedWithoutResolution
-                ? 'border-gray-700 bg-gray-900 text-gray-300'
-                : 'border-emerald-700 bg-emerald-950/30 text-emerald-300';
-              const historyBadgeLabel = stillOfflineAfterSend
-                ? 'WhatsApp enviado'
-                : endedWithoutResolution
-                  ? 'Encerrado sem envio'
-                  : 'Voltou online';
-
-              return (
-                <div key={`history-${alert.id}`} className="rounded-xl border border-gray-800 bg-gray-950 p-4">
-                  <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-3">
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <p className="text-sm font-semibold text-white">{alert.device_name}</p>
-                        <span className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border ${historyBadgeClass}`}>
-                          {historyBadgeLabel}
-                        </span>
-                      </div>
-                      <p className="text-xs text-gray-400 mt-1">
-                        {(alert.store_name || 'Loja nao informada')} - {(alert.client_name || activeClientName || 'Rede selecionada')}
-                      </p>
-                      <p className="text-[11px] text-gray-600 mt-1">
-                        {alert.mac_address ? `${alert.mac_address} - ` : ''}
-                        Detectado em {formatDateTime(alert.first_detected_at)}
-                      </p>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-gray-300 min-w-[300px]">
-                      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Queda detectada</p>
-                        <p className="mt-1">{formatDateTime(alert.first_detected_at)}</p>
-                      </div>
-                      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Primeiro envio</p>
-                        <p className="mt-1">{formatDateTime(alert.notified_at)}</p>
-                      </div>
-                      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500">
-                          {stillOfflineAfterSend ? 'Status atual' : endedWithoutResolution ? 'Encerrado em' : 'Voltou online'}
-                        </p>
-                        <p className="mt-1">{stillOfflineAfterSend ? 'Segue offline' : formatDateTime(alert.resolved_at)}</p>
-                      </div>
-                    </div>
-                  </div>
-
-                  {(alert.offline_reason || alert.last_notification_error) && (
-                    <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
-                      <div className="rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-3">
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Motivo registrado</p>
-                        <p className="mt-2 text-xs text-gray-300">
-                          {alert.offline_reason || 'Motivo nao informado para este incidente.'}
-                        </p>
-                      </div>
-
-                      {alert.last_notification_error && (
-                        <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 px-3 py-3">
-                          <p className="text-[10px] uppercase tracking-wider text-amber-300">Ultimo retorno do monitor</p>
-                          <p className="mt-2 text-xs text-amber-100">{alert.last_notification_error}</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
     </div>
   );
 

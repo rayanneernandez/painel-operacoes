@@ -38,6 +38,7 @@ create table if not exists public.device_offline_alerts (
   last_seen_offline_at timestamptz,
   last_seen_online_at timestamptz,
   notified_at timestamptz,
+  last_notification_sent_at timestamptz,
   notified_contact_count integer not null default 0,
   resolution_sent_at timestamptz,
   resolution_contact_count integer not null default 0,
@@ -64,6 +65,9 @@ create index if not exists device_offline_alerts_client_idx
 
 create index if not exists device_offline_alerts_status_idx
   on public.device_offline_alerts (status, notified_at, resolved_at);
+
+create index if not exists device_offline_alerts_last_notification_sent_idx
+  on public.device_offline_alerts (client_id, resolved_at, last_notification_sent_at);
 
 alter table public.monitoring_whatsapp_contacts enable row level security;
 alter table public.device_offline_alerts enable row level security;
