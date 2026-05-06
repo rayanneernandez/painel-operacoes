@@ -148,6 +148,7 @@ export type WidgetType = { id: string; title: string; type: 'chart' | 'table' | 
 export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'chart_facial_expressions', title: 'Expressoes Faciais', type: 'chart', size: 'half', description: 'Serie temporal de expressoes faciais quando disponivel' },
   { id: 'chart_device_flow', title: 'Fluxo e Audiencia Device', type: 'chart', size: 'half', description: 'Resumo visual de fluxo, devices e tracking quando disponivel' },
+  { id: 'device_type_audience', title: 'Audiência por Tipo de Dispositivo', type: 'chart', size: 'half', description: 'Totem, Caixa, Gôndola, LED por % de audiência' },
   { id: 'kpi_total_visitors',  title: 'Total Visitantes',              type: 'kpi',   size: 'quarter', description: 'Card individual de total de visitantes' },
   { id: 'kpi_avg_visitors_day',title: 'Média Visitantes Dia',          type: 'kpi',   size: 'quarter', description: 'Card individual de média de visitantes por dia' },
   { id: 'kpi_avg_visit_time',  title: 'Tempo Médio Visita',            type: 'kpi',   size: 'quarter', description: 'Card individual de tempo médio de visita' },
@@ -1400,11 +1401,88 @@ export const WidgetDeviceFlow = ({
   );
 };
 
+
+// ── WidgetDeviceTypeAudience ──────────────────────────────────────────────────
+const DEVICE_TYPE_PALETTE = [
+  { key: 'totem',   label: 'Totem',   color: '#6366f1' },
+  { key: 'caixa',   label: 'Caixa',   color: '#22c55e' },
+  { key: 'gondola', label: 'Gôndola', color: '#f59e0b' },
+  { key: 'led',     label: 'LED',     color: '#38bdf8' },
+  { key: 'camera',  label: 'Câmera',  color: '#a855f7' },
+  { key: 'outros',  label: 'Outros',  color: '#6b7280' },
+];
+
+function extractDeviceCategory(label: string): string | null {
+  const l = label.toLowerCase();
+  if (l.includes('entrada')) return null;
+  if (l.includes('totem')) return 'totem';
+  if (l.includes('caixa')) return 'caixa';
+  if (l.includes('gôndola') || l.includes('gondola') || l.includes('gond')) return 'gondola';
+  if (l.includes(' led') || l.includes('-led') || /\bled\b/.test(l)) return 'led';
+  if (l.includes('câmera') || l.includes('camera') || l.includes(' cam')) return 'camera';
+  if (/\d+$/.test(l)) return 'outros';
+  return null;
+}
+
+export const WidgetDeviceTypeAudience = ({ deviceAudience }: { deviceAudience?: DeviceAudienceItem[] }) => {
+  const items = React.useMemo(() => {
+    if (!deviceAudience?.length) return [];
+    const totals: Record<string, number> = {};
+    for (const d of deviceAudience) {
+      const cat = extractDeviceCategory(String(d.label ?? ''));
+      if (!cat) continue;
+      totals[cat] = (totals[cat] ?? 0) + (Number(d.value) || 0);
+    }
+    return DEVICE_TYPE_PALETTE
+      .filter(p => (totals[p.key] ?? 0) > 0)
+      .map(p => ({ label: p.label, value: Math.round((totals[p.key] ?? 0) * 10) / 10, color: p.color }))
+      .sort((a, b) => b.value - a.value);
+  }, [deviceAudience]);
+
+  const maxVal = items.length > 0 ? items[0].value : 100;
+
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col overflow-hidden">
+      <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider mb-4 shrink-0">
+        <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />
+        Audiência por Tipo de Dispositivo
+      </h3>
+      {items.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
+          Selecione uma loja para ver por dispositivo.
+        </div>
+      ) : (
+        <div className="flex-1 flex flex-col justify-center gap-3 overflow-y-auto">
+          {items.map((item) => {
+            const barW = maxVal > 0 ? Math.round((item.value / maxVal) * 100) : 0;
+            return (
+              <div key={item.label}>
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-[11px] font-semibold text-gray-200 uppercase tracking-wide">{item.label}</span>
+                  <span className="text-[12px] font-black tabular-nums" style={{ color: item.color }}>{item.value.toFixed(1)}%</span>
+                </div>
+                <div className="h-5 rounded-lg overflow-hidden bg-gray-800/60 relative">
+                  <div
+                    className="h-full rounded-lg transition-all duration-500"
+                    style={{ width: `${barW}%`, background: `linear-gradient(90deg, ${item.color}cc, ${item.color}88)`, boxShadow: `0 0 12px ${item.color}44` }}
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-r from-white/[0.04] to-transparent rounded-lg pointer-events-none" />
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export const WIDGET_MAP: Record<string, React.FC<any>> = {
   'flow_trend':          WidgetFlowTrend,
   'hourly_flow':         WidgetHourlyFlow,
   'chart_facial_expressions': WidgetFacialExpressions,
   'chart_device_flow':   WidgetDeviceFlow,
+  'device_type_audience': WidgetDeviceTypeAudience,
   'age_pyramid':         WidgetAgePyramid,
   'gender_dist':         WidgetGenderDist,
   'attributes':          WidgetAttributes,

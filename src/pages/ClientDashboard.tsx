@@ -2737,6 +2737,14 @@ export function ClientDashboard() {
                       }));
                   widgetProps.trackingData = [];
                 }
+                if (widget.id === 'device_type_audience') {
+                  // Passa os devices individuais da loja selecionada (com labels resolvidos)
+                  // O widget extrai os tipos (Totem, Caixa, Gôndola, LED…) e agrupa
+                  widgetProps.deviceAudience = deviceFlowAudience.map(e => ({
+                    ...e,
+                    label: resolveDeviceFlowLabel(String(e?.label ?? '')),
+                  }));
+                }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'attributes')                widgetProps.attrData = attributeStats;
