@@ -216,6 +216,90 @@ function formatUnknownErrorDetail(value: unknown): string {
   return String(value);
 }
 
+function normalizeStatusToken(value: unknown) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function normalizeDeviceStatus(value: unknown): DeviceStatus {
+  const token = normalizeStatusToken(value);
+
+  if (!token) return 'not_connected';
+
+  if (
+    [
+      'not connected',
+      'notconnected',
+      'nao conectado',
+      'nao conectada',
+      'disconnected',
+      'desconectado',
+      'desconectada',
+      'inactive',
+      'inativo',
+      'inativa',
+      'disabled',
+      'desabilitado',
+      'desabilitada',
+    ].includes(token)
+  ) {
+    return 'not_connected';
+  }
+
+  if (
+    [
+      'offline',
+      'off',
+      'problem',
+      'problema',
+      'error',
+      'erro',
+      'failed',
+      'failure',
+      'unreachable',
+      'stopped',
+      'stop',
+      'standby',
+      'idle',
+    ].includes(token)
+  ) {
+    return 'offline';
+  }
+
+  if (
+    [
+      'online',
+      'playback',
+      'reproducao',
+      'reproduction',
+      'playing',
+      'reproduzindo',
+      'vazio',
+      'empty',
+      'pause',
+      'paused',
+      'pausado',
+      'normal',
+      'connected',
+      'active',
+      'ativo',
+      'confirmado',
+      'confirmed',
+      'true',
+      '1',
+    ].includes(token)
+  ) {
+    return 'online';
+  }
+
+  return 'not_connected';
+}
+
 function getDeviceStatusPriority(status: DeviceStatus) {
   if (status === 'offline') return 3;
   if (status === 'not_connected') return 2;
@@ -315,11 +399,18 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   const [deletingContactId, setDeletingContactId] = useState<string | null>(null);
   const [togglingContactId, setTogglingContactId] = useState<string | null>(null);
   const [savingReasonId, setSavingReasonId] = useState<string | null>(null);
+  const [sendingAlertId, setSendingAlertId] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<FeedbackState | null>(null);
   const [reasonDrafts, setReasonDrafts] = useState<Record<string, string>>({});
+  const [expandedReasonAlerts, setExpandedReasonAlerts] = useState<Record<string, boolean>>({});
+  const [manualAlertContactIds, setManualAlertContactIds] = useState<Record<string, string>>({});
   const [isGuideExpanded, setIsGuideExpanded] = useState(false);
+  const [historyStoreFilter, setHistoryStoreFilter] = useState('');
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
+  const [isSyncingDisplay, setIsSyncingDisplay] = useState(false);
   const syncInFlightRef = useRef(false);
+  const pendingDispatchInFlightRef = useRef(false);
+  const lastPendingDispatchAtRef = useRef<Record<string, number>>({});
   const [contactForm, setContactForm] = useState({
     responsibleName: '',
     phoneNumber: '',
@@ -347,6 +438,17 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       return next;
     });
   }, [alerts]);
+
+  useEffect(() => {
+    setHistoryStoreFilter('');
+  }, [activeClientId]);
+
+  useEffect(() => {
+    if (!historyStoreFilter) return;
+    if (!storeOptions.some((store) => store.id === historyStoreFilter)) {
+      setHistoryStoreFilter('');
+    }
+  }, [historyStoreFilter, storeOptions]);
 
   useEffect(() => {
     let cancelled = false;
@@ -424,7 +526,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
           .select('id, client_id, store_id, device_id, alert_type, status, client_name, store_name, device_name, mac_address, first_detected_at, last_seen_offline_at, last_seen_online_at, notified_at, notified_contact_count, resolution_sent_at, resolved_at, notification_attempts, last_notification_error, offline_reason, offline_reason_updated_at, offline_reason_sent_at, created_at')
           .eq('client_id', clientId)
           .order('created_at', { ascending: false })
-          .limit(30),
+          .limit(150),
         fetch('/api/whatsapp-monitoring'),
       ]);
 
@@ -462,10 +564,14 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     }
   };
 
-  const triggerStoreSync = async (clientId: string, options?: { force?: boolean }) => {
+  const triggerStoreSync = async (
+    clientId: string,
+    options?: { force?: boolean; waitForCompletion?: boolean }
+  ) => {
     if (!clientId) return null;
 
     const force = Boolean(options?.force);
+    const waitForCompletion = Boolean(options?.waitForCompletion);
     const nowMs = Date.now();
     const syncMeta = readDisplaySyncMeta(clientId);
     const lastStartedAt = Number(syncMeta?.startedAt || 0);
@@ -483,7 +589,13 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       }
     }
 
+    const scheduleFollowUpRefreshes = () => {
+      setTimeout(() => refresh(), 20000);
+      setTimeout(() => refresh(), 65000);
+    };
+
     syncInFlightRef.current = true;
+    if (waitForCompletion) setIsSyncingDisplay(true);
     writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'running' });
     setSyncWarning(null);
 
@@ -491,7 +603,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     // Redes grandes (ex: Assai com 134 devices) podem demorar > 60s → 504.
     // O painel exibe o último status do banco enquanto o sync roda em background.
     // Refreshes automáticos em 20s e 65s buscam os dados atualizados.
-    fetch('/api/sync-analytics', {
+    const syncRequest = fetch('/api/sync-analytics', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ client_id: clientId, sync_stores: true }),
@@ -501,21 +613,55 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         if (response.ok) {
           setSyncWarning(null);
           writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: Date.now(), status: 'success' });
-        } else if (response.status !== 504) {
-          // 504 é esperado para redes grandes — não exibe erro nesses casos
-          const detail = payload?.details || payload?.error || payload?.message || `HTTP ${response.status}`;
-          setSyncWarning(`Status atualizado do banco. Detalhe do sync: ${detail}`);
-          writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'error' });
+          return {
+            ok: true as const,
+            payload,
+            status: response.status,
+          };
         }
-      })
-      .catch(() => {
+          // 504 é esperado para redes grandes — não exibe erro nesses casos
+        const detail = payload?.details || payload?.error || payload?.message || `HTTP ${response.status}`;
+
+        if (response.status === 504) {
+          scheduleFollowUpRefreshes();
+          setSyncWarning('A atualizacao da DisplayForce continua em background. Vou refletir no painel assim que o banco terminar de receber os dados.');
+          return {
+            ok: false as const,
+            payload,
+            detail,
+            status: response.status,
+          };
+        }
+
+        setSyncWarning(`Status atualizado do banco. Detalhe do sync: ${detail}`);
         writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'error' });
+        return {
+          ok: false as const,
+          payload,
+          detail,
+          status: response.status,
+        };
       })
-      .finally(() => { syncInFlightRef.current = false; });
+      .catch((error) => {
+        writeDisplaySyncMeta(clientId, { startedAt: nowMs, finishedAt: lastFinishedAt, status: 'error' });
+        return {
+          ok: false as const,
+          detail: error instanceof Error ? error.message : String(error),
+          status: 0,
+        };
+      })
+      .finally(() => {
+        syncInFlightRef.current = false;
+        setIsSyncingDisplay(false);
+      });
 
     // Refreshes agendados para capturar dados após o sync terminar em background
-    setTimeout(() => refresh(), 20000);
-    setTimeout(() => refresh(), 65000);
+    if (waitForCompletion) {
+      return syncRequest;
+    }
+
+    void syncRequest;
+    scheduleFollowUpRefreshes();
 
     return { skipped: false, reason: 'started-background' as const };
   };
@@ -586,7 +732,15 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         if (devicesError) throw devicesError;
 
         (devicesData || []).forEach((device: any) => {
-          const row = device as DeviceRow;
+          const row: DeviceRow = {
+            id: String(device?.id ?? ''),
+            name: String(device?.name ?? ''),
+            type: String(device?.type ?? ''),
+            mac_address: device?.mac_address == null ? null : String(device.mac_address),
+            status: normalizeDeviceStatus(device?.status),
+            store_id: String(device?.store_id ?? ''),
+          };
+
           if (!devicesByStore[row.store_id]) devicesByStore[row.store_id] = [];
           devicesByStore[row.store_id].push(row);
         });
@@ -687,6 +841,36 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     };
   }, [activeClientId, isWhatsappPage]);
 
+  const activeAlerts = useMemo(
+    () => alerts.filter((alert) => !alert.notified_at && !alert.resolved_at),
+    [alerts]
+  );
+
+  const duePendingAlerts = useMemo(
+    () => activeAlerts.filter((alert) => diffMinutesFromNow(alert.first_detected_at) >= 30),
+    [activeAlerts]
+  );
+
+  useEffect(() => {
+    if (!isWhatsappPage || !activeClientId) return;
+    if (duePendingAlerts.length === 0) return;
+    if (pendingDispatchInFlightRef.current) return;
+
+    const lastRunAt = lastPendingDispatchAtRef.current[activeClientId] || 0;
+    if (Date.now() - lastRunAt < 60 * 1000) return;
+
+    pendingDispatchInFlightRef.current = true;
+    lastPendingDispatchAtRef.current[activeClientId] = Date.now();
+
+    void handleDispatchPendingAlerts(activeClientId, { silentWhenNoop: true })
+      .catch(() => {
+        // handled by toast on explicit actions; automatic cycle stays quiet
+      })
+      .finally(() => {
+        pendingDispatchInFlightRef.current = false;
+      });
+  }, [activeClientId, duePendingAlerts, isWhatsappPage]);
+
   const headerSubtitle = useMemo(() => {
     if (isAdmin) {
       if (!selectedClientId) {
@@ -732,9 +916,19 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     };
   }, [stores]);
 
+  const alertHistory = useMemo(
+    () => alerts.filter((alert) => Boolean(alert.notified_at) || Boolean(alert.resolved_at)),
+    [alerts]
+  );
+
+  const filteredAlertHistory = useMemo(() => {
+    if (!historyStoreFilter) return alertHistory;
+    return alertHistory.filter((alert) => alert.store_id === historyStoreFilter);
+  }, [alertHistory, historyStoreFilter]);
+
   const monitoringStats = useMemo(() => {
     const enabledContacts = contacts.filter((contact) => contact.enabled).length;
-    const pendingAlerts = alerts.filter((alert) => !alert.notified_at && !alert.resolved_at).length;
+    const pendingAlerts = activeAlerts.length;
     const notifiedAlerts = alerts.filter((alert) => Boolean(alert.notified_at) && !alert.resolved_at).length;
     const resolvedAlerts = alerts.filter((alert) => Boolean(alert.resolved_at)).length;
 
@@ -745,7 +939,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       notifiedAlerts,
       resolvedAlerts,
     };
-  }, [alerts, contacts]);
+  }, [activeAlerts, alertHistory, alerts, contacts]);
 
   const resolveStoreName = (storeId: string | null) => {
     if (!storeId) return 'Rede inteira';
@@ -756,6 +950,24 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   const showFeedback = (title: string, message: string, tone: FeedbackTone = 'info') => {
     setFeedback({ title, message, tone });
   };
+
+  const getContactScopeLabel = (contact: WhatsappContactRow) => {
+    if (contact.scope_type === 'store') {
+      return resolveStoreName(contact.store_id);
+    }
+
+    return activeClientName ? `Rede inteira (${activeClientName})` : 'Rede inteira';
+  };
+
+  const getManualContactsForAlert = (alert: OfflineAlertRow) =>
+    contacts
+      .filter((contact) => contact.enabled)
+      .sort((a, b) => {
+        const aMatchesStore = Boolean(alert.store_id && a.store_id === alert.store_id);
+        const bMatchesStore = Boolean(alert.store_id && b.store_id === alert.store_id);
+        if (aMatchesStore !== bMatchesStore) return aMatchesStore ? -1 : 1;
+        return a.responsible_name.localeCompare(b.responsible_name, 'pt-BR');
+      });
 
   const whatsappMessagePreview = useMemo(() => {
     const previewClientName = activeClientName || 'Panvel';
@@ -786,7 +998,6 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         'MAC/ID: 00:1B:44:11:3A:B7',
         `Offline desde: ${previewOfflineAt}`,
         'Tempo minimo confirmado: 30 minutos',
-        `Motivo informado: ${previewReason}`,
         '',
         'O dispositivo segue offline apos a janela de validacao do monitoramento.',
         'Monitoramento Global IA',
@@ -858,6 +1069,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
       resetContactForm();
       await loadMonitoringData(activeClientId);
+      await handleDispatchPendingAlerts(activeClientId, { silentWhenNoop: true });
       showFeedback('Responsavel salvo', 'O contato foi cadastrado com sucesso e ja pode receber alertas.', 'success');
     } catch (error: any) {
       const message = error?.message || String(error);
@@ -947,6 +1159,82 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     }
   };
 
+  const handleDispatchPendingAlerts = async (
+    clientId: string,
+    options?: {
+      alertId?: string;
+      force?: boolean;
+      contactId?: string;
+      silentWhenNoop?: boolean;
+      successTitle?: string;
+      successMessage?: string;
+    }
+  ) => {
+    const response = await fetch('/api/whatsapp-monitoring', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        action: options?.force ? 'send_offline_now' : 'dispatch_pending',
+        clientId,
+        alertId: options?.alertId || '',
+        force: Boolean(options?.force),
+        contactId: options?.contactId || '',
+      }),
+    });
+
+    const payload = await response.json().catch(() => null);
+    if (!response.ok || !payload?.ok) {
+      throw new Error(payload?.error || 'Falha ao processar os alertas pendentes.');
+    }
+
+    const summary = payload?.summary || {};
+    await loadMonitoringData(clientId);
+
+    if (Number(summary.sent || 0) > 0) {
+      showFeedback(
+        options?.successTitle || 'WhatsApp enviado',
+        options?.successMessage || 'O alerta offline foi enviado com sucesso.',
+        'success'
+      );
+    } else if (!options?.silentWhenNoop) {
+      showFeedback(
+        'Nenhum envio realizado',
+        Number(summary.skippedWaiting || 0) > 0
+          ? 'Esse incidente ainda esta dentro da janela de validacao antes do envio automatico.'
+          : 'Ainda nao havia nenhum alerta elegivel para envio.',
+        'info'
+      );
+    }
+
+    return summary;
+  };
+
+  const handleSendAlertNow = async (alert: OfflineAlertRow) => {
+    if (!activeClientId) return;
+
+    setSendingAlertId(alert.id);
+    try {
+      const selectedContactId = String(manualAlertContactIds[alert.id] || '').trim();
+      const selectedContact = selectedContactId
+        ? contacts.find((contact) => contact.id === selectedContactId)
+        : null;
+
+      await handleDispatchPendingAlerts(activeClientId, {
+        alertId: alert.id,
+        force: true,
+        contactId: selectedContactId,
+        successTitle: 'Alerta enviado agora',
+        successMessage: selectedContact
+          ? `O alerta foi enviado imediatamente para ${selectedContact.responsible_name}.`
+          : 'O alerta foi enviado imediatamente usando o contato padrao da loja/rede.',
+      });
+    } catch (error: any) {
+      showFeedback('Falha no envio imediato', error?.message || String(error), 'error');
+    } finally {
+      setSendingAlertId(null);
+    }
+  };
+
   const handleSaveReason = async (alert: OfflineAlertRow) => {
     if (!activeClientId) return;
 
@@ -972,7 +1260,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       showFeedback(
         offlineReason ? 'Motivo salvo' : 'Motivo removido',
         offlineReason
-          ? 'O motivo foi salvo. Se o alerta ainda nao saiu, ele vai junto na mensagem. Se ja saiu, o sistema envia uma atualizacao com esse motivo.'
+          ? 'O motivo foi salvo no painel. Se o alerta ja tiver sido enviado e voce tiver atualizado esse motivo depois do envio, o sistema manda uma atualizacao complementar.'
           : 'O motivo foi removido deste incidente offline.',
         'success'
       );
@@ -1257,7 +1545,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                     {activeClientName ? `Rede inteira (${activeClientName})` : 'Rede inteira'}
                   </option>
                   <option value="store">
-                    {activeClientName ? `Loja especifica de ${activeClientName}` : 'Loja especifica'}
+                    {activeClientName ? `Loja da rede ${activeClientName}` : 'Loja da rede selecionada'}
                   </option>
                 </select>
               </div>
@@ -1402,7 +1690,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                 <p className="text-sm font-semibold text-amber-200">Alerta real</p>
                 <p className="text-xs text-amber-100/80 mt-2">
                   Se o dispositivo ficar offline e continuar assim por 30 minutos, o card em
-                  <strong> Incidentes offline recentes</strong> muda para <strong>WhatsApp enviado</strong> e o horario aparece em
+                  <strong> Incidentes em andamento</strong> muda para <strong>WhatsApp enviado</strong> e o horario aparece em
                   <strong> Primeiro envio</strong>.
                 </p>
               </div>
@@ -1410,19 +1698,19 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
               <div className="rounded-xl border border-emerald-800/60 bg-emerald-950/20 p-4">
                 <p className="text-sm font-semibold text-emerald-200">Resolucao</p>
                 <p className="text-xs text-emerald-100/80 mt-2">
-                  Quando o dispositivo volta ao normal, o mesmo incidente muda para <strong>Resolvido</strong> e o horario aparece em
-                  <strong> Resolucao</strong>.
+                  Quando o dispositivo volta ao normal, ele sai da lista principal e vai para o <strong>Log de incidentes</strong>,
+                  com o horario final em <strong>Voltou online</strong>.
                 </p>
               </div>
             </div>
 
-            <div className="rounded-xl border border-violet-800/60 bg-violet-950/20 p-4">
-              <p className="text-sm font-semibold text-violet-200">Motivo do offline</p>
-              <p className="text-xs text-violet-100/80 mt-2">
-                Agora cada incidente pode receber um <strong>Motivo</strong>. Se o alerta ainda nao foi disparado, o motivo vai no primeiro WhatsApp.
-                Se o alerta ja tiver sido enviado, o sistema manda uma mensagem complementar com a justificativa assim que voce salvar.
-              </p>
-            </div>
+              <div className="rounded-xl border border-violet-800/60 bg-violet-950/20 p-4">
+                <p className="text-sm font-semibold text-violet-200">Motivo do offline</p>
+                <p className="text-xs text-violet-100/80 mt-2">
+                  Agora cada incidente pode receber um <strong>Motivo</strong> para registro. Esse motivo nao entra na mensagem inicial de offline.
+                  Se o alerta ja tiver sido enviado e voce atualizar o motivo depois disso, o sistema manda uma mensagem complementar com a justificativa.
+                </p>
+              </div>
 
             <div className="grid grid-cols-1 xl:grid-cols-4 gap-4">
               <div className="rounded-xl border border-gray-800 bg-gray-950 p-4">
@@ -1460,41 +1748,31 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       <section className="bg-gray-900 border border-gray-800 rounded-xl p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-bold text-white">Incidentes offline recentes</h3>
-            <p className="text-xs text-gray-500 mt-1">Abertura, envio apos 30 min e resolucao dos dispositivos monitorados.</p>
+            <h3 className="text-sm font-bold text-white">Pendentes de envio</h3>
+            <p className="text-xs text-gray-500 mt-1">So dispositivos offline que ainda nao tiveram o WhatsApp disparado.</p>
           </div>
         </div>
 
-        {alerts.length === 0 ? (
+        {activeAlerts.length === 0 ? (
           <div className="rounded-lg border border-dashed border-gray-800 bg-gray-950/50 p-8 text-center text-sm text-gray-500 mt-4">
-            Nenhum incidente registrado para esta rede.
+            Nenhum alerta offline aguardando envio para esta rede no momento.
           </div>
         ) : (
           <div className="mt-4 space-y-3">
-            {alerts.map((alert) => {
+            {activeAlerts.map((alert) => {
               const offlineMinutes = diffMinutesFromNow(alert.first_detected_at);
-              const waitingWindow = !alert.notified_at && !alert.resolved_at && offlineMinutes < 30;
-              const endedWithoutResolution = Boolean(alert.resolved_at) && alert.status === 'cancelled';
+              const waitingWindow = !alert.notified_at && offlineMinutes < 30;
+              const scheduledNotificationAt = new Date(Date.parse(alert.first_detected_at) + 30 * 60 * 1000).toISOString();
+              const availableContacts = getManualContactsForAlert(alert);
+              const isReasonExpanded = Boolean(expandedReasonAlerts[alert.id]);
 
-              const badgeClass = alert.resolved_at
-                ? endedWithoutResolution
-                  ? 'border-gray-700 bg-gray-900 text-gray-300'
-                  : 'border-emerald-700 bg-emerald-950/30 text-emerald-300'
-                : alert.notified_at
-                  ? 'border-red-700 bg-red-950/30 text-red-200'
-                  : waitingWindow
-                    ? 'border-amber-700 bg-amber-950/30 text-amber-200'
-                    : 'border-gray-700 bg-gray-950 text-gray-300';
+              const badgeClass = waitingWindow
+                ? 'border-amber-700 bg-amber-950/30 text-amber-200'
+                : 'border-emerald-700 bg-emerald-950/30 text-emerald-200';
 
-              const badgeLabel = alert.resolved_at
-                ? endedWithoutResolution
-                  ? 'Encerrado'
-                  : 'Resolvido'
-                : alert.notified_at
-                  ? 'WhatsApp enviado'
-                  : waitingWindow
-                    ? `Aguardando ${Math.max(0, 30 - offlineMinutes)} min`
-                    : 'Pendente';
+              const badgeLabel = waitingWindow
+                ? `Envia em ${Math.max(0, 30 - offlineMinutes)} min`
+                : 'Pronto para enviar';
 
               return (
                 <div key={alert.id} className="rounded-xl border border-gray-800 bg-gray-950 p-4">
@@ -1517,14 +1795,14 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-gray-300 min-w-[260px]">
                       <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Primeiro envio</p>
-                        <p className="mt-1">{formatDateTime(alert.notified_at)}</p>
+                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Previsao do envio</p>
+                        <p className="mt-1">
+                          {waitingWindow ? formatDateTime(scheduledNotificationAt) : `Pronto desde ${formatDateTime(scheduledNotificationAt)}`}
+                        </p>
                       </div>
                       <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
-                        <p className="text-[10px] uppercase tracking-wider text-gray-500">
-                          {endedWithoutResolution ? 'Encerrado em' : 'Resolucao'}
-                        </p>
-                        <p className="mt-1">{formatDateTime(alert.resolved_at)}</p>
+                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Ultima leitura offline</p>
+                        <p className="mt-1">{formatDateTime(alert.last_seen_offline_at || alert.first_detected_at)}</p>
                       </div>
                     </div>
                   </div>
@@ -1532,10 +1810,36 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                   <div className="mt-4 rounded-xl border border-gray-800 bg-gray-900/60 p-3">
                     <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
                       <div className="min-w-0 flex-1">
-                        <p className="text-[11px] uppercase tracking-wider text-gray-500">Motivo do offline</p>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedReasonAlerts((prev) => ({
+                              ...prev,
+                              [alert.id]: !prev[alert.id],
+                            }))
+                          }
+                          className="flex w-full items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950/70 px-3 py-2 text-left transition-colors hover:border-emerald-600"
+                        >
+                          <div>
+                            <p className="text-[11px] uppercase tracking-wider text-gray-500">Motivo do offline</p>
+                            <p className="mt-1 text-xs text-gray-400">
+                              {reasonDrafts[alert.id]?.trim()
+                                ? 'Motivo preenchido. Clique para revisar ou editar.'
+                                : 'Clique para abrir e registrar o motivo deste incidente.'}
+                            </p>
+                          </div>
+
+                          {isReasonExpanded ? (
+                            <ChevronUp size={16} className="text-gray-500" />
+                          ) : (
+                            <ChevronDown size={16} className="text-gray-500" />
+                          )}
+                        </button>
+
+                        {isReasonExpanded && (
+                          <>
                         <textarea
                           value={reasonDrafts[alert.id] ?? ''}
-                          disabled={Boolean(alert.resolved_at)}
                           onChange={(event) =>
                             setReasonDrafts((prev) => ({
                               ...prev,
@@ -1551,14 +1855,13 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                             <button
                               key={`${alert.id}-${reason}`}
                               type="button"
-                              disabled={Boolean(alert.resolved_at)}
                               onClick={() =>
                                 setReasonDrafts((prev) => ({
                                   ...prev,
                                   [alert.id]: reason,
                                 }))
                               }
-                              className="rounded-full border border-gray-700 bg-gray-950 px-2.5 py-1 text-[11px] text-gray-300 transition-colors hover:border-emerald-500 hover:text-white disabled:opacity-50"
+                              className="rounded-full border border-gray-700 bg-gray-950 px-2.5 py-1 text-[11px] text-gray-300 transition-colors hover:border-emerald-500 hover:text-white"
                             >
                               {reason}
                             </button>
@@ -1570,20 +1873,52 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                             {alert.offline_reason_sent_at ? ` • enviado em ${formatDateTime(alert.offline_reason_sent_at)}` : ''}
                           </p>
                         )}
+                          </>
+                        )}
                       </div>
 
-                      <div className="lg:pl-3 lg:min-w-[220px]">
+                      <div className="lg:pl-3 lg:min-w-[280px] space-y-2">
                         <button
                           type="button"
                           onClick={() => void handleSaveReason(alert)}
-                          disabled={savingReasonId === alert.id || Boolean(alert.resolved_at)}
+                          disabled={savingReasonId === alert.id}
                           className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-emerald-700 bg-emerald-950/30 px-3 py-2 text-sm font-medium text-emerald-200 transition-colors hover:border-emerald-500 hover:text-white disabled:opacity-50"
                         >
                           {savingReasonId === alert.id ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
                           {savingReasonId === alert.id ? 'Salvando motivo...' : 'Salvar motivo'}
                         </button>
+                        <div className="rounded-lg border border-gray-800 bg-gray-950/80 p-3">
+                          <p className="text-[11px] uppercase tracking-wider text-gray-500">Enviar agora</p>
+                          <select
+                            value={manualAlertContactIds[alert.id] ?? ''}
+                            onChange={(event) =>
+                              setManualAlertContactIds((prev) => ({
+                                ...prev,
+                                [alert.id]: event.target.value,
+                              }))
+                            }
+                            className="mt-2 w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-emerald-500"
+                          >
+                            <option value="">Usar contato padrao da loja/rede</option>
+                            {availableContacts.map((contact) => (
+                              <option key={`${alert.id}-${contact.id}`} value={contact.id}>
+                                {contact.responsible_name} - {getContactScopeLabel(contact)}
+                              </option>
+                            ))}
+                          </select>
+
+                          <button
+                            type="button"
+                            onClick={() => void handleSendAlertNow(alert)}
+                            disabled={sendingAlertId === alert.id || !integrationStatus.configured}
+                            className="mt-2 inline-flex w-full items-center justify-center gap-2 rounded-lg border border-sky-700/70 bg-sky-950/20 px-3 py-2 text-sm font-medium text-sky-200 transition-colors hover:border-sky-500 hover:text-white disabled:opacity-50"
+                          >
+                            {sendingAlertId === alert.id ? <RefreshCw size={14} className="animate-spin" /> : <Send size={14} />}
+                            {sendingAlertId === alert.id ? 'Enviando agora...' : 'Enviar agora'}
+                          </button>
+                        </div>
                         <p className="mt-2 text-[11px] leading-5 text-gray-500">
-                          Se o WhatsApp ainda nao saiu, esse motivo entra no primeiro alerta. Se ja saiu, o sistema envia uma atualizacao complementar.
+                          O motivo fica registrado no painel. O envio imediato permite disparar esse alerta agora, sem esperar a janela automatica.
                         </p>
                       </div>
                     </div>
@@ -1592,6 +1927,113 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                   {alert.last_notification_error && (
                     <div className="mt-3 rounded-lg border border-amber-800/70 bg-amber-950/20 px-3 py-2 text-[11px] text-amber-200">
                       Ultimo retorno do monitor: {alert.last_notification_error}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+
+      <section className="bg-gray-900 border border-gray-800 rounded-xl p-4">
+        <div className="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-bold text-white">Log de incidentes</h3>
+            <p className="text-xs text-gray-500 mt-1">
+              Historico de quando o dispositivo caiu, quando o WhatsApp saiu e quando voltou ao normal.
+            </p>
+          </div>
+
+          <div className="w-full lg:w-[320px]">
+            <label className="text-[11px] uppercase tracking-wider text-gray-500 block mb-1">Filtrar loja da rede</label>
+            <select
+              value={historyStoreFilter}
+              onChange={(event) => setHistoryStoreFilter(event.target.value)}
+              className="w-full bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-sm text-white outline-none focus:border-emerald-500"
+            >
+              <option value="">Toda a rede selecionada</option>
+              {storeOptions.map((store) => (
+                <option key={store.id} value={store.id}>
+                  {store.name} - {store.city}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {filteredAlertHistory.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-gray-800 bg-gray-950/50 p-8 text-center text-sm text-gray-500 mt-4">
+            Nenhum incidente encerrado encontrado para este filtro.
+          </div>
+        ) : (
+          <div className="mt-4 space-y-3">
+            {filteredAlertHistory.map((alert) => {
+              const stillOfflineAfterSend = Boolean(alert.notified_at) && !alert.resolved_at;
+              const endedWithoutResolution = alert.status === 'cancelled';
+              const historyBadgeClass = stillOfflineAfterSend
+                ? 'border-red-700 bg-red-950/30 text-red-200'
+                : endedWithoutResolution
+                ? 'border-gray-700 bg-gray-900 text-gray-300'
+                : 'border-emerald-700 bg-emerald-950/30 text-emerald-300';
+              const historyBadgeLabel = stillOfflineAfterSend
+                ? 'WhatsApp enviado'
+                : endedWithoutResolution
+                  ? 'Encerrado sem envio'
+                  : 'Voltou online';
+
+              return (
+                <div key={`history-${alert.id}`} className="rounded-xl border border-gray-800 bg-gray-950 p-4">
+                  <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="text-sm font-semibold text-white">{alert.device_name}</p>
+                        <span className={`text-[10px] uppercase tracking-wider px-2 py-1 rounded-full border ${historyBadgeClass}`}>
+                          {historyBadgeLabel}
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-400 mt-1">
+                        {(alert.store_name || 'Loja nao informada')} - {(alert.client_name || activeClientName || 'Rede selecionada')}
+                      </p>
+                      <p className="text-[11px] text-gray-600 mt-1">
+                        {alert.mac_address ? `${alert.mac_address} - ` : ''}
+                        Detectado em {formatDateTime(alert.first_detected_at)}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-xs text-gray-300 min-w-[300px]">
+                      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
+                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Queda detectada</p>
+                        <p className="mt-1">{formatDateTime(alert.first_detected_at)}</p>
+                      </div>
+                      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
+                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Primeiro envio</p>
+                        <p className="mt-1">{formatDateTime(alert.notified_at)}</p>
+                      </div>
+                      <div className="rounded-lg border border-gray-800 bg-gray-900 px-3 py-2">
+                        <p className="text-[10px] uppercase tracking-wider text-gray-500">
+                          {stillOfflineAfterSend ? 'Status atual' : endedWithoutResolution ? 'Encerrado em' : 'Voltou online'}
+                        </p>
+                        <p className="mt-1">{stillOfflineAfterSend ? 'Segue offline' : formatDateTime(alert.resolved_at)}</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {(alert.offline_reason || alert.last_notification_error) && (
+                    <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+                      <div className="rounded-lg border border-gray-800 bg-gray-900/70 px-3 py-3">
+                        <p className="text-[10px] uppercase tracking-wider text-gray-500">Motivo registrado</p>
+                        <p className="mt-2 text-xs text-gray-300">
+                          {alert.offline_reason || 'Motivo nao informado para este incidente.'}
+                        </p>
+                      </div>
+
+                      {alert.last_notification_error && (
+                        <div className="rounded-lg border border-amber-800/70 bg-amber-950/20 px-3 py-3">
+                          <p className="text-[10px] uppercase tracking-wider text-amber-300">Ultimo retorno do monitor</p>
+                          <p className="mt-2 text-xs text-amber-100">{alert.last_notification_error}</p>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1700,13 +2142,25 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
           <button
             onClick={() => {
               if (!activeClientId) return;
-              void triggerStoreSync(activeClientId, { force: true }).then(() => refresh());
+
+              void (async () => {
+                try {
+                  await triggerStoreSync(activeClientId, { force: true, waitForCompletion: true });
+                  await refresh();
+
+                  if (isWhatsappPage) {
+                    await handleDispatchPendingAlerts(activeClientId, { silentWhenNoop: true });
+                  }
+                } catch (error: any) {
+                  showFeedback('Falha na atualizacao', error?.message || String(error), 'error');
+                }
+              })();
             }}
-            disabled={loading || !activeClientId}
+            disabled={loading || isSyncingDisplay || !activeClientId}
             className="h-[40px] w-[40px] flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors disabled:opacity-50"
             title="Atualizar agora"
           >
-            {loading ? (
+            {loading || isSyncingDisplay ? (
               <span className="inline-block w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
             ) : (
               <RefreshCw size={16} className="text-gray-400" />

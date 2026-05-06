@@ -40,7 +40,6 @@ function buildOfflineAlertMessage({
   macAddress,
   offlineSince,
   delayMinutes,
-  offlineReason,
 }) {
   const lines = [
     "ALERTA: dispositivo offline",
@@ -56,9 +55,6 @@ function buildOfflineAlertMessage({
 
   lines.push(`Offline desde: ${formatDateTime(offlineSince)}`);
   lines.push(`Tempo minimo confirmado: ${delayMinutes} minutos`);
-  if (safeTrim(offlineReason)) {
-    lines.push(`Motivo informado: ${safeTrim(offlineReason)}`);
-  }
   lines.push("");
   lines.push("O dispositivo segue offline apos a janela de validacao do monitoramento.");
   lines.push("Monitoramento Global IA");
@@ -166,6 +162,224 @@ async function loadClientName(supabase, clientId) {
   return safeTrim(data?.name);
 }
 
+async function loadActiveMonitoringContacts(supabase, clientId) {
+  const { data, error } = await supabase
+    .from("monitoring_whatsapp_contacts")
+    .select("id, client_id, store_id, responsible_name, phone_number, phone_e164, enabled, receive_offline_alerts")
+    .eq("client_id", clientId)
+    .eq("enabled", true)
+    .eq("receive_offline_alerts", true);
+
+  if (error) {
+    const message = error.message || "";
+    if (message.toLowerCase().includes("does not exist")) {
+      return {
+        missingTables: true,
+        contacts: [],
+      };
+    }
+    throw error;
+  }
+
+  return {
+    missingTables: false,
+    contacts: data || [],
+  };
+}
+
+function buildAlertUpsertPayload({
+  alert,
+  nowIso,
+  overrides = {},
+}) {
+  return {
+    id: alert.id,
+    client_id: alert.client_id,
+    store_id: alert.store_id || null,
+    device_id: alert.device_id,
+    alert_type: "offline",
+    status: alert.status || "pending",
+    device_name: alert.device_name,
+    store_name: alert.store_name,
+    client_name: alert.client_name || null,
+    mac_address: alert.mac_address || null,
+    first_detected_at: alert.first_detected_at,
+    last_seen_offline_at: alert.last_seen_offline_at || alert.first_detected_at,
+    last_seen_online_at: alert.last_seen_online_at || null,
+    notified_at: alert.notified_at || null,
+    notification_attempts: Number(alert.notification_attempts || 0),
+    notified_contact_count: Number(alert.notified_contact_count || 0),
+    resolution_sent_at: alert.resolution_sent_at || null,
+    resolution_contact_count: Number(alert.resolution_contact_count || 0),
+    last_notification_error: alert.last_notification_error || null,
+    offline_reason: safeTrim(alert.offline_reason) || null,
+    offline_reason_updated_at: alert.offline_reason_updated_at || null,
+    offline_reason_sent_at: alert.offline_reason_sent_at || null,
+    resolved_at: alert.resolved_at || null,
+    created_at: alert.created_at || nowIso,
+    updated_at: nowIso,
+    ...overrides,
+  };
+}
+
+export async function dispatchPendingOfflineAlerts({
+  supabase,
+  clientId,
+  clientName = "",
+  alertId = "",
+  force = false,
+  contactId = "",
+}) {
+  const zapConfig = getZapResponderConfigFromEnv();
+  const offlineDelayMinutes = parsePositiveInt(
+    process.env.MONITORING_OFFLINE_DELAY_MINUTES,
+    30
+  );
+
+  if (!clientId || !supabase) {
+    return { skipped: true, reason: "missing-input" };
+  }
+
+  const nowIso = new Date().toISOString();
+  const resolvedClientName = safeTrim(clientName) || (await loadClientName(supabase, clientId));
+
+  const contactsResult = await loadActiveMonitoringContacts(supabase, clientId);
+  if (contactsResult.missingTables) {
+    console.warn("[monitoring] Tabelas de monitoramento ainda nao criadas.");
+    return { skipped: true, reason: "missing-tables" };
+  }
+
+  const allContacts = contactsResult.contacts || [];
+  const explicitContactId = safeTrim(contactId);
+  const explicitContact = explicitContactId
+    ? allContacts.find((contact) => safeTrim(contact.id) === explicitContactId)
+    : null;
+
+  if (explicitContactId && !explicitContact) {
+    return {
+      skipped: true,
+      reason: "contact-not-found",
+      errors: ["Contato selecionado nao esta ativo para esta rede."],
+    };
+  }
+
+  let alertsQuery = supabase
+    .from("device_offline_alerts")
+    .select("*")
+    .eq("client_id", clientId)
+    .eq("alert_type", "offline")
+    .is("resolved_at", null)
+    .is("notified_at", null)
+    .order("first_detected_at", { ascending: true })
+    .limit(100);
+
+  if (safeTrim(alertId)) {
+    alertsQuery = alertsQuery.eq("id", safeTrim(alertId));
+  }
+
+  const { data: pendingAlerts, error: pendingAlertsError } = await alertsQuery;
+  if (pendingAlertsError) {
+    const message = pendingAlertsError.message || "";
+    if (message.toLowerCase().includes("does not exist")) {
+      console.warn("[monitoring] Tabelas de monitoramento ainda nao criadas.");
+      return { skipped: true, reason: "missing-tables" };
+    }
+    throw pendingAlertsError;
+  }
+
+  const summary = {
+    processed: 0,
+    eligible: 0,
+    sent: 0,
+    skippedWaiting: 0,
+    errors: [],
+    configured: zapConfig.configured,
+    missingEnv: zapConfig.missing,
+    offlineDelayMinutes,
+  };
+
+  if (!Array.isArray(pendingAlerts) || pendingAlerts.length === 0) {
+    return summary;
+  }
+
+  const updates = [];
+
+  for (const alert of pendingAlerts) {
+    summary.processed += 1;
+
+    const elapsedMinutes = minutesBetween(alert.first_detected_at, nowIso);
+    if (!force && elapsedMinutes < offlineDelayMinutes) {
+      summary.skippedWaiting += 1;
+      continue;
+    }
+
+    summary.eligible += 1;
+
+    const recipients = explicitContact
+      ? dedupeContacts([explicitContact])
+      : resolveRecipients(allContacts, alert.store_id);
+
+    const update = buildAlertUpsertPayload({
+      alert,
+      nowIso,
+      overrides: {
+        notification_attempts: Number(alert.notification_attempts || 0) + 1,
+        status: "pending",
+      },
+    });
+
+    if (!zapConfig.configured) {
+      update.last_notification_error = `Configuracao pendente: ${zapConfig.missing.join(", ")}`;
+      summary.errors.push(update.last_notification_error);
+      updates.push(update);
+      continue;
+    }
+
+    if (recipients.length === 0) {
+      update.last_notification_error = "Nenhum contato ativo para a loja/rede";
+      summary.errors.push(update.last_notification_error);
+      updates.push(update);
+      continue;
+    }
+
+    const sendResult = await sendMessageToRecipients(
+      recipients,
+      buildOfflineAlertMessage({
+        clientName: resolvedClientName || alert.client_name,
+        storeName: alert.store_name,
+        deviceName: alert.device_name,
+        macAddress: alert.mac_address,
+        offlineSince: alert.first_detected_at,
+        delayMinutes: offlineDelayMinutes,
+      })
+    );
+
+    if (sendResult.sentCount > 0) {
+      update.status = "notified";
+      update.notified_at = nowIso;
+      update.notified_contact_count = sendResult.sentCount;
+      update.last_notification_error =
+        sendResult.failures.length > 0 ? sendResult.failures.join(" | ").slice(0, 800) : null;
+      summary.sent += 1;
+    } else {
+      update.last_notification_error =
+        sendResult.failures.join(" | ").slice(0, 800) || "Falha ao enviar alerta";
+      summary.errors.push(update.last_notification_error);
+    }
+
+    updates.push(update);
+  }
+
+  if (updates.length > 0) {
+    const { error } = await supabase
+      .from("device_offline_alerts")
+      .upsert(updates, { onConflict: "id" });
+    if (error) throw error;
+  }
+
+  return summary;
+}
+
 export async function processOfflineMonitoring({
   supabase,
   clientId,
@@ -192,21 +406,12 @@ export async function processOfflineMonitoring({
     (storesPayload || []).map((store) => [safeTrim(store.id), safeTrim(store.name)])
   );
 
-  const { data: contactsData, error: contactsError } = await supabase
-    .from("monitoring_whatsapp_contacts")
-    .select("id, client_id, store_id, responsible_name, phone_number, phone_e164, enabled, receive_offline_alerts")
-    .eq("client_id", clientId)
-    .eq("enabled", true)
-    .eq("receive_offline_alerts", true);
-
-  if (contactsError) {
-    const message = contactsError.message || "";
-    if (message.toLowerCase().includes("does not exist")) {
-      console.warn("[monitoring] Tabelas de monitoramento ainda nao criadas.");
-      return { skipped: true, reason: "missing-tables" };
-    }
-    throw contactsError;
+  const contactsResult = await loadActiveMonitoringContacts(supabase, clientId);
+  if (contactsResult.missingTables) {
+    console.warn("[monitoring] Tabelas de monitoramento ainda nao criadas.");
+    return { skipped: true, reason: "missing-tables" };
   }
+  const contactsData = contactsResult.contacts || [];
 
   const deviceIds = devicesPayload
     .map((device) => safeTrim(device.id))
@@ -338,7 +543,6 @@ export async function processOfflineMonitoring({
               macAddress,
               offlineSince: alert.first_detected_at,
               delayMinutes: offlineDelayMinutes,
-              offlineReason,
             })
           );
 
@@ -346,7 +550,6 @@ export async function processOfflineMonitoring({
             update.status = "notified";
             update.notified_at = nowIso;
             update.notified_contact_count = sendResult.sentCount;
-            update.offline_reason_sent_at = offlineReason ? nowIso : update.offline_reason_sent_at;
             update.last_notification_error =
               sendResult.failures.length > 0 ? sendResult.failures.join(" | ").slice(0, 800) : null;
             summary.notified += 1;
@@ -362,6 +565,7 @@ export async function processOfflineMonitoring({
         Boolean(alert.notified_at) &&
         Boolean(offlineReason) &&
         Boolean(alert.offline_reason_updated_at) &&
+        Date.parse(String(alert.offline_reason_updated_at)) >= Date.parse(String(alert.notified_at)) &&
         (!alert.offline_reason_sent_at ||
           Date.parse(String(alert.offline_reason_updated_at)) > Date.parse(String(alert.offline_reason_sent_at)));
 

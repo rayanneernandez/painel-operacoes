@@ -1476,11 +1476,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Usa extractVisitorArray definida globalmente para extrair array de qualquer formato
 
       // Busca paginada de uma URL (usePost=true força POST para que params sejam enviados no body)
+      const sanitizeDisplayforceBody = (input: Record<string, any>) =>
+        Object.fromEntries(
+          Object.entries(input || {}).filter(([, value]) => {
+            if (value == null) return false;
+            if (Array.isArray(value)) return value.length > 0;
+            if (typeof value === "string") return value.trim().length > 0;
+            return true;
+          })
+        );
+
       const fetchAllPages = async (url: string, bodyBase: any, usePost = false): Promise<any[]> => {
         const all: any[] = [];
         let offset = 0; const limit = 1000;
         while (true) {
-          const body = { ...bodyBase, limit, offset };
+          const body = sanitizeDisplayforceBody({ ...bodyBase, limit, offset });
           let r: Response;
           if (usePost) {
             r = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
@@ -1504,19 +1514,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Usa POST direto conforme a documentacao para evitar um GET desperdicado
       // antes do fallback.
       let folders = await fetchAllPages(`${base}${folderEndpoint}`,
-        { id:[], name:[], parent_ids:[], recursive:true }, true);
+        { recursive:true }, true);
       if (folders.length === 0) {
         folders = await fetchAllPages(`${base}${legacyFolderEndpoint}`,
-          { id:[], name:[], parent_ids:[], recursive:true }, true);
+          { recursive:true }, true);
       }
       console.log(`[sync_stores] Lojas encontradas: ${folders.length}`);
 
       // A documentacao da API permite restringir os campos retornados.
       // Isso reduz payload e risco de excesso sem perder a acuracia do status.
       const devicesData = await fetchAllPages(`${base}${deviceEndpoint}`, {
-        id: [],
-        name: [],
-        parent_ids: [],
         recursive: true,
         params: [
           "id",
@@ -1546,9 +1553,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         console.log(`[sync_stores] connection_state raw=`, JSON.stringify(connRaw0), `type=`, typeof connRaw0);
       }
 
-      if (folders.length === 0) return ok(res, { message:"Nenhuma loja encontrada na API DisplayForce", stores_upserted:0, devices_upserted:0 });
-
       const { data: dbStores } = await supabase.from("stores").select("id,name,city").eq("client_id", client_id);
+      if (folders.length === 0) {
+        console.warn(`[sync_stores] Nenhuma pasta retornada pela API para ${client_id}. Vou reutilizar as lojas ja salvas no banco para atualizar os devices conhecidos.`);
+        if (!dbStores || dbStores.length === 0) {
+          return ok(res, { message:"Nenhuma loja encontrada na API DisplayForce", stores_upserted:0, devices_upserted:0 });
+        }
+      }
       const nameToStore = new Map<string, { id:string; city?:string|null }>();
       (dbStores || []).forEach((s:any) => { const n=String(s?.name||"").trim().toLowerCase(); if(!n||!s?.id)return; nameToStore.set(n,{id:String(s.id),city:s.city}); });
 
@@ -1586,10 +1597,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
       if (storesPayload.length > 0) await supabase.from("stores").upsert(storesPayload);
 
+      const storeCatalog =
+        storesPayload.length > 0
+          ? storesPayload
+          : (dbStores || []).map((store: any) => ({
+              id: String(store?.id || ""),
+              client_id,
+              name: String(store?.name || "").trim(),
+              city: store?.city ?? null,
+            })).filter((store: any) => store.id && store.name);
+
       // Remove do banco as lojas deste cliente que não existem mais na API
       // (ex: loja renomeada, encerrada ou removida do DisplayForce)
-      const storeIds = storesPayload.map(s => s.id).filter(Boolean);
-      if (storeIds.length > 0) {
+      const storeIds = storeCatalog.map(s => s.id).filter(Boolean);
+      if (folders.length > 0 && storeIds.length > 0) {
         const { data: allDbStores } = await supabase.from("stores").select("id").eq("client_id", client_id);
         const orphanIds = (allDbStores || []).map((s: any) => String(s.id)).filter(dbId => !storeIds.includes(dbId));
         if (orphanIds.length > 0) {
@@ -1603,7 +1624,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const { data: dbDevs } = storeIds.length ? await supabase.from("devices").select("id,mac_address,store_id").in("store_id", storeIds) : { data: [] as any[] };
       const devIdByStoreMac = new Map<string,string>();
-      (dbDevs||[]).forEach((d:any) => { const sid=String(d?.store_id||""); const mac=String(d?.mac_address||"").trim(); const did=String(d?.id||""); if(!sid||!mac||!did)return; devIdByStoreMac.set(`${sid}:${mac}`,did); });
+      const existingStoreIdByMac = new Map<string,string>();
+      (dbDevs||[]).forEach((d:any) => {
+        const sid=String(d?.store_id||"");
+        const mac=String(d?.mac_address||"").trim();
+        const did=String(d?.id||"");
+        if(!sid||!mac||!did)return;
+        devIdByStoreMac.set(`${sid}:${mac}`,did);
+        existingStoreIdByMac.set(mac,sid);
+      });
 
       const devicesByFolder = new Map<string,any[]>();
       devicesData.forEach((d:any) => { const pid=d?.parent_id; if(pid==null)return; const k=String(pid); const arr=devicesByFolder.get(k)||[]; arr.push(d); devicesByFolder.set(k,arr); });
@@ -1642,12 +1671,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "reproduction",
         "playing",
         "reproduzindo",
-      ]);
-      const DOC_PLAYER_ISSUE_TOKENS = new Set([
         "empty",
+        "vazio",
         "pause",
         "paused",
+        "pausado",
+      ]);
+      const DOC_PLAYER_ISSUE_TOKENS = new Set([
         "problem",
+        "problema",
+        "error",
+        "erro",
         "offline",
       ]);
 
@@ -1760,6 +1794,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return null;
       };
 
+      const EXPLICIT_NOT_CONNECTED_TOKENS = new Set([
+        "not connected",
+        "not_connected",
+        "nao conectado",
+        "não conectado",
+      ]);
+
+      const EXPLICIT_OFFLINE_TOKENS = new Set(["offline"]);
+
+      const EXPLICIT_ONLINE_TOKENS = new Set([
+        "playback",
+        "reproducao",
+        "reproduction",
+        "playing",
+        "reproduzindo",
+        "vazio",
+        "empty",
+      ]);
+
+      const resolveExplicitVisibleStatus = (values: any[]): "online" | "offline" | "not_connected" | null => {
+        const tokens = values
+          .map((value) => normalizeStatusToken(value))
+          .filter(Boolean);
+
+        if (tokens.some((token) => EXPLICIT_NOT_CONNECTED_TOKENS.has(token))) {
+          return "not_connected";
+        }
+
+        if (tokens.some((token) => EXPLICIT_OFFLINE_TOKENS.has(token))) {
+          return "offline";
+        }
+
+        if (tokens.some((token) => EXPLICIT_ONLINE_TOKENS.has(token))) {
+          return "online";
+        }
+
+        return null;
+      };
+
       const LAST_ONLINE_OFFLINE_GRACE_MS = 20 * 60 * 1000;
 
       const resolveLastOnlineFallback = (value: any): "online" | "offline" | null => {
@@ -1771,22 +1844,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       };
 
       const parseDevStatus = (d: any): 'online' | 'offline' | 'not_connected' => {
+        const explicitVisibleStatus = resolveExplicitVisibleStatus([d?.status, d?.state]);
         const connectionState =
           resolveDocConnectionState(d?.connection_state) ??
           resolveDocConnectionState(d?.online) ??
           resolveDocConnectionState(d?.is_online) ??
           resolveDocConnectionState(d?.connected);
 
-        const playerCandidates = [
-          d?.player_status,
-          d?.player_state,
-          d?.playback_state,
-          d?.status,
-          d?.state,
-        ];
+        const primaryPlayerCandidates = [d?.player_status, d?.player_state, d?.playback_state];
+        const fallbackPlayerCandidates = [d?.status, d?.state];
+        const fallbackConnectivity =
+          resolveConnectivityCandidate(d?.status) ??
+          resolveConnectivityCandidate(d?.state);
 
         let playerState: "playback" | "issue" | null = null;
-        for (const candidate of playerCandidates) {
+
+        for (const candidate of primaryPlayerCandidates) {
           const resolved = resolveDocPlayerState(candidate);
           if (resolved) {
             playerState = resolved;
@@ -1794,9 +1867,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           }
         }
 
-        const wasEverConnected = hasDeviceConnectionHistory(d);
+        if (!playerState) {
+          for (const candidate of fallbackPlayerCandidates) {
+            const resolved = resolveDocPlayerState(candidate);
+            if (resolved) {
+              playerState = resolved;
+              break;
+            }
+          }
+        }
 
-        if (connectionState === "online" && playerState === "issue") {
+        const wasEverConnected = hasDeviceConnectionHistory(d);
+        const lastOnlineFallback = resolveLastOnlineFallback(d?.last_online);
+        const hasConfirmedSignal = Boolean(connectionState || playerState || fallbackConnectivity || wasEverConnected);
+
+        if (explicitVisibleStatus === "not_connected" && !connectionState) {
+          return "not_connected";
+        }
+
+        if (connectionState === "offline") {
           return "offline";
         }
 
@@ -1804,12 +1893,45 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return "online";
         }
 
-        if (connectionState === "offline") {
+        if (explicitVisibleStatus === "offline") {
+          return "offline";
+        }
+
+        if (explicitVisibleStatus === "online") {
+          return "online";
+        }
+
+        if (fallbackConnectivity === "not_connected" && playerState !== "playback") {
+          return "not_connected";
+        }
+
+        if (playerState === "playback") {
+          return "online";
+        }
+
+        if (playerState === "issue") {
           return wasEverConnected ? "offline" : "not_connected";
         }
 
-        if (playerState === "playback") return "online";
-        if (playerState === "issue") return wasEverConnected ? "offline" : "not_connected";
+        if (fallbackConnectivity === "online") {
+          return "online";
+        }
+
+        if (fallbackConnectivity === "not_connected") {
+          return "not_connected";
+        }
+
+        if (!hasConfirmedSignal) {
+          return "not_connected";
+        }
+
+        if (lastOnlineFallback === "online") {
+          return "online";
+        }
+
+        if (lastOnlineFallback === "offline") {
+          return "offline";
+        }
 
         return wasEverConnected ? "offline" : "not_connected";
       };
@@ -1817,8 +1939,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // Mapa rápido: prefixo numérico do nome da loja → storeId
       // Ex: "309" → storeId de "309 Panvel Dom Joaquim Posto - RS"
       const storeNumToId = new Map<string, string>();
-      storesPayload.forEach(s => {
-        const m = String(s.name || '').match(/^(\d+)\b/);
+      storeCatalog.forEach(s => {
+        const storeName = String(s.name || '');
+        const m =
+          storeName.match(/^(\d+)\b/) ||
+          storeName.match(/\bFL\s*0*(\d+)\b/i) ||
+          storeName.match(/\bFILIAL\s*0*(\d+)\b/i);
         if (m) storeNumToId.set(m[1], s.id);
       });
 
@@ -1846,6 +1972,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const mac = String(d?.id ?? '').trim();
         if (!mac || assignedMacs.has(mac)) return; // já atribuído
         const devName = String(d?.name || '').trim();
+        const previousStoreId = existingStoreIdByMac.get(mac);
+        if (previousStoreId) {
+          const existingId = devIdByStoreMac.get(`${previousStoreId}:${mac}`);
+          const extId = Number(mac);
+          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:previousStoreId, name:devName||mac, type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d) });
+          assignedMacs.add(mac);
+          return;
+        }
         // Formatos: "428 Dom Estreito - Entrada" | "Filial 387 - Cam" | "Filial 21/455 - Caixa"
         const directNum = devName.match(/^(\d+)\b/);
         const filialNum  = devName.match(/\bfilial\s+(?:\d+\/)?(\d+)\b/i); // "21/455" → "455"
@@ -1865,7 +1999,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       // Remove dispositivos de stores não sincronizadas (segurança adicional)
       // Nota: PostgREST NOT IN não usa aspas simples nos valores — usar join sem aspas
-      if (storeIds.length > 0) {
+      if (folders.length > 0 && storeIds.length > 0) {
         const allSyncedMacs = devicesPayload.map(d => d.mac_address).filter(Boolean);
         if (allSyncedMacs.length > 0) {
           await supabase.from("devices")
