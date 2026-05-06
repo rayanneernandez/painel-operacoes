@@ -54,6 +54,7 @@ export function Settings() {
   const [dashboardView, setDashboardView] = useState<'edit' | 'preview'>('edit');
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [isResizing, setIsResizing] = useState(false);
+  const [configReloadKey, setConfigReloadKey] = useState(0);
 
   useEffect(() => {
     // Fetch Clients for Dropdown
@@ -230,7 +231,7 @@ export function Settings() {
     return () => {
       cancelled = true;
     };
-  }, [selectedScope]);
+  }, [selectedScope, configReloadKey]);
 
   const addWidget = (widget: WidgetType) => {
     setActiveWidgets([...activeWidgets, widget]);
@@ -450,6 +451,30 @@ export function Settings() {
     }
   };
 
+  const handleResetScopeToGlobal = async () => {
+    if (selectedScope === 'global') return;
+    const clientName = clients.find((c) => c.id === selectedScope)?.name ?? 'esta rede';
+    const ok = window.confirm(`Deseja remover a configuração específica de ${clientName} e voltar ao Padrão Global?`);
+    if (!ok) return;
+
+    setSaveStatus('saving');
+    try {
+      const { error } = await supabase
+        .from('dashboard_configs')
+        .delete()
+        .eq('layout_name', 'client')
+        .eq('client_id', selectedScope);
+      if (error) throw error;
+      localStorage.removeItem(`dashboard-config-${selectedScope}`);
+      setSaveStatus('saved');
+      setConfigReloadKey((v) => v + 1);
+      setTimeout(() => setSaveStatus('idle'), 3000);
+    } catch (e) {
+      console.error('Erro ao resetar dashboard da rede para o padrão global:', e);
+      setSaveStatus('idle');
+    }
+  };
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
 
@@ -495,6 +520,14 @@ export function Settings() {
                 ))}
               </select>
             </div>
+            {selectedScope !== 'global' && (
+              <button
+                onClick={handleResetScopeToGlobal}
+                className="bg-gray-800 hover:bg-gray-700 text-white font-medium px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all border border-gray-700 active:scale-95"
+              >
+                Voltar ao Global
+              </button>
+            )}
             <button
               onClick={handleSave}
               className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
