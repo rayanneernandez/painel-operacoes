@@ -995,12 +995,67 @@ export function ClientDashboard() {
 
     if (!isCurrent()) return;
     const rowSeries = buildFacialExpressionSeriesFromRows(allRows);
-    // Usa dados das linhas se têm dados; senão mantém o cache
     const bestSeries = hasFacialExpressionSeriesData(rowSeries) ? rowSeries : immediateSeries;
     setFacialExpressionLabels(labels);
     setFacialExpressionSeries(bestSeries ?? rowSeries);
 
-    // ── Passo 2: chama a API v5 Displayforce para Surpresa/Raiva em tempo real ─
+    // ── Passo 1b: sync automático quando período é hoje e dados estão desatualizados ──
+    // O cron só roda uma vez por dia — se o usuário abre o dashboard às 10h,
+    // visitor_analytics pode ter dados só até o último cron (~6h). As expressões
+    // ficariam desatualizadas. Este trigger busca dados frescos em background
+    // e atualiza o gráfico ~30s depois.
+    const todaySP = formatSaoPauloDateKey(new Date());
+    const rangeEndDay = formatSaoPauloDateKey(rangeEnd);
+    const rangeStartDay = formatSaoPauloDateKey(rangeStart);
+    const touchesToday = rangeStartDay <= todaySP && rangeEndDay >= todaySP;
+    const currentSPHour = getSaoPauloHour(new Date());
+    const rowsHaveCurrentHour = allRows.some(r => getSaoPauloHour(r.timestamp) === currentSPHour);
+
+    if (touchesToday && !rowsHaveCurrentHour) {
+      fetch('/api/sync-analytics', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: clientId,
+          background_sync: true,
+          start: rangeStart,
+          end: rangeEnd,
+          ...(deviceFilter.length > 0 ? { devices: deviceFilter } : {}),
+        }),
+      }).catch(() => {});
+
+      setTimeout(async () => {
+        if (!isCurrent()) return;
+        const freshRows: any[] = [];
+        let fr = 0;
+        while (true) {
+          let q2 = supabase
+            .from('visitor_analytics')
+            .select('timestamp,attributes,raw_data,device_id')
+            .eq('client_id', clientId)
+            .gte('timestamp', rangeStart)
+            .lte('timestamp', rangeEnd)
+            .order('timestamp', { ascending: true })
+            .range(fr, fr + 999);
+          if (deviceFilter.length > 0) q2 = q2.in('device_id', deviceFilter);
+          const { data: d2 } = await (q2 as any);
+          if (!Array.isArray(d2) || d2.length === 0) break;
+          freshRows.push(...d2);
+          if (d2.length < 1000) break;
+          fr += 1000;
+        }
+        if (!isCurrent() || freshRows.length === 0) return;
+        const freshSeries = buildFacialExpressionSeriesFromRows(freshRows);
+        if (hasFacialExpressionSeriesData(freshSeries)) {
+          setFacialExpressionLabels(labels);
+          setFacialExpressionSeries(freshSeries);
+        }
+      }, 30000);
+    }
+
+    // ── Passo 2: chama a API v5 Displayforce para Surpresa/Raiva/Nojo em tempo real ─
+    // REQUER: DISPLAYFORCE_EMAIL e DISPLAYFORCE_PASS configurados no Vercel (env vars)
+    // Sem isso, surprise/anger/disgust ficam 0 pois a API pública v1 só tem 'smile'.
     // A API pública v1 só tem smile — para neutral/happiness/surprise/anger
     // precisamos da API v5 privada (cookie auth). Só vale para Rede Global
     // pois a v5 não filtra por device.
