@@ -167,11 +167,6 @@ export function ClientDashboardConfig() {
         const defaultIds = ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time', 'flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
         const rawAllowedIds = expandLegacyKpiIds(allowed.ids && allowed.ids.length ? allowed.ids : defaultIds);
         // Widgets adicionados após a configuração inicial — sempre ficam disponíveis
-        const ALWAYS_AVAILABLE = ['device_type_audience'];
-        const allowedIds = [...rawAllowedIds, ...ALWAYS_AVAILABLE.filter(w => !rawAllowedIds.includes(w))];
-        const allowedSet = new Set(allowedIds);
-        const allowedWidgets = AVAILABLE_WIDGETS.filter((w) => allowedSet.has(w.id));
-
         let userRaw: any = null;
         try {
           userRaw = await fetchWidgetsConfig('client_user');
@@ -185,10 +180,25 @@ export function ClientDashboardConfig() {
           userCfg = parseConfig(uc ? JSON.parse(uc) : null);
         }
 
+        const configuredIds = new Set([
+          ...(allowed.ids ?? []),
+          ...(userCfg.ids ?? []),
+        ]);
+        const newWidgetIds = AVAILABLE_WIDGETS
+          .map((widget) => widget.id)
+          .filter((widgetId) => !configuredIds.has(widgetId));
+        const allowedIds = [...rawAllowedIds, ...newWidgetIds.filter((wid) => !rawAllowedIds.includes(wid))];
+        const allowedSet = new Set(allowedIds);
+        const allowedWidgets = AVAILABLE_WIDGETS.filter((w) => allowedSet.has(w.id));
+
         const baseIds = userCfg.ids && userCfg.ids.length ? expandLegacyKpiIds(userCfg.ids) : allowedIds;
         const activeIds = baseIds.filter((wid) => allowedSet.has(wid));
+        const finalActiveIds = [...activeIds];
+        for (const widgetId of newWidgetIds) {
+          if (!finalActiveIds.includes(widgetId)) finalActiveIds.push(widgetId);
+        }
 
-        const active: WidgetConfig[] = activeIds
+        const active: WidgetConfig[] = finalActiveIds
           .map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid))
           .filter(Boolean)
           .map((w) => ({
@@ -197,7 +207,7 @@ export function ClientDashboardConfig() {
             heightPx: userCfg.layout[w!.id]?.heightPx ?? allowed.layout[w!.id]?.heightPx ?? getDefaultHeightPx(w!),
           }));
 
-        const activeIdSet = new Set(activeIds);
+        const activeIdSet = new Set(finalActiveIds);
         const available = allowedWidgets.filter((w) => !activeIdSet.has(w.id));
 
         if (!cancelled) {

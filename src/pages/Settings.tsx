@@ -202,9 +202,18 @@ export function Settings() {
         }
       }
 
-      const finalIds = resolved.ids && resolved.ids.length
+      const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'journey', 'campaigns'];
+      const baseIds = resolved.ids && resolved.ids.length
         ? resolved.ids
-        : ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'journey', 'campaigns'];
+        : defaultIds;
+      const configuredIds = new Set(resolved.ids ?? []);
+      const newWidgetIds = AVAILABLE_WIDGETS
+        .map((widget) => widget.id)
+        .filter((widgetId) => !configuredIds.has(widgetId));
+      const finalIds = [...baseIds];
+      for (const widgetId of newWidgetIds) {
+        if (!finalIds.includes(widgetId)) finalIds.push(widgetId);
+      }
 
       const active = finalIds
         .map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid))

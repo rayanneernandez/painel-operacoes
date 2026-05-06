@@ -1441,8 +1441,9 @@ function loadDeviceTypeConfig(): Record<string, boolean> {
 function saveDeviceTypeConfig(cfg: Record<string, boolean>) {
   try { window.localStorage.setItem(DEVICE_TYPE_STORAGE_KEY, JSON.stringify(cfg)); } catch { /* noop */ }
 }
+const getDeviceTypeLabel = (key: string) => DEVICE_TYPE_PALETTE.find((p) => p.key === key)?.label || key;
 
-export const WidgetDeviceTypeAudience = ({ deviceAudience }: { deviceAudience?: DeviceAudienceItem[] }) => {
+export const WidgetDeviceTypeAudience = ({ deviceAudience, trackingData }: { deviceAudience?: DeviceAudienceItem[]; trackingData?: { label: string; value: number; count?: number }[] }) => {
   const [enabled, setEnabled] = React.useState<Record<string, boolean>>(loadDeviceTypeConfig);
   const [showConfig, setShowConfig] = React.useState(false);
 
@@ -1468,6 +1469,21 @@ export const WidgetDeviceTypeAudience = ({ deviceAudience }: { deviceAudience?: 
   }, [deviceAudience, enabled]);
 
   const maxVal = items.length > 0 ? items[0].value : 100;
+  const combos = React.useMemo(() => {
+    const acc = new Map<string, { label: string; value: number; count: number }>();
+    for (const row of trackingData || []) {
+      const raw = String(row?.label ?? '');
+      const parts = (raw.match(/entrada|totem|caixa|gôndola|gondola|led|câmera|camera/gi) || [])
+        .map((p) => getDeviceTypeLabel(extractDeviceCategory(p)));
+      if (parts.length < 2) continue;
+      const label = parts.join(' → ');
+      const prev = acc.get(label) || { label, value: 0, count: 0 };
+      prev.value += Number(row?.value) || 0;
+      prev.count += Number(row?.count) || 0;
+      acc.set(label, prev);
+    }
+    return [...acc.values()].sort((a, b) => (b.count || b.value) - (a.count || a.value)).slice(0, 10);
+  }, [trackingData]);
 
   // Quais tipos existem nos dados (para o painel de config)
   const presentTypes = React.useMemo(() => {
@@ -1528,30 +1544,17 @@ export const WidgetDeviceTypeAudience = ({ deviceAudience }: { deviceAudience?: 
       )}
 
       {/* Conteúdo */}
-      {items.length === 0 ? (
+      {items.length === 0 && combos.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
           {deviceAudience?.length ? 'Nenhum tipo selecionado — use ⚙ para configurar.' : 'Selecione uma loja para ver por dispositivo.'}
         </div>
       ) : (
-        <div className="flex-1 flex flex-col justify-center gap-3 overflow-y-auto">
-          {items.map((item) => {
+        <div className="flex-1 flex flex-col gap-4 overflow-y-auto">
+          {items.length > 0 && <div className="flex flex-col gap-3">{items.map((item) => {
             const barW = maxVal > 0 ? Math.round((item.value / maxVal) * 100) : 0;
-            return (
-              <div key={item.label}>
-                <div className="flex items-center justify-between mb-1">
-                  <span className="text-[11px] font-semibold text-gray-200 uppercase tracking-wide">{item.label}</span>
-                  <span className="text-[12px] font-black tabular-nums" style={{ color: item.color }}>{item.value.toFixed(1)}%</span>
-                </div>
-                <div className="h-5 rounded-lg overflow-hidden bg-gray-800/60 relative">
-                  <div
-                    className="h-full rounded-lg transition-all duration-500"
-                    style={{ width: `${barW}%`, background: `linear-gradient(90deg, ${item.color}cc, ${item.color}88)`, boxShadow: `0 0 12px ${item.color}44` }}
-                  />
-                  <div className="absolute inset-0 bg-gradient-to-r from-white/[0.04] to-transparent rounded-lg pointer-events-none" />
-                </div>
-              </div>
-            );
-          })}
+            return <div key={item.label}><div className="flex items-center justify-between mb-1"><span className="text-[11px] font-semibold text-gray-200 uppercase tracking-wide">{item.label}</span><span className="text-[12px] font-black tabular-nums" style={{ color: item.color }}>{item.value.toFixed(1)}%</span></div><div className="h-5 rounded-lg overflow-hidden bg-gray-800/60 relative"><div className="h-full rounded-lg transition-all duration-500" style={{ width: `${barW}%`, background: `linear-gradient(90deg, ${item.color}cc, ${item.color}88)`, boxShadow: `0 0 12px ${item.color}44` }} /><div className="absolute inset-0 bg-gradient-to-r from-white/[0.04] to-transparent rounded-lg pointer-events-none" /></div></div>;
+          })}</div>}
+          {combos.length > 0 && <div className="border-t border-gray-800 pt-3"><div className="text-[10px] uppercase tracking-[0.2em] text-gray-500 mb-2">Combinações</div><div className="space-y-2">{combos.map((item) => <div key={item.label} className="rounded-lg border border-gray-800 bg-gray-950/40 px-2 py-1.5"><div className="flex items-center justify-between gap-2"><span className="text-[11px] text-gray-200 break-words">{item.label}</span><span className="text-[11px] font-black text-white whitespace-nowrap">{item.count > 0 ? `${item.count} pessoas` : `${item.value.toFixed(1)}%`}</span></div><div className="text-[10px] text-gray-500 mt-0.5">{item.value.toFixed(1)}% do período</div></div>)}</div></div>}
         </div>
       )}
     </div>

@@ -620,7 +620,7 @@ export function ClientDashboard() {
   // deviceFlowVisitors removido — widget usa totalVisitors (KPI) como fonte única da verdade
   const [deviceFlowPassersby, setDeviceFlowPassersby] = useState<number | null>(null);
   const [deviceFlowAudience, setDeviceFlowAudience] = useState<{ label: string; rawKey?: string; value: number }[]>([]);
-  // deviceFlowTracking removido (Tracking Ilha foi substituído por novo gráfico)
+  const [deviceFlowTracking, setDeviceFlowTracking] = useState<{ label: string; value: number; count?: number }[]>([]);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
 
@@ -816,7 +816,31 @@ export function ClientDashboard() {
       }))
       .sort((a, b) => b.value - a.value);
 
-    return { visitors: totalVisitors > 0 ? totalVisitors : null, passersby, deviceAudience, trackingData: [] };
+    const getCategoryLabel = (label: string) => {
+      const l = String(label || '').toLowerCase();
+      if (l.includes('entrada')) return 'Entrada';
+      if (l.includes('totem')) return 'Totem';
+      if (l.includes('caixa')) return 'Caixa';
+      if (l.includes('gôndola') || l.includes('gondola') || l.includes('gond')) return 'Gôndola';
+      if (l.includes(' led') || l.includes('-led') || /\bled\b/.test(l)) return 'LED';
+      if (l.includes('câmera') || l.includes('camera') || l.includes(' cam')) return 'Câmera';
+      return 'Outros';
+    };
+    const trackingCounts = new Map<string, number>();
+    for (const row of safeRows) {
+      const journey = getDeviceKeys(row)
+        .map((dk) => getCategoryLabel(resolveDeviceFlowLabel(`Device ${dk}`)))
+        .filter(Boolean);
+      if (journey.length < 2) continue;
+      const key = journey.join(' → ');
+      trackingCounts.set(key, (trackingCounts.get(key) ?? 0) + 1);
+    }
+    const trackingData = [...trackingCounts.entries()]
+      .map(([label, count]) => ({ label, count, value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0 }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 12);
+
+    return { visitors: totalVisitors > 0 ? totalVisitors : null, passersby, deviceAudience, trackingData };
   }, [resolveDeviceFlowLabel]);
 
   useEffect(() => {
@@ -923,6 +947,7 @@ export function ClientDashboard() {
 
     setDeviceFlowPassersby(null);
     setDeviceFlowAudience([]);
+    setDeviceFlowTracking([]);
 
     setComparePrevVisitorsPerDay({});
   }
@@ -1129,12 +1154,11 @@ export function ClientDashboard() {
       visitors?: number | null;
       passersby?: number | null;
       deviceAudience?: { label: string; rawKey?: string; value: number }[];
-      trackingData?: { label: string; value: number }[];
+      trackingData?: { label: string; value: number; count?: number }[];
     }) => {
-
       setDeviceFlowPassersby(Number(payload?.passersby ?? 0) || null);
       setDeviceFlowAudience(Array.isArray(payload?.deviceAudience) ? payload.deviceAudience : []);
-
+      setDeviceFlowTracking(Array.isArray(payload?.trackingData) ? payload.trackingData : []);
     };
 
     // Mostra dados do rollup como preview rápido enquanto o fresh carrega,
@@ -2429,10 +2453,22 @@ export function ClientDashboard() {
         ? userActiveIds
         : allowedIds;
 
+      const configuredIds = new Set([
+        ...(allowedResolved.ids ?? []),
+        ...(userResolved.ids ?? []),
+      ]);
+      const newWidgetIds = AVAILABLE_WIDGETS
+        .map((widget) => widget.id)
+        .filter((widgetId) => !configuredIds.has(widgetId));
+      const finalActiveIds = [...activeIds];
+      for (const widgetId of newWidgetIds) {
+        if (!finalActiveIds.includes(widgetId)) finalActiveIds.push(widgetId);
+      }
+
       // Layout: combina allowed + user (user sobrescreve)
       const mergedLayout = { ...allowedResolved.widgetLayout, ...userResolved.widgetLayout };
 
-      const active = activeIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
+      const active = finalActiveIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
       if (!cancelled) { setActiveWidgets(active); setWidgetLayout(mergedLayout); }
     })()
       .catch((error) => {
@@ -2738,12 +2774,11 @@ export function ClientDashboard() {
                   widgetProps.trackingData = [];
                 }
                 if (widget.id === 'device_type_audience') {
-                  // Passa os devices individuais da loja selecionada (com labels resolvidos)
-                  // O widget extrai os tipos (Totem, Caixa, Gôndola, LED…) e agrupa
                   widgetProps.deviceAudience = deviceFlowAudience.map(e => ({
                     ...e,
                     label: resolveDeviceFlowLabel(String(e?.label ?? '')),
                   }));
+                  widgetProps.trackingData = deviceFlowTracking;
                 }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
