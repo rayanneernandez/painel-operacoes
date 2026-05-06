@@ -1,7 +1,7 @@
 // Shared DisplayForce v5 helpers — usado por sync-analytics e cron-sync.
 // Faz login multistep, mantém cookie em cache e expõe fetch da série de emoções.
 // O cron-sync usa esse módulo para popular `expressions_hourly` no rollup com
-// a distribuição completa (neutral/happiness/surprise/anger) por hora — algo
+// a distribuição completa (neutral/happiness/surprise/anger/disgust) por hora — algo
 // que o /public/v1/stats/visitor/list não entrega (lá só vem `smile` booleano).
 
 import { createClient } from "@supabase/supabase-js";
@@ -227,9 +227,9 @@ function buildHourlyUnixRanges(rangeStart, rangeEnd) {
 }
 
 /**
- * Busca a série hourly de emoções (neutral/happiness/surprise/anger) na API v5.
+ * Busca a série hourly de emoções (neutral/happiness/surprise/anger/disgust) na API v5.
  * Retorna no formato esperado por `attributes_percent.expressions_hourly`:
- *   { "YYYY-MM-DDTHH": { neutral, happiness, surprise, anger } }
+ *   { "YYYY-MM-DDTHH": { neutral, happiness, surprise, anger, disgust } }
  *
  * Se cliente não tiver platform mapeada ou range vazio, retorna null.
  */
@@ -269,9 +269,10 @@ export async function fetchFacialExpressionHourlyMap(clientId, rangeStart, range
       const happiness = Number(source?.happiness ?? 0) || 0;
       const surprise = Number(source?.surprise ?? 0) || 0;
       const anger = Number(source?.anger ?? 0) || 0;
+      const disgust = Number(source?.disgust ?? source?.disgusted ?? 0) || 0;
       // Só registra hours com algum dado — evita bagunçar o rollup com horas vazias
-      if (neutral + happiness + surprise + anger > 0) {
-        out[bucket.hourKey] = { neutral, happiness, surprise, anger };
+      if (neutral + happiness + surprise + anger + disgust > 0) {
+        out[bucket.hourKey] = { neutral, happiness, surprise, anger, disgust };
       }
     });
   }
@@ -283,12 +284,12 @@ export async function fetchFacialExpressionHourlyMap(clientId, rangeStart, range
  * Soma os totais de cada emoção a partir do hourly map.
  */
 export function totalsFromHourlyMap(hourlyMap) {
-  const totals = { neutral: 0, happiness: 0, surprise: 0, anger: 0 };
+  const totals = { neutral: 0, happiness: 0, surprise: 0, anger: 0, disgust: 0 };
   if (!hourlyMap || typeof hourlyMap !== "object") return totals;
 
   for (const counts of Object.values(hourlyMap)) {
     if (!counts || typeof counts !== "object") continue;
-    for (const key of ["neutral", "happiness", "surprise", "anger"]) {
+    for (const key of ["neutral", "happiness", "surprise", "anger", "disgust"]) {
       totals[key] += Number(counts[key] ?? 0) || 0;
     }
   }

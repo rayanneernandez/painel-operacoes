@@ -3,9 +3,10 @@ export const FACIAL_EXPRESSION_SERIES = [
   { key: "happiness", label: "Felicidade" },
   { key: "surprise", label: "Surpresa" },
   { key: "anger", label: "Raiva" },
+  { key: "disgust", label: "Nojo" },
 ];
 
-const FACIAL_EXPRESSION_PRIORITY = ["happiness", "surprise", "anger", "neutral"];
+const FACIAL_EXPRESSION_PRIORITY = ["happiness", "surprise", "anger", "disgust", "neutral"];
 
 function normalizeBooleanish(value) {
   if (typeof value === "boolean") return value;
@@ -34,6 +35,9 @@ export function normalizeFacialExpression(value) {
   }
   if (["anger", "angry", "raiva"].includes(normalized)) {
     return "anger";
+  }
+  if (["disgust", "disgusted", "nojo"].includes(normalized)) {
+    return "disgust";
   }
   return null;
 }
@@ -102,6 +106,7 @@ export function extractFacialExpressionCounts(rawVisit) {
     happiness: 0,
     surprise: 0,
     anger: 0,
+    disgust: 0,
   };
 
   if (!rawVisit || typeof rawVisit !== "object") {
