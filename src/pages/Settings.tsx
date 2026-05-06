@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2, Bot, Clock, RefreshCw, AlertCircle } from 'lucide-react';
+import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2, Bot, Clock, RefreshCw, AlertCircle, RotateCcw } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
@@ -55,6 +55,7 @@ export function Settings() {
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [isResizing, setIsResizing] = useState(false);
   const [configReloadKey, setConfigReloadKey] = useState(0);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
 
   useEffect(() => {
     // Fetch Clients for Dropdown
@@ -451,11 +452,13 @@ export function Settings() {
     }
   };
 
-  const handleResetScopeToGlobal = async () => {
+  const handleResetScopeToGlobal = () => {
     if (selectedScope === 'global') return;
-    const clientName = clients.find((c) => c.id === selectedScope)?.name ?? 'esta rede';
-    const ok = window.confirm(`Deseja remover a configuração específica de ${clientName} e voltar ao Padrão Global?`);
-    if (!ok) return;
+    setResetConfirmOpen(true);
+  };
+
+  const confirmResetScopeToGlobal = async () => {
+    if (selectedScope === 'global') return;
 
     setSaveStatus('saving');
     try {
@@ -466,6 +469,7 @@ export function Settings() {
         .eq('client_id', selectedScope);
       if (error) throw error;
       localStorage.removeItem(`dashboard-config-${selectedScope}`);
+      setResetConfirmOpen(false);
       setSaveStatus('saved');
       setConfigReloadKey((v) => v + 1);
       setTimeout(() => setSaveStatus('idle'), 3000);
@@ -523,9 +527,12 @@ export function Settings() {
             {selectedScope !== 'global' && (
               <button
                 onClick={handleResetScopeToGlobal}
-                className="bg-gray-800 hover:bg-gray-700 text-white font-medium px-4 py-2.5 rounded-xl flex items-center gap-2 transition-all border border-gray-700 active:scale-95"
+                type="button"
+                aria-label="Voltar ao padrão global"
+                title="Voltar ao padrão global"
+                className="group inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-700/70 bg-gray-950/50 text-gray-400 transition-all hover:border-indigo-500/40 hover:bg-indigo-500/10 hover:text-indigo-200 active:scale-95"
               >
-                Voltar ao Global
+                <RotateCcw size={15} className="transition-transform duration-200 group-hover:-rotate-45" />
               </button>
             )}
             <button
@@ -788,6 +795,49 @@ export function Settings() {
         )}
 
       </div>
+
+      {resetConfirmOpen && selectedScope !== 'global' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4">
+          <div className="w-full max-w-md rounded-2xl border border-gray-800 bg-gray-950 shadow-2xl shadow-black/40 overflow-hidden">
+            <div className="p-5 border-b border-gray-800 bg-gradient-to-r from-indigo-500/10 to-transparent">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl bg-indigo-500/10 border border-indigo-500/20">
+                  <RotateCcw size={18} className="text-indigo-300" />
+                </div>
+                <div>
+                  <h3 className="text-white font-semibold">Voltar ao padrão global</h3>
+                  <p className="text-sm text-gray-400 mt-1">
+                    A configuração personalizada de <span className="text-white font-medium">{clients.find((c) => c.id === selectedScope)?.name ?? 'esta rede'}</span> será removida.
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div className="p-5">
+              <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-100 flex items-start gap-3">
+                <AlertCircle size={16} className="mt-0.5 text-amber-300" />
+                <span>Depois disso, essa rede volta a herdar automaticamente o layout global salvo.</span>
+              </div>
+              <div className="mt-5 flex items-center justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => setResetConfirmOpen(false)}
+                  className="rounded-xl border border-gray-700 bg-gray-900 px-4 py-2 text-sm font-medium text-gray-300 transition hover:border-gray-600 hover:text-white"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmResetScopeToGlobal}
+                  className="rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-60"
+                  disabled={saveStatus === 'saving'}
+                >
+                  {saveStatus === 'saving' ? 'Aplicando...' : 'Confirmar'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
