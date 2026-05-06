@@ -1073,17 +1073,26 @@ export function ClientDashboard() {
           }),
         }, 12000, 'live expressions v5');
         if (isCurrent() && Array.isArray(liveResult?.series) && hasFacialExpressionSeriesData(liveResult.series)) {
-          // Mescla: usa a série live (que tem surprise/anger) mas preserva horas
-          // que só existem nos dados de linha (horas recentes não no rollup v5 ainda)
-          const merged = liveResult.series.map((liveSerie: { label: string; values: number[] }, i: number) => {
-            const rowSerie = rowSeries[i];
-            if (!rowSerie) return liveSerie;
+          // Mescla por LABEL (não por índice) para preservar emoções que a v5 não retorna
+          // (ex: Nojo/disgust pode não vir da v5, mas existe nos dados de linha)
+          const liveByLabel = new Map(
+            liveResult.series.map((s: { label: string; values: number[] }) => [
+              String(s.label).toLowerCase(), s
+            ])
+          );
+          const merged = FACIAL_EXPRESSION_SERIES.map(({ label }) => {
+            const liveSerie = liveByLabel.get(label.toLowerCase());
+            const rowSerie = rowSeries.find(r => String(r.label).toLowerCase() === label.toLowerCase());
+            const rowVals = rowSerie?.values ?? new Array(24).fill(0);
+            if (!liveSerie) {
+              // Emoção não veio da v5 (ex: Nojo) — usa dados de linha
+              return { label, values: rowVals };
+            }
             return {
-              label: liveSerie.label,
+              label,
               values: liveSerie.values.map((liveVal: number, h: number) => {
-                const rowVal = rowSerie.values[h] ?? 0;
-                // Para horas sem dados no live (v5 não processou ainda), usa dados de linha
-                return liveVal > 0 ? liveVal : rowVal;
+                // Para horas sem dados no live, usa dados de linha (horas recentes)
+                return liveVal > 0 ? liveVal : (rowVals[h] ?? 0);
               }),
             };
           });
