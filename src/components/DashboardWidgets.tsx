@@ -1409,47 +1409,128 @@ const DEVICE_TYPE_PALETTE = [
   { key: 'gondola', label: 'Gôndola', color: '#f59e0b' },
   { key: 'led',     label: 'LED',     color: '#38bdf8' },
   { key: 'camera',  label: 'Câmera',  color: '#a855f7' },
+  { key: 'entrada', label: 'Entrada', color: '#f97316' }, // laranja — opcional
   { key: 'outros',  label: 'Outros',  color: '#6b7280' },
 ];
 
-function extractDeviceCategory(label: string): string | null {
+const DEVICE_TYPE_STORAGE_KEY = 'widget_device_type_config';
+
+function extractDeviceCategory(label: string): string {
   const l = label.toLowerCase();
-  if (l.includes('entrada')) return null;
-  if (l.includes('totem')) return 'totem';
-  if (l.includes('caixa')) return 'caixa';
+  if (l.includes('entrada'))                                               return 'entrada';
+  if (l.includes('totem'))                                                 return 'totem';
+  if (l.includes('caixa'))                                                 return 'caixa';
   if (l.includes('gôndola') || l.includes('gondola') || l.includes('gond')) return 'gondola';
-  if (l.includes(' led') || l.includes('-led') || /\bled\b/.test(l)) return 'led';
+  if (l.includes(' led') || l.includes('-led') || /\bled\b/.test(l))      return 'led';
   if (l.includes('câmera') || l.includes('camera') || l.includes(' cam')) return 'camera';
-  if (/\d+$/.test(l)) return 'outros';
-  return null;
+  return 'outros';
+}
+
+// Padrão: todos exceto Entrada e Outros habilitados
+const DEFAULT_ENABLED: Record<string, boolean> = {
+  totem: true, caixa: true, gondola: true, led: true, camera: true, entrada: false, outros: false,
+};
+
+function loadDeviceTypeConfig(): Record<string, boolean> {
+  try {
+    const raw = typeof window !== 'undefined' ? window.localStorage.getItem(DEVICE_TYPE_STORAGE_KEY) : null;
+    if (!raw) return { ...DEFAULT_ENABLED };
+    return { ...DEFAULT_ENABLED, ...JSON.parse(raw) };
+  } catch { return { ...DEFAULT_ENABLED }; }
+}
+function saveDeviceTypeConfig(cfg: Record<string, boolean>) {
+  try { window.localStorage.setItem(DEVICE_TYPE_STORAGE_KEY, JSON.stringify(cfg)); } catch { /* noop */ }
 }
 
 export const WidgetDeviceTypeAudience = ({ deviceAudience }: { deviceAudience?: DeviceAudienceItem[] }) => {
+  const [enabled, setEnabled] = React.useState<Record<string, boolean>>(loadDeviceTypeConfig);
+  const [showConfig, setShowConfig] = React.useState(false);
+
+  const toggle = (key: string) => {
+    setEnabled(prev => {
+      const next = { ...prev, [key]: !prev[key] };
+      saveDeviceTypeConfig(next);
+      return next;
+    });
+  };
+
   const items = React.useMemo(() => {
     if (!deviceAudience?.length) return [];
     const totals: Record<string, number> = {};
     for (const d of deviceAudience) {
       const cat = extractDeviceCategory(String(d.label ?? ''));
-      if (!cat) continue;
       totals[cat] = (totals[cat] ?? 0) + (Number(d.value) || 0);
     }
     return DEVICE_TYPE_PALETTE
-      .filter(p => (totals[p.key] ?? 0) > 0)
+      .filter(p => enabled[p.key] && (totals[p.key] ?? 0) > 0)
       .map(p => ({ label: p.label, value: Math.round((totals[p.key] ?? 0) * 10) / 10, color: p.color }))
       .sort((a, b) => b.value - a.value);
-  }, [deviceAudience]);
+  }, [deviceAudience, enabled]);
 
   const maxVal = items.length > 0 ? items[0].value : 100;
 
+  // Quais tipos existem nos dados (para o painel de config)
+  const presentTypes = React.useMemo(() => {
+    const s = new Set<string>();
+    for (const d of deviceAudience ?? []) s.add(extractDeviceCategory(String(d.label ?? '')));
+    return s;
+  }, [deviceAudience]);
+
   return (
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col overflow-hidden">
-      <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider mb-4 shrink-0">
-        <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />
-        Audiência por Tipo de Dispositivo
-      </h3>
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col overflow-hidden relative">
+      {/* Header */}
+      <div className="flex items-center justify-between mb-4 shrink-0">
+        <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
+          <span className="w-1.5 h-1.5 rounded-full bg-indigo-400 inline-block" />
+          Audiência por Tipo de Dispositivo
+        </h3>
+        {/* Botão de configuração */}
+        <button
+          onClick={() => setShowConfig(s => !s)}
+          className="w-6 h-6 rounded-lg bg-gray-800 hover:bg-gray-700 flex items-center justify-center transition-colors"
+          title="Configurar tipos exibidos"
+        >
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-gray-400">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+
+      {/* Painel de configuração (dropdown) */}
+      {showConfig && (
+        <div className="absolute top-12 right-4 z-20 bg-gray-850 border border-gray-700 rounded-xl p-3 shadow-xl min-w-[160px]"
+          style={{ background: '#1a1f2e' }}>
+          <p className="text-[10px] text-gray-400 uppercase tracking-wider mb-2 font-semibold">Tipos exibidos</p>
+          {DEVICE_TYPE_PALETTE.map(p => (
+            <label key={p.key} className="flex items-center gap-2 py-1 cursor-pointer group">
+              <input
+                type="checkbox"
+                checked={!!enabled[p.key]}
+                onChange={() => toggle(p.key)}
+                className="w-3.5 h-3.5 rounded accent-indigo-500"
+              />
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: p.color }} />
+              <span className="text-[11px] text-gray-300 group-hover:text-white transition-colors">
+                {p.label}
+                {!presentTypes.has(p.key) && (
+                  <span className="text-gray-600 ml-1">(sem dados)</span>
+                )}
+              </span>
+            </label>
+          ))}
+          <button
+            onClick={() => setShowConfig(false)}
+            className="mt-2 w-full text-[10px] text-gray-500 hover:text-gray-300 text-center"
+          >
+            Fechar
+          </button>
+        </div>
+      )}
+
+      {/* Conteúdo */}
       {items.length === 0 ? (
         <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">
-          Selecione uma loja para ver por dispositivo.
+          {deviceAudience?.length ? 'Nenhum tipo selecionado — use ⚙ para configurar.' : 'Selecione uma loja para ver por dispositivo.'}
         </div>
       ) : (
         <div className="flex-1 flex flex-col justify-center gap-3 overflow-y-auto">
