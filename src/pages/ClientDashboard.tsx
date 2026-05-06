@@ -1081,9 +1081,9 @@ export function ClientDashboard() {
             ])
           );
           const merged = FACIAL_EXPRESSION_SERIES.map(({ label }) => {
-            const liveSerie = liveByLabel.get(label.toLowerCase());
-            const rowSerie = rowSeries.find(r => String(r.label).toLowerCase() === label.toLowerCase());
-            const rowVals = rowSerie?.values ?? new Array(24).fill(0);
+            const liveSerie = liveByLabel.get(label.toLowerCase()) as { label: string; values: number[] } | undefined;
+            const rowSerie = rowSeries.find(r => String(r.label).toLowerCase() === label.toLowerCase()) as { label: string; values: number[] } | undefined;
+            const rowVals: number[] = rowSerie?.values ?? new Array(24).fill(0);
             if (!liveSerie) {
               // Emoção não veio da v5 (ex: Nojo) — usa dados de linha
               return { label, values: rowVals };
