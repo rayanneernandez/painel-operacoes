@@ -165,7 +165,10 @@ export function ClientDashboardConfig() {
           return next.filter((wid, index) => next.indexOf(wid) === index);
         };
         const defaultIds = ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time', 'flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
-        const allowedIds = expandLegacyKpiIds(allowed.ids && allowed.ids.length ? allowed.ids : defaultIds);
+        const rawAllowedIds = expandLegacyKpiIds(allowed.ids && allowed.ids.length ? allowed.ids : defaultIds);
+        // Widgets adicionados após a configuração inicial — sempre ficam disponíveis
+        const ALWAYS_AVAILABLE = ['device_type_audience'];
+        const allowedIds = [...rawAllowedIds, ...ALWAYS_AVAILABLE.filter(w => !rawAllowedIds.includes(w))];
         const allowedSet = new Set(allowedIds);
         const allowedWidgets = AVAILABLE_WIDGETS.filter((w) => allowedSet.has(w.id));
 
