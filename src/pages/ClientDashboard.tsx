@@ -1073,8 +1073,18 @@ export function ClientDashboard() {
           }),
         }, 12000, 'live expressions v5');
         if (isCurrent() && Array.isArray(liveResult?.series) && hasFacialExpressionSeriesData(liveResult.series)) {
-          // Mescla por LABEL (não por índice) para preservar emoções que a v5 não retorna
-          // (ex: Nojo/disgust pode não vir da v5, mas existe nos dados de linha)
+          // A v5 retorna dados em UTC (values[10] = 10h UTC).
+          // O gráfico usa horário LOCAL (slot 7 = 7h local = 10h UTC em BRT).
+          // getTimezoneOffset() = 180 no Brasil (BRT = UTC-3).
+          // Para converter UTC→local: localH = (utcH - offset/60 + 24) % 24
+          const tzOffHours = new Date().getTimezoneOffset() / 60; // 3 em BRT
+
+          const toLocalIndexed = (utcValues: number[]): number[] =>
+            Array.from({ length: 24 }, (_, localH) => {
+              const utcH = (localH + tzOffHours + 24) % 24;
+              return utcValues[utcH] ?? 0;
+            });
+
           const liveByLabel = new Map(
             liveResult.series.map((s: { label: string; values: number[] }) => [
               String(s.label).toLowerCase(), s
@@ -1085,15 +1095,15 @@ export function ClientDashboard() {
             const rowSerie = rowSeries.find(r => String(r.label).toLowerCase() === label.toLowerCase()) as { label: string; values: number[] } | undefined;
             const rowVals: number[] = rowSerie?.values ?? new Array(24).fill(0);
             if (!liveSerie) {
-              // Emoção não veio da v5 (ex: Nojo) — usa dados de linha
               return { label, values: rowVals };
             }
+            // Converte índices UTC da v5 para horário local antes de mesclar
+            const liveLocal = toLocalIndexed(liveSerie.values);
             return {
               label,
-              values: liveSerie.values.map((liveVal: number, h: number) => {
-                // Para horas sem dados no live, usa dados de linha (horas recentes)
-                return liveVal > 0 ? liveVal : (rowVals[h] ?? 0);
-              }),
+              values: liveLocal.map((liveVal: number, h: number) =>
+                liveVal > 0 ? liveVal : (rowVals[h] ?? 0)
+              ),
             };
           });
           setFacialExpressionSeries(merged);
