@@ -298,7 +298,10 @@ function buildDisplayforcePlatformCandidates(values: Array<string | null | undef
   return [...candidates];
 }
 
-async function resolveDisplayforcePlatform(clientId: string): Promise<DisplayforcePlatformRef | null> {
+async function resolveDisplayforcePlatform(
+  clientId: string,
+  apiToken?: string,
+): Promise<DisplayforcePlatformRef | null> {
   const cached = displayforcePlatformCache.get(clientId);
   if (cached) return cached;
 
@@ -315,7 +318,34 @@ async function resolveDisplayforcePlatform(clientId: string): Promise<Displayfor
   const candidates = buildDisplayforcePlatformCandidates([client?.name, client?.company]);
   if (candidates.length === 0) return null;
 
-  const cookieHeader = await getDisplayforceAuthCookie();
+  // ── Tentativa 1: X-APT-Token (sem precisar de email/senha) ────────────────
+  // O mesmo token usado na API pública pode funcionar na v5 para emoções.
+  if (apiToken) {
+    for (const platformSlug of candidates) {
+      try {
+        const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platformSlug}/summary`, {
+          headers: {
+            Accept: "application/json,text/plain,*/*",
+            "X-APT-Token": apiToken,
+          },
+        });
+        const platformId = Number(json?.platform?.id);
+        if (!Number.isFinite(platformId) || platformId <= 0) continue;
+        const resolved = { platformId, platformSlug };
+        displayforcePlatformCache.set(clientId, resolved);
+        return resolved;
+      } catch { continue; }
+    }
+  }
+
+  // ── Tentativa 2: cookie auth (email+senha, se configurado) ─────────────────
+  let cookieHeader: string;
+  try {
+    cookieHeader = await getDisplayforceAuthCookie();
+  } catch {
+    return null; // sem credenciais e token não funcionou
+  }
+
   for (const platformSlug of candidates) {
     try {
       const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platformSlug}/summary`, {
@@ -339,8 +369,13 @@ async function resolveDisplayforcePlatform(clientId: string): Promise<Displayfor
   return null;
 }
 
-async function fetchDisplayforceFacialExpressionSeries(clientId: string, rangeStart: string, rangeEnd: string) {
-  const platform = await resolveDisplayforcePlatform(clientId);
+async function fetchDisplayforceFacialExpressionSeries(
+  clientId: string,
+  rangeStart: string,
+  rangeEnd: string,
+  apiToken?: string,
+) {
+  const platform = await resolveDisplayforcePlatform(clientId, apiToken);
   if (!platform) return null;
 
   const hourBuckets = buildHourlyUnixRanges(rangeStart, rangeEnd);
@@ -348,11 +383,24 @@ async function fetchDisplayforceFacialExpressionSeries(clientId: string, rangeSt
     return {
       platformId: platform.platformId,
       platformSlug: platform.platformSlug,
+      hourKeys: [] as string[],
       series: FACIAL_EXPRESSION_SERIES.map(({ label }) => ({ label, values: [] as number[] })),
     };
   }
 
-  const cookieHeader = await getDisplayforceAuthCookie();
+  // Determina headers de autenticação: tenta X-APT-Token primeiro, depois cookie
+  let emotionAuthHeaders: Record<string, string> = {};
+  if (apiToken) {
+    emotionAuthHeaders = { "X-APT-Token": apiToken };
+  } else {
+    try {
+      const cookieHeader = await getDisplayforceAuthCookie();
+      emotionAuthHeaders = { Cookie: cookieHeader };
+    } catch {
+      return null;
+    }
+  }
+
   const countsByHour = new Map<string, Record<string, number>>();
   const chunkSize = 168;
 
@@ -363,7 +411,7 @@ async function fetchDisplayforceFacialExpressionSeries(clientId: string, rangeSt
       headers: {
         Accept: "application/json,text/plain,*/*",
         "Content-Type": "application/json",
-        Cookie: cookieHeader,
+        ...emotionAuthHeaders,
       },
       body: JSON.stringify({
         ranges: chunk.map(({ from, to }) => ({ from, to })),
@@ -379,6 +427,7 @@ async function fetchDisplayforceFacialExpressionSeries(clientId: string, rangeSt
         happiness: Number(source?.happiness ?? 0) || 0,
         surprise: Number(source?.surprise ?? 0) || 0,
         anger: Number(source?.anger ?? 0) || 0,
+        disgust: Number(source?.disgust ?? source?.disgusted ?? 0) || 0,
       });
     });
   }
@@ -1369,9 +1418,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!start || !end) return bad(res, 400, { error: "start e end sao obrigatorios" });
 
       try {
-        const liveSeries = await fetchDisplayforceFacialExpressionSeries(client_id, String(start), String(end));
+        // Passa o api_key para tentar X-APT-Token antes de cookie auth
+        const apiToken = cfg.api_key?.trim() || undefined;
+        const liveSeries = await fetchDisplayforceFacialExpressionSeries(client_id, String(start), String(end), apiToken);
         if (!liveSeries) {
-          return ok(res, { source: "displayforce_emotion", live_available: false, series: [] });
+          return ok(res, { source: "displayforce_emotion", live_available: false, hourKeys: [], series: [] });
         }
 
         const expressionsPayload = buildStoredFacialExpressionPayload(liveSeries.hourKeys, liveSeries.series);
@@ -1388,6 +1439,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           live_available: true,
           platform_id: liveSeries.platformId,
           platform_slug: liveSeries.platformSlug,
+          hourKeys: liveSeries.hourKeys,
           series: liveSeries.series,
         });
       } catch (error: any) {
@@ -1396,6 +1448,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           source: "displayforce_emotion",
           live_available: false,
           error: error?.message || String(error),
+          hourKeys: [],
           series: [],
         });
       }
@@ -2027,165 +2080,4 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             devicesPayload,
           }).catch((monitoringError: any) => {
             console.error("[sync_stores] Erro no monitoramento offline:", monitoringError?.message ?? monitoringError);
-            return {
-              skipped: true,
-              reason: "monitoring-error",
-              error: monitoringError?.message ?? String(monitoringError),
-            };
-          })
-        : { skipped: true, reason: "no-devices" };
-
-      const samplePayload = devicesPayload.slice(0, 3).map(d => ({ store_id: d.store_id, mac: d.mac_address, status: d.status }));
-      // Verifica no banco quantos dispositivos existem agora para esses store IDs
-      const { count: devCountAfter } = await supabase.from("devices").select("id", { count: "exact", head: true }).in("store_id", storeIds);
-      return ok(res, { message:"Lojas sincronizadas", stores_upserted:storesPayload.length, devices_upserted:devicesPayload.length, stores_total: storeIds.length, devices_total_api: devicesData.length, devices_in_db_after: devCountAfter, monitoring: monitoringSummary, diag: { device_keys: diagKeys, device_parent_id_sample: diagParentId, folder_id_sample: diagFolderIds, folder_device_match: sampleFolderKeys, device_parent_ids: sampleDevParentIds, payload_sample: samplePayload } });
-    }
-
-    const now        = new Date();
-    const rangeStart = String(start || cfg.collection_start || "2025-01-01T00:00:00.000Z");
-    const rangeEnd   = String(end   || cfg.collection_end   || now.toISOString());
-    const baseBody: any = {
-      start: rangeStart, end: rangeEnd,
-      tracks: cfg.collect_tracks ?? true, face_quality: cfg.collect_face_quality ?? true,
-      glasses: cfg.collect_glasses ?? true, facial_hair: cfg.collect_beard ?? true,
-      hair_color: cfg.collect_hair_color ?? true, hair_type: cfg.collect_hair_type ?? true,
-      headwear: cfg.collect_headwear ?? true,
-      additional_attributes: ["smile","pitch","yaw","x","y","height"],
-    };
-    if (Array.isArray(devices) && devices.length > 0) baseBody.devices = devices;
-
-    const limit  = 1000;
-    let   offset = Number.isFinite(Number(incomingOffset)) ? Number(incomingOffset) : 0;
-    const combined: any[] = [];
-    const startedAt = Date.now();
-    const MAX_MS    = force_full_sync ? 20000 : 6000;
-    const MAX_PAGES = force_full_sync ? 500   : 50;
-    const deviceNums = Array.isArray(devices) ? (devices as any[]).map(Number).filter(Number.isFinite) : [];
-
-    const analyticsUrl = `${(cfg.api_endpoint||"https://api.displayforce.ai").replace(/\/$/,"")}${cfg.analytics_endpoint?.startsWith("/")?cfg.analytics_endpoint:`/${cfg.analytics_endpoint||"public/v1/stats/visitor/list"}`}`;
-    const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
-    const ck = cfg.custom_header_key?.trim(); const cv = cfg.custom_header_value?.trim();
-    if (ck && cv) headers[ck] = cv; else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
-    else return bad(res, 400, { error: "api_key não configurada" });
-
-    // ── rebuild_rollup ────────────────────────────────────────────────────────
-    if (rebuild_rollup === true) {
-      if (deviceNums.length > 0) {
-        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
-        if (rows.length === 0) return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
-        const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
-        return ok(res, { message:"Rollup recalculado (dispositivo)", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rr.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rr.total_visitors, avg_visitors_per_day:rr.avg_visitors_per_day, visitors_per_day:rr.visitors_per_day, visitors_per_hour_avg:rr.visitors_per_hour_avg, gender_percent:rr.gender_percent, attributes_percent:rr.attributes_percent, age_pyramid_percent:rr.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rr.avg_visit_time_seconds, avg_dwell_time_seconds:rr.avg_dwell_time_seconds, avg_attention_seconds:rr.avg_contact_time_seconds } }, stored_rollup:false });
-      }
-
-      const lockKey = `${client_id}:${rangeStart}:${rangeEnd}`;
-      if (_serverRebuilding.has(lockKey)) {
-        const { data: existing } = await supabase.from("visitor_analytics_rollups").select("*").eq("client_id", client_id).eq("start", rangeStart).eq("end", rangeEnd).order("updated_at", { ascending: false }).limit(1);
-        if (existing?.[0]) {
-          const r = existing[0];
-          return ok(res, { message:"Rebuild em andamento — rollup existente", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:r.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:r.total_visitors, avg_visitors_per_day:r.avg_visitors_per_day, visitors_per_day:r.visitors_per_day, visitors_per_hour_avg:r.visitors_per_hour_avg, gender_percent:r.gender_percent, attributes_percent:r.attributes_percent, age_pyramid_percent:r.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:r.avg_visit_time_seconds, avg_dwell_time_seconds:null, avg_attention_seconds:r.avg_contact_time_seconds??null } }, stored_rollup:true });
-        }
-        return ok(res, { message:"Rebuild em andamento", done:false, next_offset:null });
-      }
-
-      _serverRebuilding.add(lockKey);
-      try {
-        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, []);
-        if (rows.length === 0) return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
-        const rollupRow = await enrichGlobalRollupIfNeeded(
-          client_id,
-          rangeStart,
-          rangeEnd,
-          buildRollup(rows, client_id, rangeStart, rangeEnd),
-        );
-        const storedRollup = await saveRollup(rollupRow);
-        return ok(res, {
-          message:"Rollup recalculado via banco",
-          start:rangeStart,
-          end:rangeEnd,
-          externalFetched:0,
-          raw_upserted_new:0,
-          total_in_db:rollupRow.total_visitors,
-          next_offset:null,
-          done:true,
-          dashboard: {
-            total_visitors:rollupRow.total_visitors,
-            avg_visitors_per_day:rollupRow.avg_visitors_per_day,
-            visitors_per_day:rollupRow.visitors_per_day,
-            visitors_per_hour_avg:rollupRow.visitors_per_hour_avg,
-            gender_percent:rollupRow.gender_percent,
-            attributes_percent:rollupRow.attributes_percent,
-            age_pyramid_percent:rollupRow.age_pyramid_percent,
-            avg_times_seconds: {
-              avg_visit_time_seconds:rollupRow.avg_visit_time_seconds,
-              avg_dwell_time_seconds:rollupRow.avg_dwell_time_seconds,
-              avg_attention_seconds:rollupRow.avg_contact_time_seconds,
-            },
-          },
-          stored_rollup: storedRollup,
-        });
-      } finally { _serverRebuilding.delete(lockKey); }
-    }
-
-    // ── Paginação da API externa ──────────────────────────────────────────────
-    let apiReportedTotal: number | null = null;
-    let lastSig: string | null = null;
-    let pageCount = 0;
-
-    while (true) {
-      if (pageCount > 0 && Date.now() - startedAt > MAX_MS) break;
-      if (++pageCount > MAX_PAGES) break;
-      const resp = await fetch(analyticsUrl, { method:"POST", headers, body:JSON.stringify({...baseBody, limit, offset}) });
-      if (!resp.ok) { const txt = await resp.text(); return bad(res, resp.status, { error:"Erro na API externa", details:txt }); }
-      const json = await resp.json();
-      const page: any[] = extractVisitorArray(json);
-      if (apiReportedTotal === null) { const totalNum = Number(json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total); if (Number.isFinite(totalNum) && totalNum > 0) apiReportedTotal = totalNum; }
-      if (page.length > 0) {
-        const first:any = page[0]; const last:any = page[page.length-1];
-        const sig = sha256(JSON.stringify([offset, page.length, first?.visitor_id??null, first?.start??first?.timestamp??null, last?.visitor_id??null, last?.start??last?.timestamp??null]));
-        if (lastSig && sig === lastSig) { offset = 0; break; }
-        lastSig = sig; combined.push(...page);
-      }
-      if (page.length < limit || (apiReportedTotal !== null && offset + page.length >= apiReportedTotal) || page.length === 0) { offset = 0; break; }
-      offset += limit;
-      if (offset > 10_000_000) break;
-    }
-
-    const next_offset = offset === 0 ? null : offset;
-
-    if (combined.length === 0) {
-      // Sem dados novos da API — reconstrói do banco
-      if (deviceNums.length > 0) {
-        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
-        if (rows.length === 0) return ok(res, { message:"Sem dados", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
-        const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
-        return ok(res, { message:"Rollup recalculado (dispositivo)", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rr.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rr.total_visitors, avg_visitors_per_day:rr.avg_visitors_per_day, visitors_per_day:rr.visitors_per_day, visitors_per_hour_avg:rr.visitors_per_hour_avg, gender_percent:rr.gender_percent, attributes_percent:rr.attributes_percent, age_pyramid_percent:rr.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rr.avg_visit_time_seconds, avg_dwell_time_seconds:rr.avg_dwell_time_seconds, avg_attention_seconds:rr.avg_contact_time_seconds } }, stored_rollup:false });
-      }
-      const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, []);
-      if (rows.length > 0) {
-        const rollupRow = await enrichGlobalRollupIfNeeded(
-          client_id,
-          rangeStart,
-          rangeEnd,
-          buildRollup(rows, client_id, rangeStart, rangeEnd),
-        );
-        const storedRollup = await saveRollup(rollupRow);
-        return ok(res, { message:"Rollup recalculado via banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rollupRow.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rollupRow.total_visitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:rollupRow.avg_dwell_time_seconds, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:storedRollup });
-      }
-      return ok(res, { message:"Sem dados", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
-    }
-
-    const toUpsert = buildAndDeduplicateRows(combined, client_id);
-    let upserted = 0;
-    for (let i = 0; i < toUpsert.length; i += 500) {
-      const { error, data } = await supabase.from("visitor_analytics").upsert(toUpsert.slice(i, i+500), { onConflict:"visit_uid" }).select("visit_uid");
-      if (error) console.error(`Upsert chunk ${i} error:`, error);
-      else upserted += data?.length ?? 0;
-    }
-
-    return ok(res, { message: next_offset === null ? "Sincronização concluída" : "Sincronização parcial — continue chamando", start:rangeStart, end:rangeEnd, externalFetched:combined.length, raw_upserted_new:upserted, total_in_db:null, next_offset, done:next_offset === null, dashboard:null, stored_rollup:false });
-
-  } catch (err: any) {
-    console.error("Erro inesperado:", err);
-    return bad(res, 500, { error:"Erro inesperado", details:err?.message||String(err) });
-  }
-}
+  
