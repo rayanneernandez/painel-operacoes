@@ -840,7 +840,13 @@ export function ClientDashboard() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 12);
 
-    return { visitors: totalVisitors > 0 ? totalVisitors : null, passersby, deviceAudience, trackingData };
+    const fallbackTracking = Array.isArray(fallback?.trackingData) ? fallback.trackingData : [];
+    return {
+      visitors: totalVisitors > 0 ? totalVisitors : null,
+      passersby,
+      deviceAudience,
+      trackingData: trackingData.length > 0 ? trackingData : fallbackTracking,
+    };
   }, [resolveDeviceFlowLabel]);
 
   useEffect(() => {
@@ -2431,7 +2437,7 @@ export function ClientDashboard() {
           : [wid]);
         return next.filter((wid, index) => next.indexOf(wid) === index);
       };
-      const defaultIds = ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time', 'flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'campaigns'];
+      const defaultIds = ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time', 'flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'chart_device_flow', 'device_type_audience', 'campaigns'];
       const allowedIds = expandLegacyKpiIds(allowedResolved.ids && allowedResolved.ids.length ? allowedResolved.ids : defaultIds);
       const allowedSet = new Set(allowedIds);
 
@@ -2476,6 +2482,8 @@ export function ClientDashboard() {
             'age_pyramid',
             'gender_dist',
             'attributes',
+            'chart_device_flow',
+            'device_type_audience',
             'campaigns',
           ];
           setActiveWidgets(defaultIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[]);
