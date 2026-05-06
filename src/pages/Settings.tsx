@@ -449,7 +449,7 @@ export function Settings() {
         <div>
           <h1 className="text-2xl font-bold text-white flex items-center gap-3">
             <SettingsIcon className="text-indigo-500" size={28} />
-            Configurações do Sistema
+            Configurações do Dashboard
           </h1>
           <p className="text-gray-400 mt-1 text-sm">Gerencie preferências globais e personalizações por rede</p>
         </div>
