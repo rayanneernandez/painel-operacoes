@@ -425,8 +425,8 @@ async function fetchDisplayforceFacialExpressionSeries(
       countsByHour.set(bucket.hourKey, {
         neutral: Number(source?.neutral ?? 0) || 0,
         happiness: Number(source?.happiness ?? 0) || 0,
-        surprise: Number(source?.surprise ?? 0) || 0,
-        anger: Number(source?.anger ?? 0) || 0,
+        surprise: Number(source?.surprise ?? source?.surprised ?? 0) || 0,
+        anger: Number(source?.anger ?? source?.angry ?? 0) || 0,
         disgust: Number(source?.disgust ?? source?.disgusted ?? 0) || 0,
       });
     });
@@ -670,8 +670,10 @@ function mergeStoredRollupAttributes(existingAttributes: any, nextAttributes: an
           Array.isArray(nextDeviceFlow?.deviceAudience) && nextDeviceFlow.deviceAudience.length > 0
             ? nextDeviceFlow.deviceAudience
             : (Array.isArray(existingDeviceFlow?.deviceAudience) ? existingDeviceFlow.deviceAudience : []),
-        // trackingData: sempre usa o novo (vazio) — seção foi removida do widget
-        trackingData: [],
+        trackingData:
+          Array.isArray(nextDeviceFlow?.trackingData) && nextDeviceFlow.trackingData.length > 0
+            ? nextDeviceFlow.trackingData
+            : (Array.isArray(existingDeviceFlow?.trackingData) ? existingDeviceFlow.trackingData : []),
       }
     : null;
 
@@ -775,7 +777,7 @@ function buildTrackingIslandLabel(deviceKeys: string[], nameMap?: Map<string, st
   const uniqueKeys = Array.from(new Set(deviceKeys.map((value) => String(value ?? "").trim()).filter(Boolean)));
   return uniqueKeys
     .map((deviceKey) => nameMap?.get(deviceKey) || `Device ${deviceKey}`)
-    .join(" + ");
+    .join(" -> ");
 }
 
 function extractDeviceFlowPassersbyCount(row: any) {
@@ -858,10 +860,10 @@ async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, r
 
   const trackingData = [...trackingIslands.values()]
     .sort((a, b) => b.count - a.count)
-    .slice(0, 4)
     .map(({ label, count }) => ({
       label,
       value: totalVisitors > 0 ? Number(((count / totalVisitors) * 100).toFixed(1)) : 0,
+      count,
     }))
     .filter((item) => item.value > 0);
 
@@ -1148,10 +1150,10 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     .map(({ label, value }) => ({ label, value }));
   const trackingData = [...trackingIslands.values()]
     .sort((a, b) => b.count - a.count)
-    .slice(0, 4)
     .map(({ label, count }) => ({
       label,
       value: totalVisitors > 0 ? Number(((count / totalVisitors) * 100).toFixed(1)) : 0,
+      count,
     }))
     .filter((entry) => entry.value > 0);
 

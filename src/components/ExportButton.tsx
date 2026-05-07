@@ -19,6 +19,7 @@ type ExportData = {
     avgAttentionSeconds: number;
   };
   dailyStats: number[];
+  dailyLabels?: string[];
   hourlyStats: number[];
   genderStats: { label: string; value: number }[];
   ageStats: { age: string; m: number; f: number }[];
@@ -58,8 +59,6 @@ const fmtDuration = (s: number) => {
     ? `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}:${String(sec).padStart(2, '0')}`
     : `${String(mm).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
 };
-
-const DAY_LABELS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
 
 const campaignStatusLabel = (row: any) => {
   const now = Date.now();
@@ -220,13 +219,20 @@ function generateExcel(data: ExportData, campaigns: CampaignExportRow[]) {
   XLSX.utils.book_append_sheet(wb, wsDaily, 'Fluxo Diário');
 
   // ── Aba 3: Fluxo Semanal & Horário ────────────────────────────────────────
+  const dailyLabels = Array.isArray(data.dailyLabels) && data.dailyLabels.length > 0
+    ? data.dailyLabels
+    : Array.from({ length: data.dailyStats.length }, (_, index) => `Dia ${index + 1}`);
+
   const weekRows: XLSX.CellObject[][] = [
-    [cell('FLUXO POR DIA DA SEMANA', STYLES.sectionHeader), blank(STYLES.sectionHeader)],
-    [cell('Dia', STYLES.colHeader), cell('Visitantes Médios', STYLES.colHeader)],
-    ...DAY_LABELS.map((d, i) => [cell(d, i % 2 === 0 ? STYLES.labelLeft : { ...STYLES.labelLeft, fill: { fgColor: { rgb: 'F9FAFB' } } }), cell(data.dailyStats[i] ?? 0, i % 2 === 0 ? STYLES.value : STYLES.valueAlt)]),
+    [cell('FLUXO POR DIA DO PERIODO', STYLES.sectionHeader), blank(STYLES.sectionHeader)],
+    [cell('Dia', STYLES.colHeader), cell('Visitantes', STYLES.colHeader)],
+    ...dailyLabels.map((label, i) => [
+      cell(label, i % 2 === 0 ? STYLES.labelLeft : { ...STYLES.labelLeft, fill: { fgColor: { rgb: 'F9FAFB' } } }),
+      cell(data.dailyStats[i] ?? 0, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
+    ]),
     [blank(), blank()],
     [cell('FLUXO POR HORA DO DIA', STYLES.sectionHeader), blank(STYLES.sectionHeader)],
-    [cell('Hora', STYLES.colHeader), cell('Média de Visitantes', STYLES.colHeader)],
+    [cell('Hora', STYLES.colHeader), cell('Media de Visitantes', STYLES.colHeader)],
     ...Array.from({ length: 24 }, (_, i) => [
       cell(`${String(i).padStart(2, '0')}:00`, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
       cell(data.hourlyStats[i] ?? 0, i % 2 === 0 ? STYLES.value : STYLES.valueAlt),
@@ -239,7 +245,8 @@ function generateExcel(data: ExportData, campaigns: CampaignExportRow[]) {
     if (!wsWeek[addr]) wsWeek[addr] = {};
     Object.assign(wsWeek[addr], c);
   }));
-  wsWeek['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }, { s: { r: 10, c: 0 }, e: { r: 10, c: 1 } }];
+  const hourlySectionRow = dailyLabels.length + 3;
+  wsWeek['!merges'] = [{ s: { r: 0, c: 0 }, e: { r: 0, c: 1 } }, { s: { r: hourlySectionRow, c: 0 }, e: { r: hourlySectionRow, c: 1 } }];
   wsWeek['!cols'] = [{ wch: 18 }, { wch: 22 }];
   wsWeek['!rows'] = weekRows.map(() => ({ hpt: 22 }));
   XLSX.utils.book_append_sheet(wb, wsWeek, 'Fluxo por Hora');

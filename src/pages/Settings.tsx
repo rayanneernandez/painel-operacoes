@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2, Bot, Clock, RefreshCw, AlertCircle, RotateCcw } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
@@ -17,6 +17,107 @@ const emptyBotConfig = (): BotConfig => ({
   horario_execucao: '07:00',
   timeout_email_seg: 1200,
 });
+
+const GRID_AUTO_ROW_PX = 96;
+const GRID_ROW_GAP_PX = 16;
+const PREVIEW_TOTAL_VISITORS = 2412;
+const PREVIEW_AVG_VISITORS_PER_DAY = 1206;
+const PREVIEW_AVG_VISIT_SECONDS = 13;
+const PREVIEW_AVG_ATTENTION_SECONDS = 9;
+const PREVIEW_QUARTER_DATA = [
+  { label: 'MAR', visitors: 223500, sales: 0 },
+  { label: 'ABR', visitors: 265200, sales: 0 },
+  { label: 'MAI', visitors: 110024, sales: 0 },
+];
+const PREVIEW_GENDER_DATA = [
+  { label: 'Masculino', value: 68 },
+  { label: 'Feminino', value: 32 },
+];
+const PREVIEW_DAILY_DATA = [25300, 24800, 25050, 29200, 17900, 9200, 6400];
+const PREVIEW_HOURLY_DATA = [12, 16, 20, 24, 28, 40, 82, 164, 302, 688, 502, 188, 126, 132, 148, 186, 210, 224, 238, 212, 174, 120, 68, 30];
+const PREVIEW_AGE_DATA = [
+  { age: '1-19', m: 8, f: 7 },
+  { age: '20-29', m: 23, f: 18 },
+  { age: '30-45', m: 16, f: 13 },
+  { age: '46-100', m: 10, f: 5 },
+];
+const PREVIEW_ATTR_DATA = [
+  { label: 'Óculos', value: 34 },
+  { label: 'Barba', value: 27 },
+  { label: 'Máscara', value: 6 },
+  { label: 'Chapéu/Boné', value: 11 },
+  { label: '_glasses_none', value: 66 },
+  { label: '_glasses_usual', value: 24 },
+  { label: '_glasses_dark', value: 10 },
+  { label: '_facial_shaved', value: 42 },
+  { label: '_facial_beard', value: 31 },
+  { label: '_facial_goatee', value: 17 },
+  { label: '_facial_mustache', value: 10 },
+];
+const PREVIEW_HAIR_TYPE_DATA = [
+  { label: 'normal', value: 46 },
+  { label: 'receding', value: 29 },
+  { label: 'bald', value: 18 },
+  { label: 'covered', value: 7 },
+];
+const PREVIEW_HAIR_COLOR_DATA = [
+  { label: 'black', value: 39 },
+  { label: 'brown', value: 31 },
+  { label: 'blonde', value: 16 },
+  { label: 'gray', value: 9 },
+  { label: 'red', value: 5 },
+];
+const PREVIEW_DEVICE_FLOW_AUDIENCE = [
+  { label: 'Assai Campinas Abolicao FL144', value: 25.2 },
+  { label: 'Assai Penha Tiquatira FL275', value: 18.5 },
+  { label: 'Assai Nacoes Unidas FL199', value: 13.4 },
+  { label: 'Assai Barueri FL337', value: 12.9 },
+];
+const PREVIEW_DEVICE_TYPE_AUDIENCE = [
+  { label: 'camera loja 1', value: 28.3 },
+  { label: 'caixa loja 1', value: 16.5 },
+  { label: 'gondola loja 1', value: 9.8 },
+];
+const PREVIEW_TRACKING_DATA = [
+  { label: 'entrada -> caixa', value: 19.0, count: 458 },
+  { label: 'entrada -> totem', value: 17.7, count: 427 },
+  { label: 'entrada -> totem -> caixa', value: 2.9, count: 70 },
+  { label: 'entrada -> led', value: 2.7, count: 65 },
+  { label: 'entrada -> gondola maquiagem', value: 2.6, count: 63 },
+  { label: 'entrada -> totem -> caixa -> gondola perfumaria', value: 0.7, count: 17 },
+  { label: 'entrada -> totem conveniencia -> caixa', value: 0.3, count: 8 },
+];
+const PREVIEW_FACIAL_LABELS = ['01/05', '02/05', '03/05', '04/05', '05/05', '06/05', '07/05'];
+const PREVIEW_FACIAL_SERIES = [
+  { label: 'Neutro', values: [42, 44, 46, 40, 45, 43, 41], color: '#60a5fa' },
+  { label: 'Felicidade', values: [18, 20, 22, 21, 19, 23, 24], color: '#fbbf24' },
+  { label: 'Surpresa', values: [4, 6, 5, 7, 5, 4, 6], color: '#22c55e' },
+  { label: 'Raiva', values: [2, 3, 2, 4, 3, 2, 2], color: '#fb7185' },
+];
+const GRID_SPAN_TO_HEIGHT: Record<number, number> = {
+  2: (GRID_AUTO_ROW_PX * 2) + GRID_ROW_GAP_PX,
+  3: (GRID_AUTO_ROW_PX * 3) + (GRID_ROW_GAP_PX * 2),
+  4: (GRID_AUTO_ROW_PX * 4) + (GRID_ROW_GAP_PX * 3),
+  5: (GRID_AUTO_ROW_PX * 5) + (GRID_ROW_GAP_PX * 4),
+};
+const RECOMMENDED_WIDGET_HEIGHTS: Record<string, number> = {
+  chart_sales_quarter: GRID_SPAN_TO_HEIGHT[2],
+  flow_trend: GRID_SPAN_TO_HEIGHT[3],
+  hourly_flow: GRID_SPAN_TO_HEIGHT[3],
+  chart_facial_expressions: GRID_SPAN_TO_HEIGHT[3],
+  chart_device_flow: GRID_SPAN_TO_HEIGHT[4],
+  device_type_audience: GRID_SPAN_TO_HEIGHT[4],
+  age_pyramid: GRID_SPAN_TO_HEIGHT[3],
+  chart_age_ranges: GRID_SPAN_TO_HEIGHT[3],
+  gender_dist: GRID_SPAN_TO_HEIGHT[3],
+  attributes: GRID_SPAN_TO_HEIGHT[3],
+  chart_vision: GRID_SPAN_TO_HEIGHT[3],
+  chart_facial_hair: GRID_SPAN_TO_HEIGHT[3],
+  chart_hair_type: GRID_SPAN_TO_HEIGHT[3],
+  chart_hair_color: GRID_SPAN_TO_HEIGHT[3],
+  heatmap: GRID_SPAN_TO_HEIGHT[5],
+  campaigns: GRID_SPAN_TO_HEIGHT[3],
+};
 
 export function Settings() {
   const navigate = useNavigate();
@@ -135,14 +236,46 @@ export function Settings() {
     const w = AVAILABLE_WIDGETS.find((x) => x.id === widgetId);
     if (!w) return 80;
     if (w.type === 'kpi') return 12;
-    if (w.type === 'table') return 120;
+    if (w.type === 'table') return GRID_SPAN_TO_HEIGHT[2];
+    const recommended = RECOMMENDED_WIDGET_HEIGHTS[widgetId];
+    if (Number.isFinite(recommended)) return recommended;
     return 80;
   };
 
   const getResizeStepPx = (widgetId: string) => {
     const w = AVAILABLE_WIDGETS.find((x) => x.id === widgetId);
     if (w?.type === 'kpi') return 1;
-    return 10;
+    return GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX;
+  };
+
+  const getDefaultHeightPx = (widget: WidgetType) => {
+    if (widget.type === 'kpi') return 48;
+    const recommended = RECOMMENDED_WIDGET_HEIGHTS[widget.id];
+    if (Number.isFinite(recommended)) return recommended;
+    return NaN;
+  };
+
+  const normalizeWidgetHeightPx = (widgetId: string, raw: any, fallback = NaN) => {
+    const minHeight = getMinHeightPx(widgetId);
+    const clamped = clampNum(raw, minHeight, 1200, fallback);
+    if (!Number.isFinite(clamped)) return fallback;
+    const widget = AVAILABLE_WIDGETS.find((x) => x.id === widgetId);
+    if (widget?.type === 'kpi') return Math.round(clamped);
+    const rowUnit = GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX;
+    const snappedSpan = Math.max(2, Math.round((clamped + GRID_ROW_GAP_PX) / rowUnit));
+    const snappedHeight = (snappedSpan * rowUnit) - GRID_ROW_GAP_PX;
+    return Math.max(minHeight, Math.min(1200, snappedHeight));
+  };
+
+  const computeRowSpan = (widget: WidgetType, heightPx?: number): number => {
+    if (widget.type === 'kpi') return 1;
+    const fallbackSpan =
+      widget.id === 'campaigns' ? 3 :
+      widget.type === 'table' ? 3 :
+      widget.size === 'full' ? 3 : 2;
+    if (!Number.isFinite(Number(heightPx))) return fallbackSpan;
+    const resolvedHeightPx = Math.max(1, Math.round(Number(heightPx)));
+    return Math.max(1, Math.ceil((resolvedHeightPx + GRID_ROW_GAP_PX) / (GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX)));
   };
 
   const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> } => {
@@ -158,7 +291,7 @@ export function Settings() {
       for (const [wid, cfg] of Object.entries(rawLayout)) {
         const id = String(wid);
         const span = normalizeSpan((cfg as any)?.colSpanLg ?? cfg);
-        const heightPx = clampNum((cfg as any)?.heightPx, getMinHeightPx(id), 1200, NaN);
+        const heightPx = normalizeWidgetHeightPx(id, (cfg as any)?.heightPx, NaN);
 
         if (span) wl[id] = { ...(wl[id] || {}), colSpanLg: span };
         if (Number.isFinite(heightPx)) wl[id] = { ...(wl[id] || {}), heightPx: Math.round(heightPx) };
@@ -204,7 +337,7 @@ export function Settings() {
         }
       }
 
-      const defaultIds = ['flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'journey', 'campaigns'];
+      const defaultIds = ['kpi_total_visitors', 'kpi_avg_visitors_day', 'kpi_avg_visit_time', 'kpi_attention_time', 'flow_trend', 'hourly_flow', 'age_pyramid', 'gender_dist', 'attributes', 'chart_device_flow', 'device_type_audience', 'campaigns'];
       const finalIds = resolved.ids && resolved.ids.length
         ? resolved.ids
         : defaultIds;
@@ -293,7 +426,7 @@ export function Settings() {
     const minH = getMinHeightPx(r.widgetId);
     const step = Math.max(1, getResizeStepPx(r.widgetId));
     const nextHeight = clampNum(r.startHeight + (e.clientY - r.startY), minH, 1200, r.startHeight);
-    const snappedH = Math.max(minH, Math.round(nextHeight / step) * step);
+    const snappedH = normalizeWidgetHeightPx(r.widgetId, Math.round(nextHeight / step) * step, minH);
 
     setWidgetLayout((prev) => {
       const next = { ...prev };
@@ -384,9 +517,94 @@ export function Settings() {
     setDraggedIndex(index);
   };
 
+  const handleGridDragOver = (e: React.DragEvent) => {
+    if (draggedIndex === null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const grid = previewGridRef.current;
+    if (!grid) return;
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>('[data-widget-card]'));
+    if (cards.length === 0) return;
+    const x = e.clientX;
+    const y = e.clientY;
+    let bestIdx = -1;
+    let bestDist = Number.POSITIVE_INFINITY;
+    cards.forEach((el, idx) => {
+      const rect = el.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const dist = Math.hypot(x - cx, y - cy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = idx;
+      }
+    });
+    if (bestIdx === -1 || bestIdx === draggedIndex) return;
+    const newWidgets = [...activeWidgets];
+    const draggedItem = newWidgets[draggedIndex];
+    newWidgets.splice(draggedIndex, 1);
+    newWidgets.splice(bestIdx, 0, draggedItem);
+    setActiveWidgets(newWidgets);
+    setDraggedIndex(bestIdx);
+  };
+
   const handleDragEnd = () => {
     setDraggedIndex(null);
     setSaveStatus('idle');
+  };
+
+  const getPreviewProps = (widget: WidgetType) => {
+    const scopeClientId = selectedScope === 'global' ? undefined : selectedScope;
+    const props: Record<string, unknown> = { view: 'network', clientId: scopeClientId };
+
+    if (widget.id === 'kpi_total_visitors') props.totalVisitors = PREVIEW_TOTAL_VISITORS;
+    if (widget.id === 'kpi_avg_visitors_day') props.avgVisitorsPerDay = PREVIEW_AVG_VISITORS_PER_DAY;
+    if (widget.id === 'kpi_avg_visit_time') props.avgVisitSeconds = PREVIEW_AVG_VISIT_SECONDS;
+    if (widget.id === 'kpi_attention_time') props.avgAttentionSeconds = PREVIEW_AVG_ATTENTION_SECONDS;
+    if (widget.id === 'chart_sales_quarter') props.quarterData = PREVIEW_QUARTER_DATA;
+    if (widget.id === 'chart_device_flow') {
+      props.visitors = PREVIEW_TOTAL_VISITORS;
+      props.deviceAudience = PREVIEW_DEVICE_FLOW_AUDIENCE;
+    }
+    if (widget.id === 'device_type_audience') {
+      props.deviceAudience = PREVIEW_DEVICE_TYPE_AUDIENCE;
+      props.trackingData = PREVIEW_TRACKING_DATA;
+    }
+    if (widget.id === 'flow_trend') {
+      props.dailyData = PREVIEW_DAILY_DATA;
+      props.genderData = PREVIEW_GENDER_DATA;
+    }
+    if (widget.id === 'hourly_flow') {
+      props.hourlyData = PREVIEW_HOURLY_DATA;
+      props.genderData = PREVIEW_GENDER_DATA;
+      props.totalVisitors = PREVIEW_TOTAL_VISITORS;
+    }
+    if (widget.id === 'age_pyramid') {
+      props.ageData = PREVIEW_AGE_DATA;
+      props.totalVisitors = PREVIEW_TOTAL_VISITORS;
+    }
+    if (widget.id === 'chart_age_ranges') props.ageData = PREVIEW_AGE_DATA;
+    if (widget.id === 'gender_dist') {
+      props.genderData = PREVIEW_GENDER_DATA;
+      props.totalVisitors = PREVIEW_TOTAL_VISITORS;
+    }
+    if (widget.id === 'attributes' || widget.id === 'chart_vision' || widget.id === 'chart_facial_hair') {
+      props.attrData = PREVIEW_ATTR_DATA;
+    }
+    if (widget.id === 'chart_hair_type') props.hairTypeData = PREVIEW_HAIR_TYPE_DATA;
+    if (widget.id === 'chart_hair_color') props.hairColorData = PREVIEW_HAIR_COLOR_DATA;
+    if (widget.id === 'chart_facial_expressions') {
+      props.startDate = '2026-05-01';
+      props.endDate = '2026-05-07';
+      props.labels = PREVIEW_FACIAL_LABELS;
+      props.series = PREVIEW_FACIAL_SERIES;
+    }
+    if (widget.id === 'campaigns') {
+      props.clientId = scopeClientId;
+      props.lojaFilter = null;
+    }
+
+    return props;
   };
 
   const handleSave = async () => {
@@ -401,7 +619,7 @@ export function Settings() {
       const widgetLayoutPayload: Record<string, { colSpanLg?: number; heightPx?: number }> = {};
       Object.entries(widgetLayout).forEach(([wid, cfg]) => {
         const span = normalizeSpan((cfg as any)?.colSpanLg);
-        const h = clampNum((cfg as any)?.heightPx, getMinHeightPx(wid), 1200, NaN);
+        const h = normalizeWidgetHeightPx(wid, (cfg as any)?.heightPx, NaN);
         if (span) widgetLayoutPayload[wid] = { ...(widgetLayoutPayload[wid] || {}), colSpanLg: span };
         if (Number.isFinite(h)) widgetLayoutPayload[wid] = { ...(widgetLayoutPayload[wid] || {}), heightPx: Math.round(h) };
       });
@@ -651,7 +869,13 @@ export function Settings() {
                   </div>
                 </div>
                 
-                <div ref={previewGridRef} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-3 p-4 items-start">
+                <div
+                  ref={previewGridRef}
+                  onDragOver={handleGridDragOver}
+                  onDrop={(e) => { e.preventDefault(); }}
+                  style={{ gridAutoFlow: 'row dense', gridAutoRows: `${GRID_AUTO_ROW_PX}px` }}
+                  className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4 p-4 items-stretch content-start"
+                >
                   {activeWidgets.map((widget, index) => {
                     const Component = WIDGET_MAP[widget.id];
                     if (!Component) return null;
@@ -669,7 +893,16 @@ export function Settings() {
 
                     const isDragging = draggedIndex === index;
                     const heightPx = Number(widgetLayout[widget.id]?.heightPx);
-                    const widgetStyle = Number.isFinite(heightPx) ? { height: Math.round(heightPx) } : undefined;
+                    const defaultHeightPx = getDefaultHeightPx(widget);
+                    const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : defaultHeightPx;
+                    const rowSpan = computeRowSpan(widget, resolvedHeightPx);
+                    const widgetStyle: CSSProperties = { gridRow: `span ${rowSpan}` };
+                    if (widget.type === 'kpi') {
+                      widgetStyle.height = '100%';
+                    } else if (Number.isFinite(resolvedHeightPx)) {
+                      widgetStyle.height = Math.round(Number(resolvedHeightPx));
+                    }
+                    const previewProps = getPreviewProps(widget);
 
                     return (
                       <div 
@@ -680,7 +913,7 @@ export function Settings() {
                         onDragOver={(e) => handleDragOver(e, index)}
                         onDragEnd={handleDragEnd}
                         style={widgetStyle}
-                        className={`col-span-1 ${mdSpan} ${lgSpan} self-start relative group transition-all duration-300 flex flex-col ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-indigo-500 rounded-xl' : ''}`}
+                        className={`col-span-1 ${mdSpan} ${lgSpan} relative group transition-all duration-300 overflow-hidden ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-indigo-500 rounded-xl' : ''}`}
                       >
                         <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-gray-900/90 p-1.5 rounded-lg backdrop-blur-sm border border-gray-700 shadow-xl cursor-move">
                           <div className="p-1.5 text-gray-400 hover:text-white transition-colors" title="Arrastar para mover">
@@ -708,8 +941,8 @@ export function Settings() {
                           onMouseDown={(e) => startResizeY(e, widget)}
                           onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
                         />
-                        <div className={`${isDragging ? 'pointer-events-none' : ''} flex-1 min-h-0`}>
-                          <Component view="network" />
+                        <div className={isDragging ? 'pointer-events-none h-full' : 'h-full'}>
+                          <Component {...previewProps} />
                         </div>
                       </div>
                     );

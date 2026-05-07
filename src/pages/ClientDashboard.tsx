@@ -4,7 +4,7 @@ import { useAuth } from '../contexts/AuthContext';
 import {
   Globe, Clock, Building2, ChevronRight, ChevronDown,
   LayoutGrid, Users, BarChart2, Image, Upload, Calendar,
-  Maximize2, Minimize2
+  Maximize2, Minimize2, Move, Save, X, GripVertical, ArrowUp, ArrowDown, Wand2
 } from 'lucide-react';
 
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
@@ -19,6 +19,32 @@ const _rebuilding = new Set<string>();
 // ── Intervalo mínimo entre syncs background (1 hora) ─────────────────────────
 const SYNC_INTERVAL_MS = 10 * 60 * 1000;
 const lastSyncKey = (cid: string) => `last_bg_sync_${cid}`;
+const GRID_AUTO_ROW_PX = 96;
+const GRID_ROW_GAP_PX = 16;
+const GRID_SPAN_TO_HEIGHT: Record<number, number> = {
+  2: (GRID_AUTO_ROW_PX * 2) + GRID_ROW_GAP_PX,
+  3: (GRID_AUTO_ROW_PX * 3) + (GRID_ROW_GAP_PX * 2),
+  4: (GRID_AUTO_ROW_PX * 4) + (GRID_ROW_GAP_PX * 3),
+  5: (GRID_AUTO_ROW_PX * 5) + (GRID_ROW_GAP_PX * 4),
+};
+const RECOMMENDED_WIDGET_HEIGHTS: Record<string, number> = {
+  chart_sales_quarter: GRID_SPAN_TO_HEIGHT[2],
+  flow_trend: GRID_SPAN_TO_HEIGHT[3],
+  hourly_flow: GRID_SPAN_TO_HEIGHT[3],
+  chart_facial_expressions: GRID_SPAN_TO_HEIGHT[3],
+  chart_device_flow: GRID_SPAN_TO_HEIGHT[4],
+  device_type_audience: GRID_SPAN_TO_HEIGHT[4],
+  age_pyramid: GRID_SPAN_TO_HEIGHT[3],
+  chart_age_ranges: GRID_SPAN_TO_HEIGHT[3],
+  gender_dist: GRID_SPAN_TO_HEIGHT[3],
+  attributes: GRID_SPAN_TO_HEIGHT[3],
+  chart_vision: GRID_SPAN_TO_HEIGHT[3],
+  chart_facial_hair: GRID_SPAN_TO_HEIGHT[3],
+  chart_hair_type: GRID_SPAN_TO_HEIGHT[3],
+  chart_hair_color: GRID_SPAN_TO_HEIGHT[3],
+  heatmap: GRID_SPAN_TO_HEIGHT[5],
+  campaigns: GRID_SPAN_TO_HEIGHT[3],
+};
 
 function shouldSync(clientId: string): boolean {
   try {
@@ -266,6 +292,27 @@ function hasFacialExpressionSeriesData(series: Array<{ label: string; values: nu
   return Array.isArray(series) && series.some((item) => Array.isArray(item?.values) && item.values.some((value) => Number(value) > 0));
 }
 
+function mergeFacialExpressionSeries(
+  primarySeries: Array<{ label: string; values: number[] }> | null | undefined,
+  fallbackSeries: Array<{ label: string; values: number[] }> | null | undefined,
+) {
+  return FACIAL_EXPRESSION_SERIES.map(({ label }) => {
+    const primary = (primarySeries || []).find((entry) => String(entry?.label).toLowerCase() === label.toLowerCase());
+    const fallback = (fallbackSeries || []).find((entry) => String(entry?.label).toLowerCase() === label.toLowerCase());
+    const primaryValues = Array.isArray(primary?.values) ? primary.values : [];
+    const fallbackValues = Array.isArray(fallback?.values) ? fallback.values : [];
+    const length = Math.max(primaryValues.length, fallbackValues.length, 24);
+    return {
+      label,
+      values: Array.from({ length }, (_, index) => {
+        const primaryValue = Number(primaryValues[index] ?? 0) || 0;
+        const fallbackValue = Number(fallbackValues[index] ?? 0) || 0;
+        return primaryValue > 0 ? primaryValue : fallbackValue;
+      }),
+    };
+  });
+}
+
 function rangeTouchesTodayLocal(rangeStart: string, rangeEnd: string) {
   const startDay = formatLocalDateKey(rangeStart);
   const endDay = formatLocalDateKey(rangeEnd);
@@ -436,14 +483,11 @@ function extractDeviceFlowFromRollups(rollups: any[]) {
     if (!deviceFlow || typeof deviceFlow !== 'object') continue;
     const hasAudience = Array.isArray(deviceFlow.deviceAudience) && deviceFlow.deviceAudience.length > 0;
     const hasTracking = Array.isArray(deviceFlow.trackingData) && deviceFlow.trackingData.length > 0;
-    const hasPassersby = Number(deviceFlow.passersby ?? 0) > 0;
     const hasLegacyTrackingLabels = Array.isArray(deviceFlow.trackingData)
       && deviceFlow.trackingData.length > 0
       && deviceFlow.trackingData.every((entry: any) => /^\d+\s+devices?$/i.test(String(entry?.label ?? '').trim()));
-    // Só usa cache quando os três pedaços visuais estão completos.
-    // Assim, se o rollup salvo no Supabase estiver parcial (ex.: só visitors),
-    // o loader cai no fetch live que repopula deviceAudience/trackingData/passersby.
-    if (hasAudience && hasTracking && hasPassersby && !hasLegacyTrackingLabels) return deviceFlow;
+    // Só usa cache quando os dois blocos visuais principais estão completos.
+    if (hasAudience && hasTracking && !hasLegacyTrackingLabels) return deviceFlow;
     if (!bestPartial) bestPartial = deviceFlow;
   }
   return bestPartial;
@@ -607,6 +651,180 @@ export function ClientDashboard() {
   const [isLoadingConfig, setIsLoadingConfig] = useState(true);
   const [isLoadingData, setIsLoadingData] = useState(false);
 
+  // Modo de edicao de layout (drag-and-drop inline)
+  const [editLayoutMode, setEditLayoutMode] = useState(false);
+  const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
+  const [savingLayout, setSavingLayout] = useState(false);
+  const [layoutSnapshot, setLayoutSnapshot] = useState<WidgetType[] | null>(null);
+
+  const handleWidgetDragStart = (e: React.DragEvent, index: number) => {
+    if (!editLayoutMode) return;
+    setDraggedIndex(index);
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', String(index)); } catch {}
+  };
+
+  const handleWidgetDragOver = (e: React.DragEvent, index: number) => {
+    if (!editLayoutMode) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    setActiveWidgets((prev) => {
+      if (draggedIndex === null || draggedIndex === index) return prev;
+      const next = [...prev];
+      const draggedItem = next[draggedIndex];
+      next.splice(draggedIndex, 1);
+      next.splice(index, 0, draggedItem);
+      setDraggedIndex(index);
+      return next;
+    });
+  };
+
+  const handleWidgetDragEnd = () => setDraggedIndex(null);
+
+  const widgetsGridRef = useRef<HTMLDivElement | null>(null);
+
+  const handleGridDragOver = (e: React.DragEvent) => {
+    if (!editLayoutMode || draggedIndex === null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const grid = widgetsGridRef.current;
+    if (!grid) return;
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>('[data-widget-card]'));
+    if (cards.length === 0) return;
+    const x = e.clientX;
+    const y = e.clientY;
+    let bestIdx = -1;
+    let bestDist = Number.POSITIVE_INFINITY;
+    cards.forEach((el, idx) => {
+      const r = el.getBoundingClientRect();
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const d = Math.hypot(x - cx, y - cy);
+      if (d < bestDist) { bestDist = d; bestIdx = idx; }
+    });
+    if (bestIdx === -1 || bestIdx === draggedIndex) return;
+    setActiveWidgets((prev) => {
+      if (draggedIndex === null || draggedIndex === bestIdx) return prev;
+      const next = [...prev];
+      const item = next[draggedIndex];
+      next.splice(draggedIndex, 1);
+      next.splice(bestIdx, 0, item);
+      setDraggedIndex(bestIdx);
+      return next;
+    });
+  };
+
+  const moveWidgetByIndex = (index: number, direction: 'up' | 'down') => {
+    setActiveWidgets((prev) => {
+      const arr = [...prev];
+      if (direction === 'up' && index > 0) {
+        [arr[index], arr[index - 1]] = [arr[index - 1], arr[index]];
+      } else if (direction === 'down' && index < arr.length - 1) {
+        [arr[index], arr[index + 1]] = [arr[index + 1], arr[index]];
+      }
+      return arr;
+    });
+  };
+
+  const getDefaultHeightPx = (widget: WidgetType) => {
+    if (widget.type === 'kpi') return 48;
+    const recommended = RECOMMENDED_WIDGET_HEIGHTS[widget.id];
+    if (Number.isFinite(recommended)) return recommended;
+    return NaN;
+  };
+
+  // Mantem o layout legado quando nao ha altura personalizada; quando houver,
+  // converte a altura configurada em row-span real para evitar sobreposicao.
+  const computeRowSpan = (widget: WidgetType, heightPx?: number): number => {
+    if (widget.type === 'kpi') return 1;
+    const fallbackSpan =
+      widget.id === 'campaigns' ? 3 :
+      widget.type === 'table' ? 3 :
+      widget.size === 'full' ? 3 : 2;
+    if (!Number.isFinite(Number(heightPx))) return fallbackSpan;
+    const resolvedHeightPx = Math.max(1, Math.round(Number(heightPx)));
+    return Math.max(1, Math.ceil((resolvedHeightPx + GRID_ROW_GAP_PX) / (GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX)));
+  };
+
+  // Auto-organiza: pega todos os KPIs (cards pequenos) e move para o topo,
+  // depois charts medios, depois grandes/tabelas. Preserva a ordem relativa.
+  const autoArrangeWidgets = () => {
+    setActiveWidgets((prev) => {
+      const rank = (w: WidgetType) => {
+        if (w.type === 'kpi') return 0;
+        if (w.id === 'campaigns') return 3;
+        if (w.type === 'table') return 2;
+        return 1; // chart e demais
+      };
+      // Ordenacao estavel por rank, preservando ordem original como tie-break
+      return [...prev]
+        .map((w, i) => ({ w, i, r: rank(w) }))
+        .sort((a, b) => a.r - b.r || a.i - b.i)
+        .map((x) => x.w);
+    });
+  };
+
+  const enterEditMode = () => {
+    setLayoutSnapshot([...activeWidgets]);
+    setEditLayoutMode(true);
+  };
+
+  const cancelEditMode = () => {
+    if (layoutSnapshot) setActiveWidgets(layoutSnapshot);
+    setLayoutSnapshot(null);
+    setDraggedIndex(null);
+    setEditLayoutMode(false);
+  };
+
+  const saveLayoutOrder = async () => {
+    if (!id) return;
+    setSavingLayout(true);
+    try {
+      const widgetIds = activeWidgets.map((w) => w.id);
+      const widgetLayoutPayload: Record<string, { colSpanLg?: number; heightPx?: number }> = {};
+      for (const w of activeWidgets) {
+        const cur = widgetLayout[w.id] || {};
+        const entry: { colSpanLg?: number; heightPx?: number } = {};
+        if (cur.colSpanLg) entry.colSpanLg = Number(cur.colSpanLg);
+        if (Number.isFinite(Number(cur.heightPx))) entry.heightPx = Math.round(Number(cur.heightPx));
+        if (Object.keys(entry).length) widgetLayoutPayload[w.id] = entry;
+      }
+      const payload = { widget_ids: widgetIds, widget_layout: widgetLayoutPayload };
+
+      try {
+        const { data: existing } = await supabase
+          .from('dashboard_configs')
+          .select('id')
+          .eq('client_id', id)
+          .eq('layout_name', 'client_user')
+          .limit(1)
+          .single();
+        if (existing?.id) {
+          await supabase
+            .from('dashboard_configs')
+            .update({ widgets_config: payload, updated_at: new Date().toISOString() })
+            .eq('id', existing.id);
+        } else {
+          await supabase
+            .from('dashboard_configs')
+            .insert({ client_id: id, layout_name: 'client_user', widgets_config: payload, updated_at: new Date().toISOString() });
+        }
+      } catch (err) {
+        console.warn('[Dashboard] Falha ao salvar layout no Supabase:', err);
+      }
+
+      try { localStorage.setItem(`dashboard-config-user-${id}`, JSON.stringify(payload)); } catch {}
+
+      setLayoutSnapshot(null);
+      setEditLayoutMode(false);
+    } catch (err) {
+      console.error('[Dashboard] Erro ao salvar layout:', err);
+      alert('Erro ao salvar layout. Tente novamente.');
+    } finally {
+      setSavingLayout(false);
+    }
+  };
+
   const [isLoadingQuarter, setIsLoadingQuarter] = useState(false);
   const [quarterBars, setQuarterBars] = useState<{ label: string; visitors: number; sales: number }[]>([]);
   const [quarterVisitorsTotal, setQuarterVisitorsTotal] = useState(0);
@@ -618,8 +836,8 @@ export function ClientDashboard() {
   const [facialExpressionLabels, setFacialExpressionLabels] = useState<string[]>([]);
   const [facialExpressionSeries, setFacialExpressionSeries] = useState<{ label: string; values: number[] }[]>([]);
   // deviceFlowVisitors removido — widget usa totalVisitors (KPI) como fonte única da verdade
-  const [deviceFlowPassersby, setDeviceFlowPassersby] = useState<number | null>(null);
-  const [deviceFlowAudience, setDeviceFlowAudience] = useState<{ label: string; rawKey?: string; value: number }[]>([]);
+  const [deviceFlowAudience, setDeviceFlowAudience] = useState<{ label: string; rawKey?: string; value: number; count?: number }[]>([]);
+  const [deviceFlowStoreAudience, setDeviceFlowStoreAudience] = useState<{ label: string; rawKey?: string; value: number; count?: number }[]>([]);
   const [deviceFlowTracking, setDeviceFlowTracking] = useState<{ label: string; value: number; count?: number }[]>([]);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
@@ -700,9 +918,7 @@ export function ClientDashboard() {
     });
   }, [deviceNameByMac]);
 
-  // extractDeviceFlowPassersbyCount removido — somava tracks_count por linha de visita,
-  // gerando passantes inflados (ex: 93k quando o correto é ~10k).
-  // Passantes agora vem exclusivamente do rollup calculado pelo cron.
+  // O widget de fluxo agora usa apenas visitantes filtrados como base de cálculo.
 
   // Índice rápido: prefixo numérico do nome da loja → store.name completo
   // Ex: "309" → "309 Panvel Dom Joaquim Posto - RS"
@@ -759,9 +975,11 @@ export function ClientDashboard() {
   const deviceFlowAudienceByStore = useMemo(() => {
     // Inicia todas as lojas a 0 (garante que apareçam mesmo sem dados no período)
     const storeAccum = new Map<string, number>();
+    const sourceAudience = deviceFlowStoreAudience.length > 0 ? deviceFlowStoreAudience : deviceFlowAudience;
+    const visitorBase = Math.max(0, Number(totalVisitors) || 0);
     for (const s of stores) storeAccum.set(s.name, 0);
 
-    for (const entry of deviceFlowAudience) {
+    for (const entry of sourceAudience) {
       // Caso 1: rawKey = ID numérico do device (dados ao vivo)
       const rawKey = String(entry?.rawKey ?? '').replace(/^Device\s+/i, '');
       let storeName: string | undefined = rawKey ? deviceKeyToStoreName.get(rawKey) : undefined;
@@ -778,17 +996,26 @@ export function ClientDashboard() {
       }
 
       if (!storeName) continue;
-      storeAccum.set(storeName, (storeAccum.get(storeName) || 0) + entry.value);
+      const rawCount = Number(entry?.count ?? 0);
+      const fallbackCount = visitorBase > 0 ? ((Number(entry?.value) || 0) / 100) * visitorBase : 0;
+      const normalizedCount = rawCount > 0 ? rawCount : fallbackCount;
+      if (normalizedCount <= 0) continue;
+      storeAccum.set(storeName, (storeAccum.get(storeName) || 0) + normalizedCount);
     }
 
     return [...storeAccum.entries()]
-      .map(([label, value]) => ({ label, value: Number(value.toFixed(1)) }))
+      .map(([label, count]) => ({
+        label,
+        value: visitorBase > 0 ? Number(((count / visitorBase) * 100).toFixed(1)) : 0,
+      }))
       .sort((a, b) => b.value - a.value);
-  }, [deviceFlowAudience, stores, deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber, extractStoreNumber]);
+  }, [deviceFlowStoreAudience, deviceFlowAudience, totalVisitors, stores, deviceKeyToStoreName, cameraNameToStoreName, resolveDeviceFlowLabel, storeByNumber, extractStoreNumber]);
 
-  const buildDeviceFlowFromRows = useCallback((rows: any[], fallback?: any) => {
+  const buildDeviceFlowFromRows = useCallback((rows: any[], fallback?: any, visitorBase?: number) => {
     const safeRows = Array.isArray(rows) ? rows : [];
-    const passersby = Number(fallback?.passersby ?? 0) || null;
+    const resolvedVisitorBase = Number(visitorBase ?? 0) > 0
+      ? Number(visitorBase)
+      : (Number(fallback?.visitors ?? 0) > 0 ? Number(fallback?.visitors) : safeRows.length);
 
     const getDeviceKeys = (row: any): string[] => {
       const rawDevices = Array.isArray(row?.raw_data?.devices) ? row.raw_data.devices : [];
@@ -798,53 +1025,101 @@ export function ClientDashboard() {
       return fb ? [fb] : [];
     };
 
-    // Sempre agrega por device (store-independent)
-    // O mapeamento device→loja acontece no useMemo deviceFlowAudienceByStore
+    const originDeviceCounts = new Map<string, number>();
     const deviceCounts = new Map<string, number>();
     for (const row of safeRows) {
-      for (const dk of getDeviceKeys(row)) {
+      const deviceKeys = getDeviceKeys(row);
+      const originDeviceKey = String(row?.device_id ?? '').trim() || deviceKeys[0] || '';
+      if (originDeviceKey) {
+        originDeviceCounts.set(originDeviceKey, (originDeviceCounts.get(originDeviceKey) ?? 0) + 1);
+      }
+      for (const dk of deviceKeys) {
         deviceCounts.set(dk, (deviceCounts.get(dk) ?? 0) + 1);
       }
     }
 
-    const totalVisitors = Math.max(Number(fallback?.visitors ?? 0) || 0, safeRows.length);
-    const deviceAudience = [...deviceCounts.entries()]
+    const toPercent = (count: number) => (
+      resolvedVisitorBase > 0 ? Number(((count / resolvedVisitorBase) * 100).toFixed(1)) : 0
+    );
+    const buildAudienceRows = (counts: Map<string, number>) => [...counts.entries()]
       .map(([deviceKey, count]) => ({
         label: resolveDeviceFlowLabel(`Device ${deviceKey}`),
         rawKey: deviceKey,
-        value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0,
+        count,
+        value: toPercent(count),
       }))
-      .sort((a, b) => b.value - a.value);
+      .sort((a, b) => b.count - a.count || b.value - a.value);
 
-    const getCategoryLabel = (label: string) => {
-      const l = String(label || '').toLowerCase();
-      if (l.includes('entrada')) return 'Entrada';
-      if (l.includes('totem')) return 'Totem';
-      if (l.includes('caixa')) return 'Caixa';
-      if (l.includes('gôndola') || l.includes('gondola') || l.includes('gond')) return 'Gôndola';
-      if (l.includes(' led') || l.includes('-led') || /\bled\b/.test(l)) return 'LED';
-      if (l.includes('câmera') || l.includes('camera') || l.includes(' cam')) return 'Câmera';
-      return 'Outros';
+    const deviceAudience = buildAudienceRows(deviceCounts);
+    const storeAudience = buildAudienceRows(originDeviceCounts);
+
+    const formatJourneyWord = (word: string) => {
+      const raw = String(word ?? '').trim();
+      if (!raw) return '';
+      const lower = raw.toLowerCase();
+      if (lower === 'led') return 'LED';
+      if (lower === 'entrada') return 'Entrada';
+      if (lower === 'totem') return 'Totem';
+      if (lower === 'caixa') return 'Caixa';
+      if (lower === 'gondola' || lower === 'gôndola' || lower === 'gond') return 'Gôndola';
+      return lower.charAt(0).toUpperCase() + lower.slice(1);
+    };
+    const getJourneyStepLabel = (label: string) => {
+      const resolvedLabel = resolveDeviceFlowLabel(String(label ?? ''));
+      const segment = resolvedLabel.split(/\s+-\s+/).pop() ?? resolvedLabel;
+      const cleaned = segment
+        .replace(/\bc[âa]mera\b/gi, ' ')
+        .replace(/\bdevice\b/gi, ' ')
+        .replace(/[0-9]+/g, ' ')
+        .replace(/[_/]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+      if (!cleaned) return null;
+
+      const patterns: Array<{ regex: RegExp; label: string }> = [
+        { regex: /\bentrada\b/i, label: 'Entrada' },
+        { regex: /\btotem\b/i, label: 'Totem' },
+        { regex: /\bcaixa\b/i, label: 'Caixa' },
+        { regex: /\bg[oô]ndola\b|\bgond\b/i, label: 'Gôndola' },
+        { regex: /\bled\b/i, label: 'LED' },
+      ];
+
+      for (const pattern of patterns) {
+        const match = cleaned.match(pattern.regex);
+        if (!match || match.index == null) continue;
+        const suffix = cleaned
+          .slice(match.index + match[0].length)
+          .trim()
+          .split(/\s+/)
+          .map(formatJourneyWord)
+          .filter(Boolean)
+          .join(' ');
+        return suffix ? `${pattern.label} ${suffix}` : pattern.label;
+      }
+
+      return null;
     };
     const trackingCounts = new Map<string, number>();
     for (const row of safeRows) {
       const journey = getDeviceKeys(row)
-        .map((dk) => getCategoryLabel(resolveDeviceFlowLabel(`Device ${dk}`)))
-        .filter(Boolean);
+        .map((dk) => getJourneyStepLabel(`Device ${dk}`))
+        .filter((step): step is string => Boolean(step))
+        .filter((step, index, list) => index === 0 || step !== list[index - 1]);
       if (journey.length < 2) continue;
-      const key = journey.join(' → ');
+      const key = journey.join(' -> ');
       trackingCounts.set(key, (trackingCounts.get(key) ?? 0) + 1);
     }
     const trackingData = [...trackingCounts.entries()]
-      .map(([label, count]) => ({ label, count, value: safeRows.length > 0 ? Number(((count / safeRows.length) * 100).toFixed(1)) : 0 }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 12);
+      .map(([label, count]) => ({ label, count, value: toPercent(count) }))
+      .sort((a, b) => b.count - a.count);
 
+    const fallbackStoreAudience = Array.isArray(fallback?.storeAudience) ? fallback.storeAudience : [];
     const fallbackTracking = Array.isArray(fallback?.trackingData) ? fallback.trackingData : [];
     return {
-      visitors: totalVisitors > 0 ? totalVisitors : null,
-      passersby,
+      visitors: resolvedVisitorBase > 0 ? resolvedVisitorBase : null,
       deviceAudience,
+      storeAudience: storeAudience.length > 0 ? storeAudience : fallbackStoreAudience,
       trackingData: trackingData.length > 0 ? trackingData : fallbackTracking,
     };
   }, [resolveDeviceFlowLabel]);
@@ -863,8 +1138,15 @@ export function ClientDashboard() {
 
   function applyRollup(rollup: any, options?: { updatedAt?: string | Date | null }) {
     if (!rollup) return false;
-    setTotalVisitors(rollup.total_visitors ?? 0);
-    setAvgVisitorsPerDay(Math.round(rollup.avg_visitors_per_day ?? 0));
+    const resolvedTotalVisitors = Math.round(Number(rollup.total_visitors ?? 0));
+    const filteredDayCount = countInclusiveUtcDays(selectedStartDate, selectedEndDate);
+    setTotalVisitors(resolvedTotalVisitors);
+    setAvgVisitorsPerDay(
+      Math.round(
+        resolvedTotalVisitors /
+        Math.max(filteredDayCount || countRollupDays(rollup) || 1, 1),
+      ),
+    );
     setAvgVisitSeconds(Math.round(rollup.avg_visit_time_seconds ?? 0));
     setAvgAttentionSeconds(Math.round(
       rollup.avg_attention_seconds ?? rollup.avg_contact_time_seconds ?? rollup.avg_attention_sec ?? 0
@@ -944,15 +1226,15 @@ export function ClientDashboard() {
   }
 
   function zeroAll() {
-    setTotalVisitors(0); setDailyStats([0,0,0,0,0,0,0]); setHourlyStats(new Array(24).fill(0));
+    setTotalVisitors(0); setHourlyStats(new Array(24).fill(0));
     setAvgVisitorsPerDay(0); setAvgVisitSeconds(0); setAvgAttentionSeconds(0);
     setGenderStats([]); setAttributeStats([]); setAgeStats([]);
     setVisitorsPerDayMap({}); setHairTypeData([]); setHairColorData([]);
     setFacialExpressionLabels([]);
     setFacialExpressionSeries([]);
 
-    setDeviceFlowPassersby(null);
     setDeviceFlowAudience([]);
+    setDeviceFlowStoreAudience([]);
     setDeviceFlowTracking([]);
 
     setComparePrevVisitorsPerDay({});
@@ -1026,7 +1308,8 @@ export function ClientDashboard() {
 
     if (!isCurrent()) return;
     const rowSeries = buildFacialExpressionSeriesFromRows(allRows);
-    const bestSeries = hasFacialExpressionSeriesData(rowSeries) ? rowSeries : immediateSeries;
+    const mergedRowSeries = mergeFacialExpressionSeries(rowSeries, immediateSeries);
+    const bestSeries = hasFacialExpressionSeriesData(mergedRowSeries) ? mergedRowSeries : (immediateSeries ?? rowSeries);
     setFacialExpressionLabels(labels);
     setFacialExpressionSeries(bestSeries ?? rowSeries);
 
@@ -1123,8 +1406,8 @@ export function ClientDashboard() {
           );
           const merged = FACIAL_EXPRESSION_SERIES.map(({ label }) => {
             const liveSerie = liveByLabel.get(label.toLowerCase()) as { label: string; values: number[] } | undefined;
-            const rowSerie = rowSeries.find(r => String(r.label).toLowerCase() === label.toLowerCase()) as { label: string; values: number[] } | undefined;
-            const rowVals: number[] = rowSerie?.values ?? new Array(24).fill(0);
+            const baseSerie = mergedRowSeries.find(r => String(r.label).toLowerCase() === label.toLowerCase()) as { label: string; values: number[] } | undefined;
+            const rowVals: number[] = baseSerie?.values ?? new Array(24).fill(0);
             if (!liveSerie) {
               return { label, values: rowVals };
             }
@@ -1156,14 +1439,15 @@ export function ClientDashboard() {
     const cached = extractDeviceFlowFromRollups(candidateRollups);
     const cachedHasAudience = Array.isArray(cached?.deviceAudience) && cached.deviceAudience.length > 0;
     const cachedHasTracking = Array.isArray(cached?.trackingData) && cached.trackingData.length > 0;
+    const visitorBase = Number(candidateRollups?.[0]?.total_visitors ?? 0) || 0;
     const applyDeviceFlowState = (payload: {
       visitors?: number | null;
-      passersby?: number | null;
-      deviceAudience?: { label: string; rawKey?: string; value: number }[];
+      deviceAudience?: { label: string; rawKey?: string; value: number; count?: number }[];
+      storeAudience?: { label: string; rawKey?: string; value: number; count?: number }[];
       trackingData?: { label: string; value: number; count?: number }[];
     }) => {
-      setDeviceFlowPassersby(Number(payload?.passersby ?? 0) || null);
       setDeviceFlowAudience(Array.isArray(payload?.deviceAudience) ? payload.deviceAudience : []);
+      setDeviceFlowStoreAudience(Array.isArray(payload?.storeAudience) ? payload.storeAudience : []);
       setDeviceFlowTracking(Array.isArray(payload?.trackingData) ? payload.trackingData : []);
     };
 
@@ -1171,7 +1455,7 @@ export function ClientDashboard() {
     // mas NUNCA retorna cedo: o rollup representa o período completo de coleta,
     // não o período filtrado na tela. Sem o fetch fresco, lojas que só tiveram
     // visitas no período selecionado (mas não na época do rollup) aparecem zeradas.
-    if (cachedHasAudience && isCurrent()) {
+    if ((cachedHasAudience || cachedHasTracking) && isCurrent()) {
       applyDeviceFlowState(cached);
       // Continua abaixo para sobrescrever com dados do período selecionado
     }
@@ -1205,13 +1489,34 @@ export function ClientDashboard() {
         from += PAGE;
       }
 
-      const rebuilt = buildDeviceFlowFromRows(allRows, cached);
+      const rebuilt = buildDeviceFlowFromRows(allRows, cached, visitorBase);
       if (!isCurrent()) return;
       applyDeviceFlowState(rebuilt);
 
+      if (!Array.isArray(rebuilt?.trackingData) || rebuilt.trackingData.length === 0) {
+        try {
+          const liveFlowResult = await fetchJsonWithTimeout('/api/sync-analytics', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              client_id: clientId,
+              live_device_flow: true,
+              start: rangeStart,
+              end: rangeEnd,
+              auth: 'painel@2026*',
+              ...(deviceFilter.length > 0 ? { devices: deviceFilter } : {}),
+            }),
+          }, 12000, 'live device flow');
+          if (isCurrent() && liveFlowResult?.device_flow) {
+            applyDeviceFlowState(liveFlowResult.device_flow);
+          }
+        } catch (_) {
+          // Mantém o rebuild local quando o endpoint live estiver indisponível.
+        }
+      }
+
       // OBS: removida a chamada live_device_flow daqui. Bate apenas no banco — o cron-sync diário
-      // grava attributes_percent.device_flow no rollup. Se passersby vier null/0, o widget esconde
-      // a porcentagem sem hammerar a DisplayForce a cada reload.
+      // grava attributes_percent.device_flow no rollup e o período filtrado é reconstruído do banco.
     } catch (error) {
       console.warn('[Dashboard] Falha ao carregar fluxo/audiencia device:', error);
       if (!isCurrent()) return;
@@ -1833,27 +2138,10 @@ export function ClientDashboard() {
     return out;
   }, []);
 
-  const selectedCalendarMonths = useCallback((rangeStart: Date, rangeEnd: Date) => {
-    const out: { label: string; startIso: string; endIso: string }[] = [];
-    const startMonth = new Date(Date.UTC(rangeStart.getUTCFullYear(), rangeStart.getUTCMonth(), 1, 0, 0, 0, 0));
-    const endMonth = new Date(Date.UTC(rangeEnd.getUTCFullYear(), rangeEnd.getUTCMonth(), 1, 0, 0, 0, 0));
-    for (let cursor = startMonth; cursor <= endMonth; cursor = new Date(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth() + 1, 1, 0, 0, 0, 0))) {
-      const yy = cursor.getUTCFullYear();
-      const mm = cursor.getUTCMonth();
-      out.push({
-        label: cursor.toLocaleString('pt-BR', { month: 'short', timeZone: 'UTC' }).replace('.', '').toUpperCase(),
-        startIso: new Date(Date.UTC(yy, mm, 1, 0, 0, 0, 0)).toISOString(),
-        endIso: new Date(Date.UTC(yy, mm + 1, 0, 23, 59, 59, 999)).toISOString(),
-      });
-    }
-    return out;
-  }, []);
-
   const quarterMonthsForFilter = useCallback((rangeStart: Date, rangeEnd: Date) => {
-    const explicitMonths = selectedCalendarMonths(rangeStart, rangeEnd);
-    if (explicitMonths.length === 3) return explicitMonths;
+    void rangeStart;
     return lastQuarterMonths(alignUtcEndOfDay(rangeEnd));
-  }, [lastQuarterMonths, selectedCalendarMonths]);
+  }, [lastQuarterMonths]);
 
   const refreshLastUpdate = useCallback(async () => {
     if (!id) return;
@@ -2384,8 +2672,22 @@ export function ClientDashboard() {
       const w = AVAILABLE_WIDGETS.find((x) => x.id === widgetId);
       if (!w) return 80;
       if (w.type === 'kpi') return 12;
-      if (w.type === 'table') return 120;
+      if (w.type === 'table') return GRID_SPAN_TO_HEIGHT[2];
+      const recommended = RECOMMENDED_WIDGET_HEIGHTS[widgetId];
+      if (Number.isFinite(recommended)) return recommended;
       return 80;
+    };
+
+    const normalizeWidgetHeightPx = (widgetId: string, raw: any, fallback = NaN) => {
+      const minHeight = getMinHeightPx(widgetId);
+      const clamped = clampNum(raw, minHeight, 1200, fallback);
+      if (!Number.isFinite(clamped)) return fallback;
+      const widget = AVAILABLE_WIDGETS.find((x) => x.id === widgetId);
+      if (widget?.type === 'kpi') return Math.round(clamped);
+      const rowUnit = GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX;
+      const snappedSpan = Math.max(2, Math.round((clamped + GRID_ROW_GAP_PX) / rowUnit));
+      const snappedHeight = (snappedSpan * rowUnit) - GRID_ROW_GAP_PX;
+      return Math.max(minHeight, Math.min(1200, snappedHeight));
     };
 
     const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> } => {
@@ -2399,7 +2701,7 @@ export function ClientDashboard() {
         for (const [wid, cfg] of Object.entries(rawLayout)) {
           const wId = String(wid);
           const span = normalizeSpan((cfg as any)?.colSpanLg ?? cfg);
-          const heightPx = clampNum((cfg as any)?.heightPx, getMinHeightPx(wId), 1200, NaN);
+          const heightPx = normalizeWidgetHeightPx(wId, (cfg as any)?.heightPx, NaN);
           if (span) wl[wId] = { ...(wl[wId] || {}), colSpanLg: span };
           if (Number.isFinite(heightPx)) wl[wId] = { ...(wl[wId] || {}), heightPx: Math.round(heightPx) };
         }
@@ -2518,6 +2820,22 @@ export function ClientDashboard() {
     return { labels, values };
   }, [selectedStartDate, selectedEndDate, visitorsPerDayMap]);
 
+  const flowTrendSeries = useMemo(() => {
+    const labels = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab', 'Dom'];
+    const values = new Array(7).fill(0);
+    const start = alignUtcStartOfDay(selectedStartDate);
+    const end = alignUtcStartOfDay(selectedEndDate);
+
+    for (let d = start; d.getTime() <= end.getTime(); d = new Date(d.getTime() + 86400000)) {
+      const key = formatLocalDateKey(d);
+      const weekday = d.getDay();
+      const bucketIndex = weekday === 0 ? 6 : weekday - 1;
+      values[bucketIndex] += Number(visitorsPerDayMap[key] || 0);
+    }
+
+    return { labels, values };
+  }, [selectedStartDate, selectedEndDate, visitorsPerDayMap]);
+
   const periodWeeks = useMemo(() => {
     const weeks: { label: string; visitors: number; sales: number }[] = [];
     periodSeries.values.forEach((v, i) => {
@@ -2625,6 +2943,48 @@ export function ClientDashboard() {
                 {isFullscreen ? <Minimize2 size={16} className="text-emerald-400" /> : <Maximize2 size={16} className="text-gray-400" />}
               </button>
 
+              {/* Reorganizar Layout (drag-and-drop inline) */}
+              {!editLayoutMode ? (
+                <button
+                  onClick={enterEditMode}
+                  title="Reorganizar widgets - arraste para juntar os cards"
+                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[38px] w-[38px]"
+                >
+                  <Move size={16} className="text-gray-400" />
+                </button>
+              ) : (
+                <>
+                  <button
+                    onClick={autoArrangeWidgets}
+                    disabled={savingLayout}
+                    title="Auto-organizar: poe os KPIs (cards pequenos) primeiro, depois os graficos. Elimina os espacos vazios."
+                    className="flex items-center justify-center bg-gray-900 border border-purple-500/60 text-purple-300 hover:text-white hover:bg-purple-600 rounded-lg transition-colors flex-shrink-0 h-[38px] px-3 gap-1.5 text-xs font-medium disabled:opacity-60"
+                  >
+                    <Wand2 size={14} />
+                    Auto-organizar
+                  </button>
+                  <button
+                    onClick={saveLayoutOrder}
+                    disabled={savingLayout}
+                    title="Salvar nova organizacao"
+                    className="flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors flex-shrink-0 h-[38px] px-3 gap-1.5 text-xs font-medium disabled:opacity-60"
+                  >
+                    {savingLayout
+                      ? <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      : <Save size={14} />}
+                    Salvar
+                  </button>
+                  <button
+                    onClick={cancelEditMode}
+                    disabled={savingLayout}
+                    title="Cancelar alteracoes"
+                    className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-red-500 hover:text-red-400 transition-colors flex-shrink-0 h-[38px] w-[38px] disabled:opacity-60"
+                  >
+                    <X size={16} className="text-gray-400" />
+                  </button>
+                </>
+              )}
+
               {/* Upload campanhas (apenas admin) */}
               {authUser?.role === 'admin' && (
                 <button
@@ -2657,7 +3017,7 @@ export function ClientDashboard() {
                   lojaFilter: selectedStore?.name ?? null,
                   period: { start: selectedStartDate, end: selectedEndDate },
                   kpis: { totalVisitors, avgVisitorsPerDay, avgVisitSeconds, avgAttentionSeconds },
-                  dailyStats, hourlyStats, genderStats, ageStats, attributeStats,
+                  dailyStats: periodSeries.values, dailyLabels: periodSeries.labels, hourlyStats, genderStats, ageStats, attributeStats,
                   hairTypeData, hairColorData, visitorsPerDayMap, quarterBars, dashboardRef,
                 }}
               />
@@ -2725,16 +3085,24 @@ export function ClientDashboard() {
       </div>
 
 
+      {/* Banner indicador de modo edicao */}
+      {editLayoutMode && (
+        <div className="bg-emerald-500/10 border border-emerald-600/40 text-emerald-300 rounded-xl px-4 py-2.5 text-sm flex items-center gap-2">
+          <Move size={14} />
+          <span>Modo organizacao ativo - arraste qualquer card ou use as setas para subir/descer. Clique em <strong>Salvar</strong> para confirmar ou <strong>X</strong> para cancelar.</span>
+        </div>
+      )}
+
       {/* Widgets */}
-      <div className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden min-h-[400px]">
+      <div className={`bg-gray-900 border ${editLayoutMode ? 'border-emerald-600/50' : 'border-gray-800'} rounded-xl overflow-hidden min-h-[400px] transition-colors`}>
         {view === 'network' && (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 items-start content-start gap-4">
+          <div ref={widgetsGridRef} onDragOver={handleGridDragOver} onDrop={(e) => { if (editLayoutMode) e.preventDefault(); }} style={{ gridAutoFlow: 'row dense', gridAutoRows: `${GRID_AUTO_ROW_PX}px` }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 items-stretch content-start gap-4 p-1">
             {isLoadingConfig ? (
               <div className="col-span-full flex justify-center py-20">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-emerald-500" />
               </div>
             ) : activeWidgets.length > 0 ? (
-              activeWidgets.map((widget) => {
+              activeWidgets.map((widget, widgetIndex) => {
                 const Component = WIDGET_MAP[widget.id];
                 if (!Component) return null;
                 const defaultSpanForSize = (size: WidgetType['size']) => {
@@ -2751,7 +3119,7 @@ export function ClientDashboard() {
                 if (spanLg === 3)  lgSpan = 'lg:col-span-3';
                 const mdSpan = spanLg >= 8 ? 'md:col-span-2' : 'md:col-span-1';
                 const widgetProps: any = { view: 'network' };
-                if (widget.id === 'flow_trend')              { widgetProps.dailyData = dailyStats; widgetProps.genderData = genderStats; }
+                if (widget.id === 'flow_trend')              { widgetProps.dailyData = flowTrendSeries.values; widgetProps.dailyLabels = flowTrendSeries.labels; widgetProps.genderData = genderStats; }
                 if (widget.id === 'hourly_flow')             { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'chart_facial_expressions') {
                   widgetProps.startDate = selectedStartDate;
@@ -2761,7 +3129,6 @@ export function ClientDashboard() {
                 }
                 if (widget.id === 'chart_device_flow')       {
                   widgetProps.visitors  = totalVisitors;
-                  widgetProps.passersby = deviceFlowPassersby ?? null;
                   const isNetworkView   = !selectedStore && deviceIds.length === 0;
                   widgetProps.deviceAudience = isNetworkView
                     // Rede Global: useMemo deviceFlowAudienceByStore (reage a stores E audience)
@@ -2800,12 +3167,59 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
                 const heightPx = Number(widgetLayout[widget.id]?.heightPx);
-                const defaultHeightPx = widget.type === 'kpi' ? 48 : widget.id === 'campaigns' ? 560 : NaN;
+                const defaultHeightPx = getDefaultHeightPx(widget);
                 const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : defaultHeightPx;
-                const widgetStyle = Number.isFinite(resolvedHeightPx) ? { height: Math.round(resolvedHeightPx) } : undefined;
+                const rowSpan = computeRowSpan(widget, resolvedHeightPx);
+                // KPIs esticam para encher a celula (height: 100%);
+                // demais widgets respeitam heightPx configurado, ou auto.
+                const widgetStyle: React.CSSProperties = { gridRow: `span ${rowSpan}` };
+                if (widget.type === 'kpi') {
+                  widgetStyle.height = '100%';
+                } else if (Number.isFinite(resolvedHeightPx)) {
+                  widgetStyle.height = Math.round(Number(resolvedHeightPx));
+                }
+                const isDragging = editLayoutMode && draggedIndex === widgetIndex;
                 return (
-                  <div key={widget.id} style={widgetStyle} className={`col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500`}>
-                    <Component {...widgetProps} />
+                  <div
+                    key={widget.id}
+                    data-widget-card
+                    style={widgetStyle}
+                    draggable={editLayoutMode}
+                    onDragStart={(e) => handleWidgetDragStart(e, widgetIndex)}
+                    onDragOver={(e) => handleWidgetDragOver(e, widgetIndex)}
+                    onDragEnd={handleWidgetDragEnd}
+                    onDrop={(e) => { if (editLayoutMode) e.preventDefault(); }}
+                    className={`relative col-span-1 ${mdSpan} ${lgSpan} animate-in fade-in zoom-in-95 duration-500 ${editLayoutMode ? 'cursor-move ring-1 ring-emerald-600/40 rounded-xl' : ''} ${isDragging ? 'opacity-50 scale-95 ring-2 ring-emerald-500' : ''} transition-all`}
+                  >
+                    {editLayoutMode && (
+                      <div className="absolute top-2 right-2 z-20 flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); moveWidgetByIndex(widgetIndex, 'up'); }}
+                          disabled={widgetIndex === 0}
+                          title="Subir card"
+                          className="bg-gray-900/95 border border-emerald-500/60 text-emerald-300 hover:text-white hover:bg-emerald-600 rounded-md p-1 shadow-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <ArrowUp size={12} />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); moveWidgetByIndex(widgetIndex, 'down'); }}
+                          disabled={widgetIndex === activeWidgets.length - 1}
+                          title="Descer card"
+                          className="bg-gray-900/95 border border-emerald-500/60 text-emerald-300 hover:text-white hover:bg-emerald-600 rounded-md p-1 shadow-lg disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        >
+                          <ArrowDown size={12} />
+                        </button>
+                        <div className="bg-emerald-600/90 text-white rounded-md p-1 shadow-lg pointer-events-none flex items-center gap-1">
+                          <GripVertical size={12} />
+                          <span className="text-[10px] font-semibold uppercase tracking-wider">Arrastar</span>
+                        </div>
+                      </div>
+                    )}
+                    <div className={editLayoutMode ? 'pointer-events-none h-full' : 'h-full'}>
+                      <Component {...widgetProps} />
+                    </div>
                   </div>
                 );
               })

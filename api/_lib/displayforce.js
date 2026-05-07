@@ -267,8 +267,8 @@ export async function fetchFacialExpressionHourlyMap(clientId, rangeStart, range
       const source = apiRanges[index] ?? {};
       const neutral = Number(source?.neutral ?? 0) || 0;
       const happiness = Number(source?.happiness ?? 0) || 0;
-      const surprise = Number(source?.surprise ?? 0) || 0;
-      const anger = Number(source?.anger ?? 0) || 0;
+      const surprise = Number(source?.surprise ?? source?.surprised ?? 0) || 0;
+      const anger = Number(source?.anger ?? source?.angry ?? 0) || 0;
       const disgust = Number(source?.disgust ?? source?.disgusted ?? 0) || 0;
       // Só registra hours com algum dado — evita bagunçar o rollup com horas vazias
       if (neutral + happiness + surprise + anger + disgust > 0) {

@@ -169,10 +169,23 @@ export const AVAILABLE_WIDGETS: WidgetType[] = [
 ];
 
 // ── WidgetFlowTrend ──────────────────────────────────────────────────────────
-export const WidgetFlowTrend = ({ dailyData, genderData }: { view?: string; dailyData?: number[]; genderData?: { label: string; value: number }[] }) => {
+export const WidgetFlowTrend = ({
+  dailyData,
+  dailyLabels,
+  genderData,
+}: {
+  view?: string;
+  dailyData?: number[];
+  dailyLabels?: string[];
+  genderData?: { label: string; value: number }[];
+}) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
-  const data = dailyData && dailyData.length ? dailyData : new Array(7).fill(0);
-  const labels = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+  const labels = dailyLabels && dailyLabels.length > 0
+    ? dailyLabels
+    : ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab', 'Dom'];
+  const data = dailyData && dailyData.length === labels.length
+    ? dailyData
+    : new Array(labels.length).fill(0);
   const mPct = Number(genderData?.find((g) => g.label.toLowerCase().includes('masc'))?.value ?? 50) / 100;
   const fPct = 1 - mPct;
   const maleData   = data.map((v) => Math.round(v * mPct));
@@ -195,11 +208,11 @@ export const WidgetFlowTrend = ({ dailyData, genderData }: { view?: string; dail
         tooltip: { backgroundColor: CJ.bg, borderColor: 'rgba(255,255,255,0.12)', borderWidth: 1, padding: CJ.tooltipPadding, titleFont: CJ.titleFont, bodyFont: CJ.bodyFont, callbacks: { label: (ctx: any) => `  ${ctx.dataset.label}: ${Number(ctx.raw).toLocaleString()}` } },
       },
       scales: {
-        x: { grid: { color: CJ.grid }, ticks: { color: CJ.label, font: { size: 11 } }, title: { display: true, text: 'Dia da semana', color: CJ.label, font: { size: 11 } } },
+        x: { grid: { color: CJ.grid }, ticks: { color: CJ.label, font: { size: 11 }, maxTicksLimit: 7 }, title: { display: true, text: 'Dia da semana', color: CJ.label, font: { size: 11 } } },
         y: { beginAtZero: true, grid: { color: CJ.grid }, ticks: { color: CJ.label, font: { size: 11 }, callback: (v: number) => v >= 1000 ? `${(v / 1000).toFixed(0)}k` : String(v) }, title: { display: true, text: 'Visitantes', color: CJ.label, font: { size: 11 } } },
       },
     },
-  }), [JSON.stringify(maleData), JSON.stringify(femaleData)]);
+  }), [JSON.stringify(labels), JSON.stringify(maleData), JSON.stringify(femaleData)]);
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
@@ -1181,7 +1194,6 @@ export const WidgetFacialExpressions = ({
     { label: 'Felicidade', values: [], color: '#fbbf24' },
     { label: 'Surpresa', values: [], color: '#22c55e' },
     { label: 'Raiva', values: [], color: '#fb7185' },
-    { label: 'Nojo', values: [], color: '#a855f7' },
   ];
   const resolvedSeries = palette.map((defaultSeries) => {
     const match = (series || []).find((entry) => String(entry.label).toLowerCase() === defaultSeries.label.toLowerCase());
@@ -1279,17 +1291,12 @@ type DeviceAudienceItem = {
 
 export const WidgetDeviceFlow = ({
   visitors,
-  passersby,
   deviceAudience,
 }: {
   visitors?: number;
-  passersby?: number | null;
   deviceAudience?: DeviceAudienceItem[];
 }) => {
   const safeVisitors = Math.max(0, Number(visitors) || 0);
-  const safePassersby = Math.max(0, Number(passersby) || 0);
-  const hasFlowRatio = safePassersby > 0;
-  const flowPct = hasFlowRatio ? Math.max(0, Math.min(100, (safeVisitors / safePassersby) * 100)) : null;
   const audiencePalette = ['#ff4d4f', '#d667ff', '#2f7df6', '#ffb703', '#10b981', '#f59e0b', '#6366f1', '#ec4899'];
   const audienceRows = (deviceAudience || []).map((entry, index) => ({
     ...entry,
@@ -1297,12 +1304,11 @@ export const WidgetDeviceFlow = ({
   }));
 
   const formatPct = (value: number) => `${value.toFixed(1).replace('.', ',')}%`;
-  const fluxoBarWidth = flowPct ?? 0;
-  const passersbyPct = hasFlowRatio ? Math.max(0, 100 - flowPct!) : null;
-  const flowDisplay = hasFlowRatio ? formatPct(flowPct!) : (safeVisitors > 0 ? '0,0%' : '--');
-  const flowHelperText = hasFlowRatio
-    ? 'Visitantes sobre passantes no periodo.'
-    : 'Sem passantes no periodo filtrado.';
+  const baseBarWidth = safeVisitors > 0 ? 100 : 0;
+  const baseDisplay = safeVisitors > 0 ? '100,0%' : '--';
+  const flowHelperText = safeVisitors > 0
+    ? ''
+    : 'Sem visitantes no periodo filtrado.';
 
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-2.5 h-full flex flex-col gap-2.5 overflow-hidden">
@@ -1320,20 +1326,18 @@ export const WidgetDeviceFlow = ({
         <div className="rounded-xl border border-gray-800/80 bg-gradient-to-br from-gray-900 via-gray-900 to-gray-800/60 p-2">
           <div className="flex flex-wrap items-end justify-between gap-1.5 mb-1.5">
             <div className="min-w-[96px]">
-              <div className="text-[10px] uppercase tracking-[0.24em] text-gray-500">Conversao do fluxo</div>
+              <div className="text-[10px] uppercase tracking-[0.24em] text-gray-500">Base do periodo filtrado</div>
               <div className="text-[19px] font-black text-white leading-none mt-1">
-                {flowDisplay}
+                {safeVisitors.toLocaleString('pt-BR')}
               </div>
-              <div className="text-[9px] text-gray-500 mt-0.5">{flowHelperText}</div>
+              {flowHelperText ? (
+                <div className="text-[9px] text-gray-500 mt-0.5">{flowHelperText}</div>
+              ) : null}
             </div>
             <div className="flex flex-wrap justify-end gap-1.5">
-              <div className="min-w-[76px] rounded-lg border border-gray-800 bg-gray-950/60 px-2 py-1 text-right">
+              <div className="min-w-[88px] rounded-lg border border-gray-800 bg-gray-950/60 px-2 py-1 text-right">
                 <div className="text-[10px] uppercase tracking-[0.18em] text-gray-500">Visitantes</div>
                 <div className="text-[13px] font-bold text-white">{safeVisitors.toLocaleString('pt-BR')}</div>
-              </div>
-              <div className="min-w-[76px] rounded-lg border border-gray-800 bg-gray-950/60 px-2 py-1 text-right">
-                <div className="text-[10px] uppercase tracking-[0.18em] text-gray-500">Passantes</div>
-                <div className="text-[13px] font-bold text-white">{safePassersby.toLocaleString('pt-BR')}</div>
               </div>
             </div>
           </div>
@@ -1342,17 +1346,17 @@ export const WidgetDeviceFlow = ({
             <div className="absolute inset-0 bg-gradient-to-r from-white/5 to-transparent" />
             <div
               className="absolute inset-y-0 left-0 rounded-r-lg bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-300 shadow-[0_0_18px_rgba(16,185,129,0.14)] transition-all duration-500"
-              style={{ width: `${fluxoBarWidth}%` }}
+              style={{ width: `${baseBarWidth}%` }}
             />
             <div className="absolute inset-y-0 right-0 flex items-center pr-1.5">
               <span className="rounded-full bg-gray-950/80 px-1.5 py-0.5 text-[10px] font-black text-white shadow-lg">
-                {flowDisplay}
+                {baseDisplay}
               </span>
             </div>
           </div>
           <div className="mt-1 flex items-center justify-between text-[10px] text-gray-400">
-            <span>Visitantes {flowDisplay}</span>
-            <span>Passantes {passersbyPct !== null ? formatPct(passersbyPct) : '--'}</span>
+            <span>Visitantes {baseDisplay}</span>
+            <span>Base para lojas e devices</span>
           </div>
         </div>
       </div>
@@ -1443,6 +1447,79 @@ function saveDeviceTypeConfig(cfg: Record<string, boolean>) {
 }
 const getDeviceTypeLabel = (key: string) => DEVICE_TYPE_PALETTE.find((p) => p.key === key)?.label || key;
 
+function formatJourneyWord(word: string): string {
+  const raw = String(word ?? '').trim();
+  if (!raw) return '';
+  const lower = raw.toLowerCase();
+  if (lower === 'led') return 'LED';
+  if (lower === 'entrada') return 'Entrada';
+  if (lower === 'totem') return 'Totem';
+  if (lower === 'caixa') return 'Caixa';
+  if (lower === 'gondola' || lower === 'gôndola' || lower === 'gond') return 'Gôndola';
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
+function normalizeDeviceJourneyPart(part: string): string {
+  const raw = String(part ?? '').trim();
+  if (!raw) return '';
+  if (/^device\s+\d+$/i.test(raw)) return '';
+
+  const segment = raw.split(/\s+-\s+/).pop() ?? raw;
+  const cleaned = segment
+    .replace(/\bc[âa]mera\b/gi, ' ')
+    .replace(/\bdevice\b/gi, ' ')
+    .replace(/[0-9]+/g, ' ')
+    .replace(/[_/]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleaned) return '';
+
+  const patterns: Array<{ regex: RegExp; label: string }> = [
+    { regex: /\bentrada\b/i, label: 'Entrada' },
+    { regex: /\btotem\b/i, label: 'Totem' },
+    { regex: /\bcaixa\b/i, label: 'Caixa' },
+    { regex: /\bg[oô]ndola\b|\bgond\b/i, label: 'Gôndola' },
+    { regex: /\bled\b/i, label: 'LED' },
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern.regex);
+    if (!match || match.index == null) continue;
+    const suffix = cleaned
+      .slice(match.index + match[0].length)
+      .trim()
+      .split(/\s+/)
+      .map(formatJourneyWord)
+      .filter(Boolean)
+      .join(' ');
+    return suffix ? `${pattern.label} ${suffix}` : pattern.label;
+  }
+
+  return '';
+}
+
+function normalizeDeviceJourneyLabel(label: string): string | null {
+  const raw = String(label ?? '').trim();
+  if (!raw || /^\d+\s+devices?$/i.test(raw)) return null;
+
+  const directParts = raw
+    .split(/\s*(?:->|\u2192|\+)\s*/)
+    .map(normalizeDeviceJourneyPart)
+    .filter(Boolean);
+
+  if (directParts.length >= 2) return directParts.join(' -> ');
+
+  const keywordParts = raw
+    .split(/[;,/]/)
+    .map(normalizeDeviceJourneyPart)
+    .filter(Boolean);
+
+  if (keywordParts.length >= 2) return keywordParts.join(' -> ');
+  if (directParts.length === 1) return directParts[0];
+  return null;
+}
+
 export const WidgetDeviceTypeAudience = ({ deviceAudience, trackingData }: { deviceAudience?: DeviceAudienceItem[]; trackingData?: { label: string; value: number; count?: number }[] }) => {
   const [enabled, setEnabled] = React.useState<Record<string, boolean>>(loadDeviceTypeConfig);
   const [showConfig, setShowConfig] = React.useState(false);
@@ -1472,18 +1549,16 @@ export const WidgetDeviceTypeAudience = ({ deviceAudience, trackingData }: { dev
   const combos = React.useMemo(() => {
     const acc = new Map<string, { label: string; value: number; count: number }>();
     for (const row of trackingData || []) {
-      const raw = String(row?.label ?? '');
-      const parts = (raw.match(/entrada|totem|caixa|gôndola|gondola|led|câmera|camera/gi) || [])
-        .map((p) => getDeviceTypeLabel(extractDeviceCategory(p)));
-      if (parts.length < 2) continue;
-      const label = parts.join(' → ');
+      const label = normalizeDeviceJourneyLabel(String(row?.label ?? ''));
+      if (!label) continue;
       const prev = acc.get(label) || { label, value: 0, count: 0 };
       prev.value += Number(row?.value) || 0;
       prev.count += Number(row?.count) || 0;
       acc.set(label, prev);
     }
-    return [...acc.values()].sort((a, b) => (b.count || b.value) - (a.count || a.value)).slice(0, 10);
+    return [...acc.values()].sort((a, b) => (b.count || b.value) - (a.count || a.value));
   }, [trackingData]);
+  const comboMaxVal = combos.length > 0 ? combos[0].value : 100;
 
   // Quais tipos existem nos dados (para o painel de config)
   const presentTypes = React.useMemo(() => {
@@ -1554,7 +1629,12 @@ export const WidgetDeviceTypeAudience = ({ deviceAudience, trackingData }: { dev
             const barW = maxVal > 0 ? Math.round((item.value / maxVal) * 100) : 0;
             return <div key={item.label}><div className="flex items-center justify-between mb-1"><span className="text-[11px] font-semibold text-gray-200 uppercase tracking-wide">{item.label}</span><span className="text-[12px] font-black tabular-nums" style={{ color: item.color }}>{item.value.toFixed(1)}%</span></div><div className="h-5 rounded-lg overflow-hidden bg-gray-800/60 relative"><div className="h-full rounded-lg transition-all duration-500" style={{ width: `${barW}%`, background: `linear-gradient(90deg, ${item.color}cc, ${item.color}88)`, boxShadow: `0 0 12px ${item.color}44` }} /><div className="absolute inset-0 bg-gradient-to-r from-white/[0.04] to-transparent rounded-lg pointer-events-none" /></div></div>;
           })}</div>}
-          {combos.length > 0 && <div className="border-t border-gray-800 pt-3"><div className="text-[10px] uppercase tracking-[0.2em] text-gray-500 mb-2">Combinações</div><div className="space-y-2">{combos.map((item) => <div key={item.label} className="rounded-lg border border-gray-800 bg-gray-950/40 px-2 py-1.5"><div className="flex items-center justify-between gap-2"><span className="text-[11px] text-gray-200 break-words">{item.label}</span><span className="text-[11px] font-black text-white whitespace-nowrap">{item.count > 0 ? `${item.count} pessoas` : `${item.value.toFixed(1)}%`}</span></div><div className="text-[10px] text-gray-500 mt-0.5">{item.value.toFixed(1)}% do período</div></div>)}</div></div>}
+          {combos.length > 0 && <div className="border-t border-gray-800 pt-3"><div className="text-[10px] uppercase tracking-[0.2em] text-gray-500 mb-2">Combinações</div><div className="space-y-2">{combos.map((item) => {
+            const barW = comboMaxVal > 0 ? Math.max(4, Math.round((item.value / comboMaxVal) * 100)) : 0;
+            const comboLabel = item.label.replace(/\s*->\s*/g, ' - ');
+            const tooltipText = item.count > 0 ? `${item.count.toLocaleString('pt-BR')} pessoas` : `${item.value.toFixed(1)}% do período`;
+            return <div key={item.label} className="group relative"><div className="mb-1 flex items-center justify-between gap-2"><span className="text-[11px] font-semibold text-gray-200 tracking-wide break-words">{comboLabel}</span><span className="text-[12px] font-black text-sky-300 tabular-nums shrink-0">{item.value.toFixed(1)}%</span></div><div className="h-4 rounded-lg overflow-hidden bg-gray-800/60 relative"><div className="h-full rounded-lg transition-all duration-500 bg-gradient-to-r from-sky-500/90 via-blue-500/80 to-indigo-500/70 shadow-[0_0_12px_rgba(59,130,246,0.24)]" style={{ width: `${barW}%` }} /><div className="absolute inset-0 bg-gradient-to-r from-white/[0.04] to-transparent rounded-lg pointer-events-none" /></div><div className="pointer-events-none absolute -top-7 right-0 opacity-0 transition-opacity duration-200 group-hover:opacity-100"><span className="rounded-full border border-gray-700 bg-gray-950/95 px-2 py-1 text-[10px] font-bold text-white shadow-lg whitespace-nowrap">{tooltipText}</span></div></div>;
+          })}</div></div>}
         </div>
       )}
     </div>

@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   Save, ArrowLeft, GripVertical, Plus, X,
   ArrowUp, ArrowDown, LayoutDashboard, ChevronDown,
-  Eye, Edit3, Monitor,
+  Eye, Edit3, Monitor, Wand2,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
@@ -13,6 +13,32 @@ import supabase from '../lib/supabase';
 // ── Tamanhos disponíveis ──────────────────────────────────────────────────────
 const SPANS = [3, 4, 6, 8, 12] as const;
 type Span = typeof SPANS[number];
+const GRID_AUTO_ROW_PX = 96;
+const GRID_ROW_GAP_PX = 16;
+const GRID_SPAN_TO_HEIGHT: Record<number, number> = {
+  2: (GRID_AUTO_ROW_PX * 2) + GRID_ROW_GAP_PX,
+  3: (GRID_AUTO_ROW_PX * 3) + (GRID_ROW_GAP_PX * 2),
+  4: (GRID_AUTO_ROW_PX * 4) + (GRID_ROW_GAP_PX * 3),
+  5: (GRID_AUTO_ROW_PX * 5) + (GRID_ROW_GAP_PX * 4),
+};
+const RECOMMENDED_WIDGET_HEIGHTS: Record<string, number> = {
+  chart_sales_quarter: GRID_SPAN_TO_HEIGHT[2],
+  flow_trend: GRID_SPAN_TO_HEIGHT[3],
+  hourly_flow: GRID_SPAN_TO_HEIGHT[3],
+  chart_facial_expressions: GRID_SPAN_TO_HEIGHT[3],
+  chart_device_flow: GRID_SPAN_TO_HEIGHT[4],
+  device_type_audience: GRID_SPAN_TO_HEIGHT[4],
+  age_pyramid: GRID_SPAN_TO_HEIGHT[3],
+  chart_age_ranges: GRID_SPAN_TO_HEIGHT[3],
+  gender_dist: GRID_SPAN_TO_HEIGHT[3],
+  attributes: GRID_SPAN_TO_HEIGHT[3],
+  chart_vision: GRID_SPAN_TO_HEIGHT[3],
+  chart_facial_hair: GRID_SPAN_TO_HEIGHT[3],
+  chart_hair_type: GRID_SPAN_TO_HEIGHT[3],
+  chart_hair_color: GRID_SPAN_TO_HEIGHT[3],
+  heatmap: GRID_SPAN_TO_HEIGHT[5],
+  campaigns: GRID_SPAN_TO_HEIGHT[3],
+};
 
 const SPAN_LABELS: Record<Span, string> = {
   3:  '1/4  — Pequeno',
@@ -34,20 +60,35 @@ const getMinHeightPx = (widgetId: string) => {
   const widget = AVAILABLE_WIDGETS.find((w) => w.id === widgetId);
   if (!widget) return 80;
   if (widget.type === 'kpi') return 12;
-  if (widget.type === 'table') return 120;
+  if (widget.type === 'table') return GRID_SPAN_TO_HEIGHT[2];
+  const recommended = RECOMMENDED_WIDGET_HEIGHTS[widgetId];
+  if (Number.isFinite(recommended)) return recommended;
   return 80;
 };
 
 const getDefaultHeightPx = (widget: WidgetType) => {
   if (widget.type === 'kpi') return 48;
-  if (widget.id === 'campaigns') return 560;
+  const recommended = RECOMMENDED_WIDGET_HEIGHTS[widget.id];
+  if (Number.isFinite(recommended)) return recommended;
   return undefined;
 };
 
 const getResizeStepPx = (widgetId: string) => {
   const widget = AVAILABLE_WIDGETS.find((w) => w.id === widgetId);
   if (widget?.type === 'kpi') return 1;
-  return 10;
+  return GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX;
+};
+
+const normalizeWidgetHeightPx = (widgetId: string, raw: any, fallback = NaN) => {
+  const minHeight = getMinHeightPx(widgetId);
+  const clamped = Math.max(minHeight, Math.min(1200, Math.round(Number(raw))));
+  if (!Number.isFinite(clamped)) return fallback;
+  const widget = AVAILABLE_WIDGETS.find((w) => w.id === widgetId);
+  if (widget?.type === 'kpi') return Math.round(clamped);
+  const rowUnit = GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX;
+  const snappedSpan = Math.max(2, Math.round((clamped + GRID_ROW_GAP_PX) / rowUnit));
+  const snappedHeight = (snappedSpan * rowUnit) - GRID_ROW_GAP_PX;
+  return Math.max(minHeight, Math.min(1200, snappedHeight));
 };
 
 type WidgetConfig = {
@@ -116,7 +157,7 @@ export function ClientDashboardConfig() {
               for (const [wid, val] of Object.entries(rawLayout)) {
                 const wId = String(wid);
                 const spanN = Number((val as any)?.colSpanLg ?? val);
-                const heightPx = clampNum((val as any)?.heightPx, getMinHeightPx(wId), 1200, NaN);
+                const heightPx = normalizeWidgetHeightPx(wId, (val as any)?.heightPx, NaN);
                 if ((SPANS as readonly number[]).includes(spanN)) layout[wId] = { ...(layout[wId] || {}), colSpanLg: spanN as Span };
                 if (Number.isFinite(heightPx)) layout[wId] = { ...(layout[wId] || {}), heightPx: Math.round(heightPx) };
               }
@@ -249,6 +290,35 @@ export function ClientDashboardConfig() {
     setActiveWidgets(arr);
   };
 
+  // Mantem o layout legado quando nao ha altura personalizada; quando houver,
+  // converte a altura configurada em row-span real para evitar sobreposicao.
+  const computeRowSpan = (widget: WidgetType, heightPx?: number): number => {
+    if (widget.type === 'kpi') return 1;
+    const fallbackSpan =
+      widget.id === 'campaigns' ? 3 :
+      widget.type === 'table' ? 3 :
+      widget.size === 'full' ? 3 : 2;
+    if (!Number.isFinite(Number(heightPx))) return fallbackSpan;
+    const resolvedHeightPx = Math.max(1, Math.round(Number(heightPx)));
+    return Math.max(1, Math.ceil((resolvedHeightPx + GRID_ROW_GAP_PX) / (GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX)));
+  };
+
+  // Auto-organiza: KPIs (cards pequenos) primeiro, depois charts, depois tabelas/grandes.
+  const autoArrangeWidgets = () => {
+    const rank = (w: WidgetType) => {
+      if (w.type === 'kpi') return 0;
+      if (w.id === 'campaigns') return 3;
+      if (w.type === 'table') return 2;
+      return 1;
+    };
+    setActiveWidgets((prev) =>
+      [...prev]
+        .map((c, i) => ({ c, i, r: rank(c.widget) }))
+        .sort((a, b) => a.r - b.r || a.i - b.i)
+        .map((x) => x.c)
+    );
+  };
+
   const setSpan = (widgetId: string, span: Span) => {
     setActiveWidgets(activeWidgets.map((c) =>
       c.widget.id === widgetId ? { ...c, colSpanLg: span } : c
@@ -257,18 +327,18 @@ export function ClientDashboardConfig() {
 
   const setHeightPx = (widgetId: string, raw: number) => {
     const minHeight = getMinHeightPx(widgetId);
-    const next = Math.max(minHeight, Math.min(1200, Math.round(raw)));
+    const next = normalizeWidgetHeightPx(widgetId, raw, minHeight);
     setActiveWidgets((prev) => prev.map((c) => c.widget.id === widgetId ? { ...c, heightPx: next } : c));
   };
 
   const adjustHeight = (widgetId: string, direction: 'up' | 'down') => {
     const minHeight = getMinHeightPx(widgetId);
-    const step = Math.max(1, getResizeStepPx(widgetId)) * (getResizeStepPx(widgetId) === 1 ? 6 : 2);
+    const step = getResizeStepPx(widgetId) === 1 ? 6 : Math.max(1, getResizeStepPx(widgetId));
     setActiveWidgets((prev) => prev.map((c) => {
       if (c.widget.id !== widgetId) return c;
       const current = Number.isFinite(Number(c.heightPx)) ? Number(c.heightPx) : (getDefaultHeightPx(c.widget) ?? minHeight);
       const next = direction === 'up' ? current + step : current - step;
-      return { ...c, heightPx: Math.max(minHeight, Math.min(1200, next)) };
+      return { ...c, heightPx: normalizeWidgetHeightPx(widgetId, next, minHeight) };
     }));
   };
 
@@ -298,7 +368,7 @@ export function ClientDashboardConfig() {
     const minHeight = getMinHeightPx(r.widgetId);
     const nextHeight = Math.min(1200, Math.max(minHeight, r.startHeight + (e.clientY - r.startY)));
     const step = Math.max(1, getResizeStepPx(r.widgetId));
-    const snappedH = Math.max(minHeight, Math.round(nextHeight / step) * step);
+    const snappedH = normalizeWidgetHeightPx(r.widgetId, Math.round(nextHeight / step) * step, minHeight);
     setActiveWidgets((prev) => prev.map((c) => c.widget.id === r.widgetId ? { ...c, heightPx: snappedH } : c));
   }, [closestSpan]);
 
@@ -366,6 +436,42 @@ export function ClientDashboardConfig() {
 
   const handleDragEnd = () => {
     setDraggedIndex(null);
+  };
+
+  // dragOver no container da grid: aceita drop em qualquer celula vazia,
+  // calcula o widget alvo mais proximo do cursor e reordena.
+  const handleGridDragOver = (e: React.DragEvent) => {
+    if (draggedIndex === null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    const grid = previewGridRef.current;
+    if (!grid) return;
+    const cards = Array.from(grid.querySelectorAll<HTMLElement>('[data-widget-card]'));
+    if (cards.length === 0) return;
+    const x = e.clientX;
+    const y = e.clientY;
+    let bestIdx = -1;
+    let bestDist = Number.POSITIVE_INFINITY;
+    cards.forEach((el, idx) => {
+      const r = el.getBoundingClientRect();
+      // distancia euclidiana ate o centro do card
+      const cx = r.left + r.width / 2;
+      const cy = r.top + r.height / 2;
+      const dx = x - cx;
+      const dy = y - cy;
+      const d = Math.hypot(dx, dy);
+      if (d < bestDist) { bestDist = d; bestIdx = idx; }
+    });
+    if (bestIdx === -1 || bestIdx === draggedIndex) return;
+    setActiveWidgets((prev) => {
+      if (draggedIndex === null || draggedIndex === bestIdx) return prev;
+      const next = [...prev];
+      const item = next[draggedIndex];
+      next.splice(draggedIndex, 1);
+      next.splice(bestIdx, 0, item);
+      setDraggedIndex(bestIdx);
+      return next;
+    });
   };
 
   // ── Salva no Supabase ─────────────────────────────────────────────────────
@@ -439,14 +545,25 @@ export function ClientDashboardConfig() {
             <p className="text-gray-400 text-sm">Personalize a visualização, ordem e tamanho dos gráficos</p>
           </div>
         </div>
-        <button
-          onClick={handleSave}
-          disabled={isSaving}
-          className="w-full sm:w-auto justify-center bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-6 py-2.5 rounded-lg flex items-center gap-2 font-medium transition-all shadow-lg shadow-emerald-900/20"
-        >
-          <Save size={18} />
-          {isSaving ? 'Salvando...' : 'Salvar Layout'}
-        </button>
+        <div className="flex items-center gap-2 w-full sm:w-auto">
+          <button
+            onClick={autoArrangeWidgets}
+            disabled={isSaving || activeWidgets.length === 0}
+            title="Auto-organizar: poe os KPIs primeiro, depois graficos. Elimina os espacos vazios entre cards."
+            className="flex-1 sm:flex-none justify-center bg-gray-900 border border-purple-500/60 text-purple-300 hover:text-white hover:bg-purple-600 disabled:opacity-50 px-4 py-2.5 rounded-lg flex items-center gap-2 font-medium transition-all"
+          >
+            <Wand2 size={16} />
+            Auto-organizar
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={isSaving}
+            className="flex-1 sm:flex-none justify-center bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white px-6 py-2.5 rounded-lg flex items-center gap-2 font-medium transition-all shadow-lg shadow-emerald-900/20"
+          >
+            <Save size={18} />
+            {isSaving ? 'Salvando...' : 'Salvar Layout'}
+          </button>
+        </div>
       </div>
 
       <div className="flex flex-wrap gap-2 bg-gray-900/50 p-1 rounded-lg w-full sm:w-fit border border-gray-800">
@@ -668,7 +785,7 @@ export function ClientDashboardConfig() {
             </div>
           </div>
 
-          <div ref={previewGridRef} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-3 p-4 items-start">
+          <div ref={previewGridRef} onDragOver={handleGridDragOver} onDrop={(e) => { e.preventDefault(); }} style={{ gridAutoFlow: 'row dense', gridAutoRows: `${GRID_AUTO_ROW_PX}px` }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 gap-4 p-4 items-stretch content-start">
             {activeWidgets.map((cfg, index) => {
               const widget = cfg.widget;
               const Component = WIDGET_MAP[widget.id];
@@ -687,13 +804,42 @@ export function ClientDashboardConfig() {
               const isDragging = draggedIndex === index;
               const heightPx = Number(cfg.heightPx);
               const resolvedHeightPx = Number.isFinite(heightPx) ? heightPx : getDefaultHeightPx(widget);
-              const widgetStyle = Number.isFinite(Number(resolvedHeightPx)) ? { height: Math.round(Number(resolvedHeightPx)) } : undefined;
+              const rowSpan = computeRowSpan(widget, resolvedHeightPx);
+              const widgetStyle: React.CSSProperties = { gridRow: `span ${rowSpan}` };
+              if (widget.type === 'kpi') {
+                widgetStyle.height = '100%';
+              } else if (Number.isFinite(Number(resolvedHeightPx))) {
+                widgetStyle.height = Math.round(Number(resolvedHeightPx));
+              }
 
               const previewProps: any = { view: 'network', clientId: id };
               if (widget.id === 'kpi_total_visitors')   previewProps.totalVisitors = 128940;
               if (widget.id === 'kpi_avg_visitors_day') previewProps.avgVisitorsPerDay = 1842;
               if (widget.id === 'kpi_avg_visit_time')   previewProps.avgVisitSeconds = 54;
               if (widget.id === 'kpi_attention_time')   previewProps.avgAttentionSeconds = 18;
+              if (widget.id === 'chart_device_flow') {
+                previewProps.visitors = 128940;
+                previewProps.deviceAudience = [
+                  { label: 'Assai Campinas Abolicao FL144', value: 25.9 },
+                  { label: 'Assai Penha Tiquatira FL275', value: 20.3 },
+                  { label: 'Assai Barueri FL337', value: 13.1 },
+                  { label: 'Assai Nacoes Unidas FL199', value: 12.1 },
+                ];
+              }
+              if (widget.id === 'device_type_audience') {
+                previewProps.deviceAudience = [
+                  { label: 'camera loja 1', value: 28.3 },
+                  { label: 'caixa loja 1', value: 16.5 },
+                  { label: 'gondola loja 1', value: 9.8 },
+                ];
+                previewProps.trackingData = [
+                  { label: 'entrada -> caixa', value: 19.0, count: 458 },
+                  { label: 'entrada -> totem', value: 17.7, count: 427 },
+                  { label: 'entrada -> totem -> caixa', value: 2.9, count: 70 },
+                  { label: 'entrada -> led', value: 2.7, count: 65 },
+                  { label: 'entrada -> totem -> caixa -> gondola perfumaria', value: 0.7, count: 17 },
+                ];
+              }
 
               return (
                 <div
@@ -704,7 +850,7 @@ export function ClientDashboardConfig() {
                   onDragOver={(e) => handleDragOver(e, index)}
                   onDragEnd={handleDragEnd}
                   style={widgetStyle}
-                  className={`col-span-1 ${mdSpan} ${lgSpan} self-start relative group transition-all duration-300 flex flex-col min-h-0 overflow-hidden ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-emerald-500 rounded-xl' : ''}`}
+                  className={`col-span-1 ${mdSpan} ${lgSpan} relative group transition-all duration-300 overflow-hidden ${isDragging ? 'opacity-50 scale-95 border-2 border-dashed border-emerald-500 rounded-xl' : ''}`}
                 >
                   <div className="absolute top-2 right-2 z-10 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1 bg-gray-900/90 p-1.5 rounded-lg backdrop-blur-sm border border-gray-700 shadow-xl">
                     <button
@@ -753,7 +899,7 @@ export function ClientDashboardConfig() {
                     onDragStart={(e) => { e.preventDefault(); e.stopPropagation(); }}
                   />
 
-                  <div className={`${isDragging ? 'pointer-events-none' : ''} flex-1 min-h-0`}>
+                  <div className={`${isDragging ? 'pointer-events-none h-full' : 'h-full'}`}>
                     <Component {...previewProps} />
                   </div>
                 </div>
