@@ -1342,20 +1342,7 @@ export const WidgetDeviceFlow = ({
             </div>
           </div>
 
-          <div className="relative h-5 rounded-lg overflow-hidden border border-gray-800 bg-white/[0.06]">
-            <div className="absolute inset-0 bg-gradient-to-r from-white/5 to-transparent" />
-            <div
-              className="absolute inset-y-0 left-0 rounded-r-lg bg-gradient-to-r from-emerald-500 via-emerald-400 to-teal-300 shadow-[0_0_18px_rgba(16,185,129,0.14)] transition-all duration-500"
-              style={{ width: `${baseBarWidth}%` }}
-            />
-            <div className="absolute inset-y-0 right-0 flex items-center pr-1.5">
-              <span className="rounded-full bg-gray-950/80 px-1.5 py-0.5 text-[10px] font-black text-white shadow-lg">
-                {baseDisplay}
-              </span>
-            </div>
-          </div>
-          <div className="mt-1 flex items-center justify-between text-[10px] text-gray-400">
-            <span>Visitantes {baseDisplay}</span>
+          <div className="mt-1 flex items-center justify-end text-[10px] text-gray-500">
             <span>Base para lojas e devices</span>
           </div>
         </div>
