@@ -202,10 +202,12 @@ function buildOfflineReasonUpdateMessageV2({
   offlineReason,
   offlineSince,
 }) {
+  const normalizedDeviceName = deviceName || "Sem nome";
+
   return [
     "\u{1F4DD} ATUALIZACAO: Motivo do OFFLINE",
     "",
-    `O dispositivo ${deviceName || "Sem nome"} continua offline.`,
+    `O dispositivo ${normalizedDeviceName} continua offline.`,
     "",
     `\u{1F4E6} Projeto: ${resolveProjectLabel(projectName, clientName)}`,
     `\u{1F4CD} Loja: ${storeName || "Nao informada"}`,
@@ -225,16 +227,20 @@ function buildResolvedMessageV2({
   offlineSince,
   resolvedAt,
 }) {
+  const normalizedDeviceName = deviceName || "Sem nome";
+  const offlineFor = formatElapsedOfflineLabel(offlineSince, resolvedAt);
+
   return [
     "\u2705 ATUALIZACAO: Dispositivo ONLINE",
     "",
-    `O dispositivo ${deviceName || "Sem nome"} voltou a ficar online.`,
+    `O dispositivo ${normalizedDeviceName} voltou a ficar online.`,
     "",
     `\u{1F4E6} Projeto: ${resolveProjectLabel(projectName, clientName)}`,
     `\u{1F4CD} Loja: ${storeName || "Nao informada"}`,
     `\u{1F3E2} Cliente: ${clientName || "Nao informado"}`,
     `\u{1F534} Horario da queda: ${formatDateTime(offlineSince)}`,
     `\u{1F7E2} Horario de retorno: ${formatDateTime(resolvedAt)}`,
+    `\u23F1\uFE0F Tempo offline: ${offlineFor}`,
     "",
     "Alerta automatico - Monitoramento Global IA",
   ].join("\n");

@@ -1261,11 +1261,7 @@ export function ClientDashboard() {
     }
 
     const cachedSeries = buildFacialExpressionSeriesFromRollups(candidateRollups, rangeStart, rangeEnd);
-    const latestStoredSeries =
-      deviceFilter.length === 0
-        ? buildLatestFacialExpressionSeriesFromRollups(candidateRollups)
-        : null;
-    const immediateSeries = cachedSeries ?? latestStoredSeries;
+    const immediateSeries = cachedSeries;
 
     // Mostra dados cacheados imediatamente enquanto carrega dados frescos
     if (immediateSeries && isCurrent()) {
@@ -1311,8 +1307,7 @@ export function ClientDashboard() {
 
     if (!isCurrent()) return;
     const rowSeries = buildFacialExpressionSeriesFromRows(allRows);
-    const mergedRowSeries = mergeFacialExpressionSeries(rowSeries, immediateSeries);
-    const bestSeries = hasFacialExpressionSeriesData(mergedRowSeries) ? mergedRowSeries : (immediateSeries ?? rowSeries);
+    const bestSeries = hasFacialExpressionSeriesData(rowSeries) ? rowSeries : (immediateSeries ?? rowSeries);
     setFacialExpressionLabels(labels);
     setFacialExpressionSeries(bestSeries ?? rowSeries);
 
@@ -1370,55 +1365,10 @@ export function ClientDashboard() {
       }, 30000);
     }
 
-    // ── Passo 2: chama a API live Displayforce para expressões em tempo real ─
-    // REQUER: DISPLAYFORCE_EMAIL e DISPLAYFORCE_PASS configurados no Vercel (env vars)
-    // A API pública v1 só tem smile e o painel hoje considera apenas neutral/happiness.
-    // Só vale para Rede Global
-    // pois a v5 não filtra por device.
-    if (deviceFilter.length === 0) {
-      try {
-        const liveResult = await fetchJsonWithTimeout('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            client_id: clientId,
-            live_facial_expressions: true,
-            start: rangeStart,
-            end: rangeEnd,
-            auth: 'painel@2026*',
-          }),
-        }, 12000, 'live expressions v5');
-        if (isCurrent() && Array.isArray(liveResult?.series) && hasFacialExpressionSeriesData(liveResult.series)) {
-          // A v5 retorna dados em UTC (values[10] = 10h UTC).
-          // O gráfico usa horário LOCAL (slot 7 = 7h local = 10h UTC em BRT).
-          // getTimezoneOffset() = 180 no Brasil (BRT = UTC-3).
-          // Para converter UTC→local: localH = (utcH - offset/60 + 24) % 24
-          const tzOffHours = new Date().getTimezoneOffset() / 60; // 3 em BRT
-
-          const toLocalIndexed = (utcValues: number[]): number[] =>
-            Array.from({ length: 24 }, (_, localH) => {
-              const utcH = (localH + tzOffHours + 24) % 24;
-              return utcValues[utcH] ?? 0;
-            });
-
-          const liveByLabel = new Map(
-            liveResult.series.map((s: { label: string; values: number[] }) => [
-              String(s.label).toLowerCase(), s
-            ])
-          );
-          const liveOnlySeries = FACIAL_EXPRESSION_SERIES.map(({ label }) => {
-            const liveSerie = liveByLabel.get(label.toLowerCase()) as { label: string; values: number[] } | undefined;
-            return {
-              label,
-              values: toLocalIndexed(liveSerie?.values ?? new Array(24).fill(0)),
-            };
-          });
-          setFacialExpressionSeries(liveOnlySeries);
-        }
-      } catch (_) {
-        // Mantém os dados das linhas — v5 API pode estar indisponível
-      }
-    }
+    // Mantemos uma única fonte visual para esse gráfico:
+    // dados do visitor_analytics no período filtrado, com rollup do mesmo período
+    // apenas como preview/fallback. Isso evita trocar horas do gráfico por dados
+    // de outra leitura durante o carregamento.
   }, []);
 
   const loadDeviceFlowWidget = useCallback(async (
