@@ -44,7 +44,6 @@ const PREVIEW_AGE_DATA = [
 const PREVIEW_ATTR_DATA = [
   { label: 'Óculos', value: 34 },
   { label: 'Barba', value: 27 },
-  { label: 'Máscara', value: 6 },
   { label: 'Chapéu/Boné', value: 11 },
   { label: '_glasses_none', value: 66 },
   { label: '_glasses_usual', value: 24 },

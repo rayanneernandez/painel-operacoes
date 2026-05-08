@@ -269,6 +269,10 @@ function countInclusiveUtcDays(startValue: Date | string, endValue: Date | strin
   return Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
 }
 
+function sumNumberArray(values: number[]) {
+  return values.reduce((acc, value) => acc + (Number(value) || 0), 0);
+}
+
 function countRollupDays(rollup: any) {
   return countInclusiveUtcDays(rollup?.start, rollup?.end);
 }
@@ -1186,7 +1190,6 @@ export function ClientDashboard() {
     setAttributeStats([
       { label: 'Óculos',      value: glassesTotal },
       { label: 'Barba',       value: facialTotal },
-      { label: 'Máscara',     value: 0 },
       { label: 'Chapéu/Boné', value: headwearPct },
       ...glassesData.map(d => ({ label: `_glasses_${d.label}`, value: d.value })),
       ...facialData.map(d  => ({ label: `_facial_${d.label}`,  value: d.value })),
@@ -1404,23 +1407,14 @@ export function ClientDashboard() {
               String(s.label).toLowerCase(), s
             ])
           );
-          const merged = FACIAL_EXPRESSION_SERIES.map(({ label }) => {
+          const liveOnlySeries = FACIAL_EXPRESSION_SERIES.map(({ label }) => {
             const liveSerie = liveByLabel.get(label.toLowerCase()) as { label: string; values: number[] } | undefined;
-            const baseSerie = mergedRowSeries.find(r => String(r.label).toLowerCase() === label.toLowerCase()) as { label: string; values: number[] } | undefined;
-            const rowVals: number[] = baseSerie?.values ?? new Array(24).fill(0);
-            if (!liveSerie) {
-              return { label, values: rowVals };
-            }
-            // Converte índices UTC da v5 para horário local antes de mesclar
-            const liveLocal = toLocalIndexed(liveSerie.values);
             return {
               label,
-              values: liveLocal.map((liveVal: number, h: number) =>
-                liveVal > 0 ? liveVal : (rowVals[h] ?? 0)
-              ),
+              values: toLocalIndexed(liveSerie?.values ?? new Array(24).fill(0)),
             };
           });
-          setFacialExpressionSeries(merged);
+          setFacialExpressionSeries(liveOnlySeries);
         }
       } catch (_) {
         // Mantém os dados das linhas — v5 API pode estar indisponível
@@ -1652,8 +1646,8 @@ export function ClientDashboard() {
               allRows.forEach(r => {
                 const ts = new Date(r.timestamp);
                 if (!isNaN(ts.getTime())) {
-                  perHourTotal[ts.getUTCHours()]++;
-                  const dk = ts.toISOString().slice(0, 10);
+                  perHourTotal[ts.getHours()]++;
+                  const dk = formatLocalDateKey(ts);
                   perDay[dk] = (perDay[dk] ?? 0) + 1;
                 }
                 const g = r.gender;
@@ -1759,7 +1753,6 @@ export function ClientDashboard() {
                 const attrStats: { label: string; value: number }[] = [
                   { label: 'Óculos',      value: glassesPct },
                   { label: 'Barba',       value: facialPct  },
-                  { label: 'Máscara',     value: 0 },
                   { label: 'Chapéu/Boné', value: 0 },
                   // Entradas categóricas com prefixo (_glasses_ / _facial_) para os widgets
                   ...Object.entries(glassesC).map(([k, cnt]) => ({
@@ -1916,10 +1909,11 @@ export function ClientDashboard() {
       if (allRollups && allRollups.length > 0) {
         // Mescla visitors_per_day de todos os rollups, filtrando pelo período
         const mergedVpd: Record<string, number> = {};
+        const mergedDayOwner = new Map<string, number>();
         let mergedTotal = 0;
         const metaRollup = allRollups[0];
 
-        for (const r of allRollups) {
+        allRollups.forEach((r, rollupIndex) => {
           const vpd: Record<string, number> = r.visitors_per_day ?? {};
           for (const [day, cnt] of Object.entries(vpd)) {
             const d = day.slice(0, 10);
@@ -1929,13 +1923,15 @@ export function ClientDashboard() {
             const prev = mergedVpd[d];
             if (prev === undefined) {
               mergedVpd[d] = val;
+              mergedDayOwner.set(d, rollupIndex);
               mergedTotal += val;
             } else if (val > prev) {
               mergedVpd[d] = val;
+              mergedDayOwner.set(d, rollupIndex);
               mergedTotal += (val - prev);
             }
           }
-        }
+        });
 
         if (mergedTotal > 0) {
           if (!exactRollupCandidate && selectedDays === 1) {
@@ -1964,12 +1960,41 @@ export function ClientDashboard() {
           }
 
           const daysInPeriod = selectedDays;
+          const ownedDaysPerRollup = new Map<number, number>();
+          mergedDayOwner.forEach((rollupIndex) => {
+            ownedDaysPerRollup.set(rollupIndex, (ownedDaysPerRollup.get(rollupIndex) ?? 0) + 1);
+          });
+
+          const mergedHoursWeighted = new Array(24).fill(0);
+          let mergedHoursDayWeight = 0;
+          ownedDaysPerRollup.forEach((ownedDays, rollupIndex) => {
+            if (ownedDays <= 0) return;
+            const vph: Record<string, number> = allRollups[rollupIndex]?.visitors_per_hour_avg ?? {};
+            const hasHourlyData = Object.values(vph).some((value) => Number(value) > 0);
+            if (!hasHourlyData) return;
+
+            for (let hour = 0; hour < 24; hour += 1) {
+              mergedHoursWeighted[hour] += (Number(vph[String(hour)] ?? 0) || 0) * ownedDays;
+            }
+            mergedHoursDayWeight += ownedDays;
+          });
+
+          const mergedVph = mergedHoursDayWeight > 0
+            ? Object.fromEntries(
+                mergedHoursWeighted.map((value, hour) => [
+                  String(hour),
+                  Math.round(value / mergedHoursDayWeight),
+                ]),
+              )
+            : (metaRollup?.visitors_per_hour_avg ?? {});
+
           console.log(`[loadData] ✅ ${mergedTotal} visitantes (${startDay}→${endDay})`);
           const mergedRollup = hydrateForApply({
             ...metaRollup,
             total_visitors:       mergedTotal,
             avg_visitors_per_day: Math.round(mergedTotal / daysInPeriod),
             visitors_per_day:     mergedVpd,
+            visitors_per_hour_avg: mergedVph,
           });
           applyRollup(mergedRollup, { updatedAt: metaRollup?.updated_at ?? exactRollupCandidate?.updated_at ?? null });
           await Promise.all([
@@ -2256,6 +2281,62 @@ export function ClientDashboard() {
     return Number(count) || 0;
   }, [id, deviceIds]);
 
+  const fetchHourlyStatsFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
+    if (!id) return new Array(24).fill(0);
+
+    const totals = new Array(24).fill(0);
+    const filteredDayCount = Math.max(1, countInclusiveUtcDays(rangeStartIso, rangeEndIso));
+    let from = 0;
+    const pageSize = 5000;
+
+    while (true) {
+      let query = supabase
+        .from('visitor_analytics')
+        .select('timestamp')
+        .eq('client_id', id)
+        .gte('timestamp', rangeStartIso)
+        .lte('timestamp', rangeEndIso)
+        .order('timestamp', { ascending: true });
+
+      if (deviceIds.length > 0) {
+        query = query.in('device_id', deviceIds);
+      }
+
+      const { data, error } = await withTimeout(
+        query.range(from, from + pageSize - 1) as any,
+        10000,
+        'visitor_analytics horario',
+      ) as any;
+
+      if (error) {
+        console.warn('[Dashboard] Erro ao buscar fluxo por hora no banco:', error);
+        break;
+      }
+
+      if (!Array.isArray(data) || data.length === 0) {
+        break;
+      }
+
+      for (const row of data) {
+        const ts = row?.timestamp ? new Date(row.timestamp) : null;
+        if (!ts || Number.isNaN(ts.getTime())) continue;
+        totals[ts.getHours()] += 1;
+      }
+
+      if (data.length < pageSize) {
+        break;
+      }
+
+      from += pageSize;
+      if (from > 250000) {
+        console.warn('[Dashboard] Limite de paginação atingido ao recalcular fluxo por hora.');
+        break;
+      }
+    }
+
+    return totals.map((value) => Math.round(value / filteredDayCount));
+  }, [id, deviceIds]);
+
   const loadQuarterData = useCallback(async () => {
     if (!id) return;
     // Race condition guard: se loja selecionada mas cameras ainda não carregadas,
@@ -2265,7 +2346,10 @@ export function ClientDashboard() {
     try {
       const months = quarterMonthsForFilter(selectedStartDate, selectedEndDate);
       const quarterStart = months[0].startIso;
-      const quarterEnd   = months[months.length - 1].endIso;
+      const filterEndIso = alignUtcEndOfDay(selectedEndDate).toISOString();
+      const quarterEnd   = new Date(
+        Math.min(Date.parse(months[months.length - 1].endIso), Date.parse(filterEndIso))
+      ).toISOString();
       const qStartDay    = quarterStart.slice(0, 10);
       const qEndDay      = quarterEnd.slice(0, 10);
 
@@ -2322,11 +2406,14 @@ export function ClientDashboard() {
 
       const rows: { label: string; visitors: number; sales: number }[] = [];
       for (const month of months) {
+        const monthEndIso = new Date(
+          Math.min(Date.parse(month.endIso), Date.parse(quarterEnd))
+        ).toISOString();
         let visitors = 0;
         let coveredDays = 0;
         if (rollupVisitorsPerDay) {
           const mStart = month.startIso.slice(0, 10);
-          const mEnd   = month.endIso.slice(0, 10);
+          const mEnd   = monthEndIso.slice(0, 10);
           for (const [dateStr, count] of Object.entries(rollupVisitorsPerDay)) {
             if (dateStr >= mStart && dateStr <= mEnd) {
               visitors += Number(count) || 0;
@@ -2334,12 +2421,14 @@ export function ClientDashboard() {
             }
           }
         }
-        if (!rollupVisitorsPerDay || coveredDays === 0) {
-          visitors = await fetchVisitorsFromDb(month.startIso, month.endIso);
+        const expectedDays = countInclusiveUtcDays(month.startIso, monthEndIso);
+        if (!rollupVisitorsPerDay || coveredDays < expectedDays || visitors <= 0) {
+          const dbVisitors = await fetchVisitorsFromDb(month.startIso, monthEndIso);
+          visitors = Math.max(visitors, dbVisitors);
         }
         let sales = 0;
         try {
-          sales = await fetchSalesFromDb(month.startIso, month.endIso);
+          sales = await fetchSalesFromDb(month.startIso, monthEndIso);
         } catch (salesError) {
           console.warn(`[Quarter] Erro ao carregar vendas de ${month.label}:`, salesError);
         }
@@ -2522,7 +2611,49 @@ export function ClientDashboard() {
     }
   }, [id, selectedEndDate, deviceIds]);
 
+  const loadHourlyFlowData = useCallback(async () => {
+    if (!id) return;
+    if (selectedStore && deviceIds.length === 0) {
+      setHourlyStats(new Array(24).fill(0));
+      return;
+    }
+    if (totalVisitors <= 0) return;
+
+    const currentHourlyTotal = sumNumberArray(hourlyStats);
+    const filteredDayCount = Math.max(1, countInclusiveUtcDays(selectedStartDate, selectedEndDate));
+    const expectedHourlyTotal = Math.max(
+      1,
+      Math.round((totalVisitors || 0) / filteredDayCount),
+    );
+    const shouldFallback =
+      currentHourlyTotal <= 0 ||
+      currentHourlyTotal < Math.max(1, Math.floor(expectedHourlyTotal * 0.4));
+
+    if (!shouldFallback) return;
+
+    try {
+      const startIso = alignUtcStartOfDay(selectedStartDate).toISOString();
+      const endIso = alignUtcEndOfDay(selectedEndDate).toISOString();
+      const rebuiltHours = await fetchHourlyStatsFromDb(startIso, endIso);
+      if (sumNumberArray(rebuiltHours) > 0) {
+        setHourlyStats(rebuiltHours);
+      }
+    } catch (error) {
+      console.warn('[Dashboard] Erro ao recalcular fluxo por hora:', error);
+    }
+  }, [
+    id,
+    selectedStore,
+    deviceIds,
+    totalVisitors,
+    hourlyStats,
+    selectedStartDate,
+    selectedEndDate,
+    fetchHourlyStatsFromDb,
+  ]);
+
   useEffect(() => { loadWeekFlowData(); }, [loadWeekFlowData]);
+  useEffect(() => { loadHourlyFlowData(); }, [loadHourlyFlowData]);
   useEffect(() => { loadQuarterData(); }, [loadQuarterData]);
   useEffect(() => { loadCompareData(); }, [loadCompareData]);
   useEffect(() => { refreshLastUpdate(); }, [refreshLastUpdate]);
