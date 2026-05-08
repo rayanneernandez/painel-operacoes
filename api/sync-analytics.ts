@@ -770,7 +770,10 @@ function extractDeviceFlowKeys(row: any): string[] {
 }
 
 function buildTrackingIslandKey(deviceKeys: string[]) {
-  return Array.from(new Set(deviceKeys.map((value) => String(value ?? "").trim()).filter(Boolean))).sort().join("|");
+  // Preserva a ordem da jornada (não usa .sort()) — A->B->C é diferente de C->B->A.
+  // Só conta como combinação se passou por 2+ dispositivos distintos.
+  const unique = Array.from(new Set(deviceKeys.map((value) => String(value ?? "").trim()).filter(Boolean)));
+  return unique.length >= 2 ? unique.join("|") : "";
 }
 
 function buildTrackingIslandLabel(deviceKeys: string[], nameMap?: Map<string, string>) {
@@ -818,7 +821,6 @@ async function buildDeviceFlowWidgetData(clientId: string, rangeStart: string, r
 
   const rowsData = rows.value;
   const totalVisitors = rowsData.length;
-  const derivedPassersby = rowsData.reduce((sum, row) => sum + extractDeviceFlowPassersbyCount(row), 0);
   const nameMap = nameMapResult.status === "fulfilled" ? nameMapResult.value : new Map<string, string>();
   if (nameMapResult.status !== "fulfilled") {
     console.warn("[buildDeviceFlowWidgetData] Falha ao carregar nomes dos devices:", nameMapResult.reason);
@@ -1054,7 +1056,7 @@ async function fetchAllDBRows(client_id: string, rangeStart: string, rangeEnd: s
   return all;
 }
 
-function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEnd: string) {
+function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEnd: string, deviceNameMap?: Map<string, string>) {
   const startMs = Date.parse(rangeStart), endMs = Date.parse(rangeEnd);
   const daysInRange = Number.isFinite(startMs) && Number.isFinite(endMs) && endMs >= startMs ? Math.max(1, Math.ceil((endMs - startMs + 1) / 86400000)) : 1;
   const perDayCount: Record<string, number> = {};
@@ -1104,7 +1106,7 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     if (islandKey) {
       const current = trackingIslands.get(islandKey);
       trackingIslands.set(islandKey, {
-        label: current?.label || buildTrackingIslandLabel(uniqueDeviceKeys),
+        label: current?.label || buildTrackingIslandLabel(uniqueDeviceKeys, deviceNameMap),
         count: (current?.count ?? 0) + 1,
       });
     }
@@ -1307,9 +1309,14 @@ async function rebuildBackgroundRollups(client_id: string, cfg: ClientApiConfig,
   const HISTORIC_END = "9999-12-31T23:59:59.999Z";
   const deviceNums = devices.map(Number).filter(Number.isFinite);
 
+  // Carrega mapa mac_address -> nome do device para que as combinações
+  // sejam armazenadas com nomes reais (ex: "Câmera Loja 1 - Entrada -> Câmera Loja 1 - Caixa")
+  // ao invés do genérico "Device 17092 -> Device 17091".
+  const deviceNameMap = await loadClientDeviceNameMap(client_id, deviceNums).catch(() => new Map<string, string>());
+
   if (deviceNums.length > 0) {
     const rows = await fetchAllDBRows(client_id, syncStart, syncEnd, deviceNums);
-    if (rows.length > 0) await saveRollup(buildRollup(rows, client_id, syncStart, syncEnd));
+    if (rows.length > 0) await saveRollup(buildRollup(rows, client_id, syncStart, syncEnd, deviceNameMap));
     return;
   }
 
@@ -1805,28 +1812,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         "no",
       ]);
 
-      const ONLINE_PLAYBACK_STATUS_TOKENS = new Set([
-        "online",
-        "reproducao",
-        "reproduction",
-        "playing",
-        "reproduzindo",
-        "normal",
-      ]);
-
-      const OFFLINE_STATUS_TOKENS = new Set([
-        "offline",
-        "off",
-        "error",
-        "failed",
-        "failure",
-        "unreachable",
-        "stopped",
-        "paused",
-        "idle",
-        "standby",
-      ]);
-
       const resolveConnectivityCandidate = (value: any): "online" | "not_connected" | null => {
         if (value == null) return null;
         if (value === true || value === 1) return "online";
@@ -1836,16 +1821,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!token) return null;
         if (CONNECTED_STATUS_TOKENS.has(token)) return "online";
         if (NOT_CONNECTED_STATUS_TOKENS.has(token)) return "not_connected";
-        return null;
-      };
-
-      const resolvePlaybackCandidate = (value: any): "online" | "offline" | null => {
-        if (value == null) return null;
-
-        const token = normalizeStatusToken(value);
-        if (!token) return null;
-        if (ONLINE_PLAYBACK_STATUS_TOKENS.has(token)) return "online";
-        if (OFFLINE_STATUS_TOKENS.has(token)) return "offline";
         return null;
       };
 
@@ -2082,4 +2057,197 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             devicesPayload,
           }).catch((monitoringError: any) => {
             console.error("[sync_stores] Erro no monitoramento offline:", monitoringError?.message ?? monitoringError);
-  
+            return {
+              reason: "monitoring-error",
+              error: monitoringError?.message ?? String(monitoringError),
+            };
+          })
+        : { skipped: true, reason: "no-devices" };
+
+      const samplePayload = devicesPayload.slice(0, 3).map((d) => ({
+        store_id: d.store_id,
+        mac: d.mac_address,
+        status: d.status,
+      }));
+      // Verifica no banco quantos dispositivos existem agora para esses store IDs
+      const { count: devCountAfter } = await supabase
+        .from("devices")
+        .select("id", { count: "exact", head: true })
+        .in("store_id", storeIds);
+      return ok(res, {
+        message: "Lojas sincronizadas",
+        stores_upserted: storesPayload.length,
+        devices_upserted: devicesPayload.length,
+        stores_total: storeIds.length,
+        devices_total_api: devicesData.length,
+        devices_in_db_after: devCountAfter,
+        monitoring: monitoringSummary,
+        diag: {
+          device_keys: diagKeys,
+          device_parent_id_sample: diagParentId,
+          folder_id_sample: diagFolderIds,
+          folder_device_match: sampleFolderKeys,
+          device_parent_ids: sampleDevParentIds,
+          payload_sample: samplePayload,
+        },
+      });
+    }
+
+    const now = new Date();
+    const rangeStart = String(start || cfg.collection_start || "2025-01-01T00:00:00.000Z");
+    const rangeEnd = String(end || cfg.collection_end || now.toISOString());
+    const baseBody: any = {
+      start: rangeStart,
+      end: rangeEnd,
+      tracks: cfg.collect_tracks ?? true,
+      face_quality: cfg.collect_face_quality ?? true,
+      glasses: cfg.collect_glasses ?? true,
+      facial_hair: cfg.collect_beard ?? true,
+      hair_color: cfg.collect_hair_color ?? true,
+      hair_type: cfg.collect_hair_type ?? true,
+      headwear: cfg.collect_headwear ?? true,
+      additional_attributes: ["smile", "pitch", "yaw", "x", "y", "height"],
+    };
+    if (Array.isArray(devices) && devices.length > 0) baseBody.devices = devices;
+
+    const limit = 1000;
+    let offset = Number.isFinite(Number(incomingOffset)) ? Number(incomingOffset) : 0;
+    const combined: any[] = [];
+    const startedAt = Date.now();
+    const MAX_MS = force_full_sync ? 20000 : 6000;
+    const MAX_PAGES = force_full_sync ? 500 : 50;
+    const deviceNums = Array.isArray(devices) ? (devices as any[]).map(Number).filter(Number.isFinite) : [];
+
+    const analyticsUrl = `${(cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "")}${cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`}`;
+    const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+    const ck = cfg.custom_header_key?.trim();
+    const cv = cfg.custom_header_value?.trim();
+    if (ck && cv) {
+      headers[ck] = cv;
+    } else if (cfg.api_key?.trim()) {
+      headers["X-API-Token"] = cfg.api_key.trim();
+    } else {
+      return bad(res, 400, { error: "api_key não configurada" });
+    }
+
+    // ── rebuild_rollup ────────────────────────────────────────────────────────
+    if (rebuild_rollup === true) {
+      if (deviceNums.length > 0) {
+        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
+        if (rows.length === 0) return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
+        const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        return ok(res, { message:"Rollup recalculado (dispositivo)", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rr.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rr.total_visitors, avg_visitors_per_day:rr.avg_visitors_per_day, visitors_per_day:rr.visitors_per_day, visitors_per_hour_avg:rr.visitors_per_hour_avg, gender_percent:rr.gender_percent, attributes_percent:rr.attributes_percent, age_pyramid_percent:rr.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rr.avg_visit_time_seconds, avg_dwell_time_seconds:rr.avg_dwell_time_seconds, avg_attention_seconds:rr.avg_contact_time_seconds } }, stored_rollup:false });
+      }
+
+      const lockKey = `${client_id}:${rangeStart}:${rangeEnd}`;
+      if (_serverRebuilding.has(lockKey)) {
+        const { data: existing } = await supabase.from("visitor_analytics_rollups").select("*").eq("client_id", client_id).eq("start", rangeStart).eq("end", rangeEnd).order("updated_at", { ascending: false }).limit(1);
+        if (existing?.[0]) {
+          const r = existing[0];
+          return ok(res, { message:"Rebuild em andamento — rollup existente", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:r.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:r.total_visitors, avg_visitors_per_day:r.avg_visitors_per_day, visitors_per_day:r.visitors_per_day, visitors_per_hour_avg:r.visitors_per_hour_avg, gender_percent:r.gender_percent, attributes_percent:r.attributes_percent, age_pyramid_percent:r.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:r.avg_visit_time_seconds, avg_dwell_time_seconds:null, avg_attention_seconds:r.avg_contact_time_seconds??null } }, stored_rollup:true });
+        }
+        return ok(res, { message:"Rebuild em andamento", done:false, next_offset:null });
+      }
+
+      _serverRebuilding.add(lockKey);
+      try {
+        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, []);
+        if (rows.length === 0) return ok(res, { message:"Sem dados no banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
+        const rollupRow = await enrichGlobalRollupIfNeeded(
+          client_id,
+          rangeStart,
+          rangeEnd,
+          buildRollup(rows, client_id, rangeStart, rangeEnd),
+        );
+        const storedRollup = await saveRollup(rollupRow);
+        return ok(res, {
+          message:"Rollup recalculado via banco",
+          start:rangeStart,
+          end:rangeEnd,
+          externalFetched:0,
+          raw_upserted_new:0,
+          total_in_db:rollupRow.total_visitors,
+          next_offset:null,
+          done:true,
+          dashboard: {
+            total_visitors:rollupRow.total_visitors,
+            avg_visitors_per_day:rollupRow.avg_visitors_per_day,
+            visitors_per_day:rollupRow.visitors_per_day,
+            visitors_per_hour_avg:rollupRow.visitors_per_hour_avg,
+            gender_percent:rollupRow.gender_percent,
+            attributes_percent:rollupRow.attributes_percent,
+            age_pyramid_percent:rollupRow.age_pyramid_percent,
+            avg_times_seconds: {
+              avg_visit_time_seconds:rollupRow.avg_visit_time_seconds,
+              avg_dwell_time_seconds:rollupRow.avg_dwell_time_seconds,
+              avg_attention_seconds:rollupRow.avg_contact_time_seconds,
+            },
+          },
+          stored_rollup: storedRollup,
+        });
+      } finally { _serverRebuilding.delete(lockKey); }
+    }
+
+    // ── Paginação da API externa ──────────────────────────────────────────────
+    let apiReportedTotal: number | null = null;
+    let lastSig: string | null = null;
+    let pageCount = 0;
+
+    while (true) {
+      if (pageCount > 0 && Date.now() - startedAt > MAX_MS) break;
+      if (++pageCount > MAX_PAGES) break;
+      const resp = await fetch(analyticsUrl, { method:"POST", headers, body:JSON.stringify({...baseBody, limit, offset}) });
+      if (!resp.ok) { const txt = await resp.text(); return bad(res, resp.status, { error:"Erro na API externa", details:txt }); }
+      const json = await resp.json();
+      const page: any[] = extractVisitorArray(json);
+      if (apiReportedTotal === null) { const totalNum = Number(json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total); if (Number.isFinite(totalNum) && totalNum > 0) apiReportedTotal = totalNum; }
+      if (page.length > 0) {
+        const first:any = page[0]; const last:any = page[page.length-1];
+        const sig = sha256(JSON.stringify([offset, page.length, first?.visitor_id??null, first?.start??first?.timestamp??null, last?.visitor_id??null, last?.start??last?.timestamp??null]));
+        if (lastSig && sig === lastSig) { offset = 0; break; }
+        lastSig = sig; combined.push(...page);
+      }
+      if (page.length < limit || (apiReportedTotal !== null && offset + page.length >= apiReportedTotal) || page.length === 0) { offset = 0; break; }
+      offset += limit;
+      if (offset > 10_000_000) break;
+    }
+
+    const next_offset = offset === 0 ? null : offset;
+
+    if (combined.length === 0) {
+      // Sem dados novos da API — reconstrói do banco
+      if (deviceNums.length > 0) {
+        const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, deviceNums);
+        if (rows.length === 0) return ok(res, { message:"Sem dados", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
+        const rr = buildRollup(rows, client_id, rangeStart, rangeEnd);
+        return ok(res, { message:"Rollup recalculado (dispositivo)", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rr.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rr.total_visitors, avg_visitors_per_day:rr.avg_visitors_per_day, visitors_per_day:rr.visitors_per_day, visitors_per_hour_avg:rr.visitors_per_hour_avg, gender_percent:rr.gender_percent, attributes_percent:rr.attributes_percent, age_pyramid_percent:rr.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rr.avg_visit_time_seconds, avg_dwell_time_seconds:rr.avg_dwell_time_seconds, avg_attention_seconds:rr.avg_contact_time_seconds } }, stored_rollup:false });
+      }
+      const rows = await fetchAllDBRows(client_id, rangeStart, rangeEnd, []);
+      if (rows.length > 0) {
+        const rollupRow = await enrichGlobalRollupIfNeeded(
+          client_id,
+          rangeStart,
+          rangeEnd,
+          buildRollup(rows, client_id, rangeStart, rangeEnd),
+        );
+        const storedRollup = await saveRollup(rollupRow);
+        return ok(res, { message:"Rollup recalculado via banco", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, total_in_db:rollupRow.total_visitors, next_offset:null, done:true, dashboard: { total_visitors:rollupRow.total_visitors, avg_visitors_per_day:rollupRow.avg_visitors_per_day, visitors_per_day:rollupRow.visitors_per_day, visitors_per_hour_avg:rollupRow.visitors_per_hour_avg, gender_percent:rollupRow.gender_percent, attributes_percent:rollupRow.attributes_percent, age_pyramid_percent:rollupRow.age_pyramid_percent, avg_times_seconds: { avg_visit_time_seconds:rollupRow.avg_visit_time_seconds, avg_dwell_time_seconds:rollupRow.avg_dwell_time_seconds, avg_attention_seconds:rollupRow.avg_contact_time_seconds } }, stored_rollup:storedRollup });
+      }
+      return ok(res, { message:"Sem dados", start:rangeStart, end:rangeEnd, externalFetched:0, raw_upserted_new:0, next_offset:null, done:true, dashboard:null, stored_rollup:false });
+    }
+
+    const toUpsert = buildAndDeduplicateRows(combined, client_id);
+    let upserted = 0;
+    for (let i = 0; i < toUpsert.length; i += 500) {
+      const { error, data } = await supabase.from("visitor_analytics").upsert(toUpsert.slice(i, i+500), { onConflict:"visit_uid" }).select("visit_uid");
+      if (error) console.error(`Upsert chunk ${i} error:`, error);
+      else upserted += data?.length ?? 0;
+    }
+
+    return ok(res, { message: next_offset === null ? "Sincronização concluída" : "Sincronização parcial — continue chamando", start:rangeStart, end:rangeEnd, externalFetched:combined.length, raw_upserted_new:upserted, total_in_db:null, next_offset, done:next_offset === null, dashboard:null, stored_rollup:false });
+
+  } catch (err: any) {
+    console.error("Erro inesperado:", err);
+    return bad(res, 500, { error:"Erro inesperado", details:err?.message||String(err) });
+  }
+}

@@ -80,14 +80,6 @@ function extractDeviceFlowPassersbyCount(row: any) {
   return best > 0 ? best : 1;
 }
 
-function hasStoredExpressionCache(value: any) {
-  if (!value || typeof value !== "object") return false;
-  return Object.values(value).some((entry) => {
-    if (!entry || typeof entry !== "object") return false;
-    return Object.values(entry).some((count) => Number(count) > 0);
-  });
-}
-
 // Conta quantos tipos de emoção (de 4) tem amostra > 0 — usado para decidir
 // se o "novo" payload (v5 emotion endpoint) é mais rico que o cache.
 function countNonZeroExpressionKinds(hourly: any): number {
@@ -205,8 +197,30 @@ async function upsertVisitorAnalyticsRows(rows: any[]) {
   return total;
 }
 
+// ── Carrega mapa de mac_address -> nome do device para um cliente ────────────
+async function loadDeviceNameMap(client_id: string): Promise<Map<string, string>> {
+  const nameMap = new Map<string, string>();
+  try {
+    const { data: stores } = await supabase.from("stores").select("id").eq("client_id", client_id);
+    const storeIds = (stores || []).map((s: any) => String(s.id)).filter(Boolean);
+    if (storeIds.length === 0) return nameMap;
+    const { data: devices } = await supabase
+      .from("devices")
+      .select("name,mac_address,store_id")
+      .in("store_id", storeIds);
+    for (const d of devices || []) {
+      const key = String(d?.mac_address ?? "").trim();
+      const name = String(d?.name ?? "").trim();
+      if (key && name) nameMap.set(key, name);
+    }
+  } catch (err) {
+    console.warn(`[cron] loadDeviceNameMap falhou client=${client_id}:`, err);
+  }
+  return nameMap;
+}
+
 // ── Constrói rollup em memória ────────────────────────────────────────────────
-function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEnd: string) {
+function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEnd: string, deviceNameMap?: Map<string, string>) {
   const startMs = Date.parse(rangeStart), endMs = Date.parse(rangeEnd);
   const daysInRange = Number.isFinite(startMs) && Number.isFinite(endMs) ? Math.max(1, Math.ceil((endMs - startMs + 1) / 86400000)) : 1;
   const perDay: Record<string,number> = {};
@@ -241,11 +255,14 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     for (const key of deviceKeys) {
       deviceCounts.set(key, (deviceCounts.get(key) ?? 0) + 1);
     }
-    const islandKey = [...deviceKeys].sort().join("|");
-    if (islandKey) {
+    // Combinações = jornadas reais (2+ dispositivos) preservando a ordem
+    // em que o visitante passou. Não usar .sort() — a ordem do array
+    // raw_data.devices reflete o caminho cronológico do tracking.
+    if (deviceKeys.length >= 2) {
+      const islandKey = deviceKeys.join("|");
       const current = trackingIslands.get(islandKey);
       trackingIslands.set(islandKey, {
-        label: current?.label || deviceKeys.map((key) => `Device ${key}`).join(" + "),
+        label: current?.label || deviceKeys.map((key) => deviceNameMap?.get(key) || `Device ${key}`).join(" -> "),
         count: (current?.count ?? 0) + 1,
       });
     }
@@ -505,12 +522,17 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
         v5HourlyMap = null;
       }
 
+      // Carrega nomes reais dos devices (mac_address -> nome) para usar nos labels
+      // de combinações da jornada. Sem isso, ficaria salvo "Device 17092 -> Device 17091"
+      // e o widget filtra esses labels genéricos.
+      const deviceNameMap = await loadDeviceNameMap(client_id);
+
       // Salva rollup diário EXATO para cada dia sincronizado.
       const rowsByDay = splitRowsByUtcDay(allRows);
       for (const [dayKey, dayRows] of rowsByDay.entries()) {
         const dayStart = `${dayKey}T00:00:00.000Z`;
         const dayEnd = `${dayKey}T23:59:59.999Z`;
-        const rrDay = buildRollup(dayRows, client_id, dayStart, dayEnd);
+        const rrDay = buildRollup(dayRows, client_id, dayStart, dayEnd, deviceNameMap);
         applyV5ExpressionOverlay(rrDay, v5HourlyMap);
         const { data: existingDayRollup } = await supabase
           .from("visitor_analytics_rollups")
@@ -527,7 +549,7 @@ async function syncClient(client_id: string, cfg: any, overrideSyncStart?: strin
       }
 
       // 2. Rollup do período sincronizado
-      const rrSync = buildRollup(allRows, client_id, syncStart, todayEnd);
+      const rrSync = buildRollup(allRows, client_id, syncStart, todayEnd, deviceNameMap);
       applyV5ExpressionOverlay(rrSync, v5HourlyMap);
 
       // 3. Atualiza rollup histórico (end=9999) mesclando os dias novos
