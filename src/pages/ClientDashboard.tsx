@@ -341,7 +341,7 @@ function buildFacialExpressionSeriesFromRows(rows: any[]) {
     if (!Number.isFinite(index) || index < 0 || index > 23) continue;
 
     // Tenta detectar expressão; se não conseguir, usa "neutral" como padrão.
-    // A API pública Displayforce só retorna smile (sem anger/surprise), então
+    // A API atual usada pelo painel só expõe neutral/happiness de forma confiável, então
     // a maioria das visitas sem smile=true ficaria com expression=null e seria
     // ignorada, deixando horas inteiras sem dados no gráfico.
     const expression =
@@ -349,7 +349,7 @@ function buildFacialExpressionSeriesFromRows(rows: any[]) {
       getDominantFacialExpression(row?.raw_data) ??
       'neutral';
 
-    const target = valuesByKey.get(expression);
+    const target = valuesByKey.get(expression) ?? valuesByKey.get('neutral');
     if (!target) continue;
     target[index] += 1;
   }
@@ -1370,11 +1370,10 @@ export function ClientDashboard() {
       }, 30000);
     }
 
-    // ── Passo 2: chama a API v5 Displayforce para Surpresa/Raiva/Nojo em tempo real ─
+    // ── Passo 2: chama a API live Displayforce para expressões em tempo real ─
     // REQUER: DISPLAYFORCE_EMAIL e DISPLAYFORCE_PASS configurados no Vercel (env vars)
-    // Sem isso, surprise/anger/disgust ficam 0 pois a API pública v1 só tem 'smile'.
-    // A API pública v1 só tem smile — para neutral/happiness/surprise/anger
-    // precisamos da API v5 privada (cookie auth). Só vale para Rede Global
+    // A API pública v1 só tem smile e o painel hoje considera apenas neutral/happiness.
+    // Só vale para Rede Global
     // pois a v5 não filtra por device.
     if (deviceFilter.length === 0) {
       try {
@@ -2266,19 +2265,42 @@ export function ClientDashboard() {
 
   const fetchVisitorsFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
     if (!id) return 0;
-    let q = supabase.from('visitor_analytics').select('*', { count: 'exact', head: true })
-      .eq('client_id', id).gte('timestamp', rangeStartIso).lte('timestamp', rangeEndIso);
-    if (deviceIds.length > 0) q = q.in('device_id', deviceIds);
-    let count: number | null = 0;
-    let error = null as any;
-    try {
-      ({ count, error } = await withTimeout<{ count: number | null; error: any }>(q as any, 8000, 'visitor_analytics trimestre'));
-    } catch (timeoutError) {
-      console.warn('[Dashboard] Timeout ao contar visitantes (trimestre):', timeoutError);
-      return 0;
-    }
-    if (error) { console.warn('[Dashboard] Erro ao contar visitantes (trimestre):', error); return 0; }
-    return Number(count) || 0;
+    const tryCount = async (mode: 'exact' | 'planned' | 'estimated', timeoutMs: number) => {
+      let query = supabase
+        .from('visitor_analytics')
+        .select('id', { count: mode, head: true })
+        .eq('client_id', id)
+        .gte('timestamp', rangeStartIso)
+        .lte('timestamp', rangeEndIso);
+      if (deviceIds.length > 0) query = query.in('device_id', deviceIds);
+
+      try {
+        const { count, error } = await withTimeout<{ count: number | null; error: any }>(
+          query as any,
+          timeoutMs,
+          `visitor_analytics trimestre (${mode})`,
+        );
+        if (error) {
+          console.warn(`[Dashboard] Erro ao contar visitantes (trimestre/${mode}):`, error);
+          return null;
+        }
+        return Number(count) || 0;
+      } catch (countError) {
+        console.warn(`[Dashboard] Falha ao contar visitantes (trimestre/${mode}):`, countError);
+        return null;
+      }
+    };
+
+    const exactCount = await tryCount('exact', 8000);
+    if (exactCount !== null) return exactCount;
+
+    const plannedCount = await tryCount('planned', 12000);
+    if (plannedCount !== null) return plannedCount;
+
+    const estimatedCount = await tryCount('estimated', 12000);
+    if (estimatedCount !== null) return estimatedCount;
+
+    return 0;
   }, [id, deviceIds]);
 
   const fetchHourlyStatsFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {

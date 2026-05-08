@@ -1192,8 +1192,6 @@ export const WidgetFacialExpressions = ({
   const palette: FacialExpressionSeries[] = [
     { label: 'Neutro', values: [], color: '#9ca3af' },
     { label: 'Felicidade', values: [], color: '#fbbf24' },
-    { label: 'Surpresa', values: [], color: '#22c55e' },
-    { label: 'Raiva', values: [], color: '#fb7185' },
   ];
   const resolvedSeries = palette.map((defaultSeries) => {
     const match = (series || []).find((entry) => String(entry.label).toLowerCase() === defaultSeries.label.toLowerCase());

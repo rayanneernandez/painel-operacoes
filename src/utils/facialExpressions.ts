@@ -3,11 +3,9 @@ export type CanonicalFacialExpression = 'neutral' | 'happiness' | 'surprise' | '
 export const FACIAL_EXPRESSION_SERIES = [
   { key: 'neutral' as const, label: 'Neutro' },
   { key: 'happiness' as const, label: 'Felicidade' },
-  { key: 'surprise' as const, label: 'Surpresa' },
-  { key: 'anger' as const, label: 'Raiva' },
 ];
 
-const FACIAL_EXPRESSION_PRIORITY: CanonicalFacialExpression[] = ['happiness', 'surprise', 'anger', 'neutral'];
+const FACIAL_EXPRESSION_PRIORITY: CanonicalFacialExpression[] = ['happiness', 'neutral'];
 
 function normalizeBooleanish(value: unknown): boolean | null {
   if (typeof value === 'boolean') return value;

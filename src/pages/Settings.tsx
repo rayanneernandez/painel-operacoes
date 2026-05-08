@@ -90,8 +90,6 @@ const PREVIEW_FACIAL_LABELS = ['01/05', '02/05', '03/05', '04/05', '05/05', '06/
 const PREVIEW_FACIAL_SERIES = [
   { label: 'Neutro', values: [42, 44, 46, 40, 45, 43, 41], color: '#60a5fa' },
   { label: 'Felicidade', values: [18, 20, 22, 21, 19, 23, 24], color: '#fbbf24' },
-  { label: 'Surpresa', values: [4, 6, 5, 7, 5, 4, 6], color: '#22c55e' },
-  { label: 'Raiva', values: [2, 3, 2, 4, 3, 2, 2], color: '#fb7185' },
 ];
 const GRID_SPAN_TO_HEIGHT: Record<number, number> = {
   2: (GRID_AUTO_ROW_PX * 2) + GRID_ROW_GAP_PX,
