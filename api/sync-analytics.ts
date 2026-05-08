@@ -33,6 +33,14 @@ type DisplayforcePlatformRef = {
 const DISPLAYFORCE_SESSION_TTL_MS = 10 * 60 * 1000;
 let displayforceSessionCache: { cookieHeader: string; expiresAt: number } | null = null;
 const displayforcePlatformCache = new Map<string, DisplayforcePlatformRef>();
+const displayforceApiTokenCache = new Map<string, string | null>();
+
+type DisplayforceAuthCandidate = {
+  label: "api_token" | "cookie";
+  headers: Record<string, string>;
+};
+
+type DisplayforceEmotionCounts = Record<"neutral" | "happiness" | "surprise" | "anger" | "disgust", number>;
 
 function ok(res: VercelResponse, data: any) {
   res.setHeader("Cache-Control", "no-store");
@@ -298,6 +306,96 @@ function buildDisplayforcePlatformCandidates(values: Array<string | null | undef
   return [...candidates];
 }
 
+async function loadDisplayforceApiToken(clientId: string) {
+  if (displayforceApiTokenCache.has(clientId)) {
+    const cached = displayforceApiTokenCache.get(clientId);
+    return cached || undefined;
+  }
+
+  const { data, error } = await supabase
+    .from("client_api_configs")
+    .select("api_key")
+    .eq("client_id", clientId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn(`[DisplayForce] Falha ao carregar api_key do cliente ${clientId}:`, error.message || error);
+    displayforceApiTokenCache.set(clientId, null);
+    return undefined;
+  }
+
+  const token = String(data?.api_key ?? "").trim();
+  displayforceApiTokenCache.set(clientId, token || null);
+  return token || undefined;
+}
+
+async function buildDisplayforceAuthCandidates(clientId: string, apiToken?: string): Promise<DisplayforceAuthCandidate[]> {
+  const candidates: DisplayforceAuthCandidate[] = [];
+  const seen = new Set<string>();
+  const resolvedToken = String(apiToken ?? "").trim() || await loadDisplayforceApiToken(clientId);
+
+  const pushCandidate = (label: DisplayforceAuthCandidate["label"], headers: Record<string, string>) => {
+    const signature = `${label}:${Object.entries(headers).map(([key, value]) => `${key}=${value}`).join("|")}`;
+    if (seen.has(signature)) return;
+    seen.add(signature);
+    candidates.push({ label, headers });
+  };
+
+  if (resolvedToken) {
+    pushCandidate("api_token", { "X-APT-Token": resolvedToken });
+  }
+
+  try {
+    const cookieHeader = await getDisplayforceAuthCookie();
+    if (cookieHeader) pushCandidate("cookie", { Cookie: cookieHeader });
+  } catch (error) {
+    if (candidates.length === 0) {
+      console.warn(`[DisplayForce] Sem cookie de autenticacao para cliente ${clientId}:`, error);
+    }
+  }
+
+  return candidates;
+}
+
+function normalizeDisplayforceEmotionCounts(source: any): DisplayforceEmotionCounts {
+  return {
+    neutral: Number(source?.neutral ?? 0) || 0,
+    happiness: Number(source?.happiness ?? 0) || 0,
+    surprise: Number(source?.surprise ?? source?.surprised ?? 0) || 0,
+    anger: Number(source?.anger ?? source?.angry ?? 0) || 0,
+    disgust: Number(source?.disgust ?? source?.disgusted ?? 0) || 0,
+  };
+}
+
+function summarizeDisplayforceEmotionCounts(entries: DisplayforceEmotionCounts[]) {
+  const activeKeys = new Set<keyof DisplayforceEmotionCounts>();
+  let totalSamples = 0;
+
+  for (const entry of entries) {
+    for (const key of Object.keys(entry) as Array<keyof DisplayforceEmotionCounts>) {
+      const value = Number(entry[key] ?? 0) || 0;
+      totalSamples += value;
+      if (value > 0) activeKeys.add(key);
+    }
+  }
+
+  return {
+    totalSamples,
+    activeKinds: activeKeys.size,
+  };
+}
+
+function isBetterEmotionSummary(
+  nextSummary: { totalSamples: number; activeKinds: number },
+  currentSummary: { totalSamples: number; activeKinds: number } | null,
+) {
+  if (!currentSummary) return true;
+  if (nextSummary.activeKinds !== currentSummary.activeKinds) {
+    return nextSummary.activeKinds > currentSummary.activeKinds;
+  }
+  return nextSummary.totalSamples > currentSummary.totalSamples;
+}
+
 async function resolveDisplayforcePlatform(
   clientId: string,
   apiToken?: string,
@@ -317,16 +415,17 @@ async function resolveDisplayforcePlatform(
 
   const candidates = buildDisplayforcePlatformCandidates([client?.name, client?.company]);
   if (candidates.length === 0) return null;
+  const resolvedApiToken = String(apiToken ?? "").trim() || await loadDisplayforceApiToken(clientId);
 
   // ── Tentativa 1: X-APT-Token (sem precisar de email/senha) ────────────────
   // O mesmo token usado na API pública pode funcionar na v5 para emoções.
-  if (apiToken) {
+  if (resolvedApiToken) {
     for (const platformSlug of candidates) {
       try {
         const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platformSlug}/summary`, {
           headers: {
             Accept: "application/json,text/plain,*/*",
-            "X-APT-Token": apiToken,
+            "X-APT-Token": resolvedApiToken,
           },
         });
         const platformId = Number(json?.platform?.id);
@@ -389,46 +488,53 @@ async function fetchDisplayforceFacialExpressionSeries(
   }
 
   // Determina headers de autenticação: tenta X-APT-Token primeiro, depois cookie
-  let emotionAuthHeaders: Record<string, string> = {};
-  if (apiToken) {
-    emotionAuthHeaders = { "X-APT-Token": apiToken };
-  } else {
-    try {
-      const cookieHeader = await getDisplayforceAuthCookie();
-      emotionAuthHeaders = { Cookie: cookieHeader };
-    } catch {
-      return null;
-    }
-  }
+  const authCandidates = await buildDisplayforceAuthCandidates(clientId, apiToken);
+  if (authCandidates.length === 0) return null;
 
-  const countsByHour = new Map<string, Record<string, number>>();
+  const countsByHour = new Map<string, DisplayforceEmotionCounts>();
   const chunkSize = 168;
 
   for (let startIndex = 0; startIndex < hourBuckets.length; startIndex += chunkSize) {
     const chunk = hourBuckets.slice(startIndex, startIndex + chunkSize);
-    const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platform.platformId}/stats/visitor_view/emotion`, {
-      method: "POST",
-      headers: {
-        Accept: "application/json,text/plain,*/*",
-        "Content-Type": "application/json",
-        ...emotionAuthHeaders,
-      },
-      body: JSON.stringify({
-        ranges: chunk.map(({ from, to }) => ({ from, to })),
-        finetuning: false,
-      }),
-    });
+    let bestChunkCounts: DisplayforceEmotionCounts[] | null = null;
+    let bestSummary: { totalSamples: number; activeKinds: number } | null = null;
+    let lastError: unknown = null;
 
-    const apiRanges = Array.isArray(json?.ranges) ? json.ranges : [];
+    for (const candidate of authCandidates) {
+      try {
+        const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platform.platformId}/stats/visitor_view/emotion`, {
+          method: "POST",
+          headers: {
+            Accept: "application/json,text/plain,*/*",
+            "Content-Type": "application/json",
+            ...candidate.headers,
+          },
+          body: JSON.stringify({
+            ranges: chunk.map(({ from, to }) => ({ from, to })),
+            finetuning: false,
+          }),
+        });
+
+        const apiRanges = Array.isArray(json?.ranges) ? json.ranges : [];
+        const candidateCounts = chunk.map((_, index) => normalizeDisplayforceEmotionCounts(apiRanges[index] ?? {}));
+        const candidateSummary = summarizeDisplayforceEmotionCounts(candidateCounts);
+
+        if (isBetterEmotionSummary(candidateSummary, bestSummary)) {
+          bestSummary = candidateSummary;
+          bestChunkCounts = candidateCounts;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (!bestChunkCounts) {
+      if (lastError) throw lastError;
+      continue;
+    }
+
     chunk.forEach((bucket, index) => {
-      const source = apiRanges[index] ?? {};
-      countsByHour.set(bucket.hourKey, {
-        neutral: Number(source?.neutral ?? 0) || 0,
-        happiness: Number(source?.happiness ?? 0) || 0,
-        surprise: Number(source?.surprise ?? source?.surprised ?? 0) || 0,
-        anger: Number(source?.anger ?? source?.angry ?? 0) || 0,
-        disgust: Number(source?.disgust ?? source?.disgusted ?? 0) || 0,
-      });
+      countsByHour.set(bucket.hourKey, bestChunkCounts?.[index] ?? normalizeDisplayforceEmotionCounts({}));
     });
   }
 
@@ -443,31 +549,53 @@ async function fetchDisplayforceFacialExpressionSeries(
   };
 }
 
-async function fetchDisplayforceAudienceSummary(clientId: string, rangeStart: string, rangeEnd: string) {
-  const platform = await resolveDisplayforcePlatform(clientId);
+async function fetchDisplayforceAudienceSummary(clientId: string, rangeStart: string, rangeEnd: string, apiToken?: string) {
+  const platform = await resolveDisplayforcePlatform(clientId, apiToken);
   if (!platform) return null;
 
-  const cookieHeader = await getDisplayforceAuthCookie();
-  const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platform.platformId}/stats/visitor_view/audience`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json,text/plain,*/*",
-      "Content-Type": "application/json",
-      Cookie: cookieHeader,
-    },
-    body: JSON.stringify({
-      ranges: [{ from: toUnixSeconds(rangeStart), to: toUnixSeconds(rangeEnd) }],
-      finetuning: false,
-    }),
-  });
+  const authCandidates = await buildDisplayforceAuthCandidates(clientId, apiToken);
+  if (authCandidates.length === 0) return null;
 
-  const range = Array.isArray(json?.ranges) ? json.ranges[0] : null;
-  return {
-    platformId: platform.platformId,
-    platformSlug: platform.platformSlug,
-    uniqueVisitors: Number(range?.unique_visitors_count ?? 0) || 0,
-    passersby: Number(range?.overall_tracks_count ?? range?.passerby_body_tracks_count ?? 0) || 0,
-  };
+  let bestSummary: { platformId: number; platformSlug: string; uniqueVisitors: number; passersby: number } | null = null;
+  let bestScore = -1;
+  let lastError: unknown = null;
+
+  for (const candidate of authCandidates) {
+    try {
+      const { json } = await fetchDisplayforceJson(`https://api.displayforce.ai/v5/platforms/${platform.platformId}/stats/visitor_view/audience`, {
+        method: "POST",
+        headers: {
+          Accept: "application/json,text/plain,*/*",
+          "Content-Type": "application/json",
+          ...candidate.headers,
+        },
+        body: JSON.stringify({
+          ranges: [{ from: toUnixSeconds(rangeStart), to: toUnixSeconds(rangeEnd) }],
+          finetuning: false,
+        }),
+      });
+
+      const range = Array.isArray(json?.ranges) ? json.ranges[0] : null;
+      const uniqueVisitors = Number(range?.unique_visitors_count ?? 0) || 0;
+      const passersby = Number(range?.overall_tracks_count ?? range?.passerby_body_tracks_count ?? 0) || 0;
+      const score = uniqueVisitors + passersby;
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestSummary = {
+          platformId: platform.platformId,
+          platformSlug: platform.platformSlug,
+          uniqueVisitors,
+          passersby,
+        };
+      }
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  if (!bestSummary && lastError) throw lastError;
+  return bestSummary;
 }
 
 async function countVisitorAnalyticsRows(clientId: string, rangeStart: string, rangeEnd: string, deviceNums: number[] = []) {

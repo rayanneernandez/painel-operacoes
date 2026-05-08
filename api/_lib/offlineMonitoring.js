@@ -39,6 +39,14 @@ function formatDelayLabel(delayMinutes) {
   return `${minutes} minutos`;
 }
 
+function formatElapsedOfflineLabel(startValue, endValue) {
+  const totalMinutes = Math.max(0, minutesBetween(startValue, endValue));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours <= 0) return `${minutes}min`;
+  return `${hours}h${minutes}min`;
+}
+
 function minutesBetween(startValue, endValue) {
   const startMs = Date.parse(String(startValue));
   const endMs = Date.parse(String(endValue));
@@ -46,103 +54,189 @@ function minutesBetween(startValue, endValue) {
   return Math.floor((endMs - startMs) / 60000);
 }
 
+function resolveProjectLabel(projectName, clientName) {
+  return safeTrim(projectName) || safeTrim(clientName) || "Nao informado";
+}
+
 function buildOfflineAlertMessage({
+  projectName,
   clientName,
   storeName,
   deviceName,
-  macAddress,
   offlineSince,
-  delayMinutes,
+  nowIso,
+  reminder = false,
 }) {
+  const offlineFor = formatElapsedOfflineLabel(offlineSince, nowIso);
+  const actionLine = reminder
+    ? `O dispositivo ${deviceName || "Sem nome"} continua offline ha ${offlineFor}`
+    : `O dispositivo ${deviceName || "Sem nome"} esta offline ha ${offlineFor}`;
   const lines = [
-    "ALERTA: dispositivo offline",
+    reminder ? "📋 LEMBRETE: Dispositivo OFFLINE" : "🚨 ALERTA: Dispositivo OFFLINE",
     "",
-    `Rede: ${clientName || "Nao informada"}`,
-    `Loja: ${storeName || "Nao informada"}`,
-    `Dispositivo: ${deviceName || "Sem nome"}`,
+    actionLine,
+    "",
+    `📦 Projeto: ${resolveProjectLabel(projectName, clientName)}`,
+    `📍 Loja: ${storeName || "Nao informada"}`,
+    `🏢 Cliente: ${clientName || "Nao informado"}`,
+    `🕐 Queda detectada em: ${formatDateTime(offlineSince)}`,
+    "",
+    "Alerta automatico - Monitoramento Global IA",
   ];
-
-  if (macAddress) {
-    lines.push(`MAC/ID: ${macAddress}`);
-  }
-
-  lines.push(`Offline desde: ${formatDateTime(offlineSince)}`);
-  lines.push(`Tempo minimo confirmado: ${formatDelayLabel(delayMinutes)}`);
-  lines.push("");
-  lines.push("O dispositivo segue offline apos a janela de validacao do monitoramento.");
-  lines.push("Monitoramento Global IA");
 
   return lines.join("\n");
 }
 
 function buildGroupedOfflineAlertMessage({
+  projectName,
   clientName,
   storeName,
   alerts,
-  delayMinutes,
+  nowIso,
 }) {
   const normalizedAlerts = Array.isArray(alerts) ? alerts : [];
   const lines = [
-    normalizedAlerts.length > 1 ? "ALERTA: dispositivos offline" : "ALERTA: dispositivo offline",
+    normalizedAlerts.length > 1 ? "📋 LEMBRETE: Dispositivos OFFLINE" : "📋 LEMBRETE: Dispositivo OFFLINE",
     "",
-    `Rede: ${clientName || "Nao informada"}`,
-    `Loja: ${storeName || "Nao informada"}`,
+    `📦 Projeto: ${resolveProjectLabel(projectName, clientName)}`,
+    `📍 Loja: ${storeName || "Nao informada"}`,
+    `🏢 Cliente: ${clientName || "Nao informado"}`,
     "",
   ];
 
   normalizedAlerts.forEach((alert, index) => {
-    lines.push(`Dispositivo: ${safeTrim(alert.device_name) || "Sem nome"}`);
-    if (safeTrim(alert.mac_address)) {
-      lines.push(`MAC/ID: ${safeTrim(alert.mac_address)}`);
-    }
-    lines.push(`Offline desde: ${formatDateTime(alert.first_detected_at)}`);
+    const deviceName = safeTrim(alert.device_name) || "Sem nome";
+    const offlineFor = formatElapsedOfflineLabel(alert.first_detected_at, nowIso);
+    lines.push(`• ${deviceName} continua offline ha ${offlineFor}`);
+    lines.push(`  🕐 Queda detectada em: ${formatDateTime(alert.first_detected_at)}`);
     if (index < normalizedAlerts.length - 1) {
       lines.push("");
     }
   });
 
   lines.push("");
-  lines.push(`Tempo minimo confirmado: ${formatDelayLabel(delayMinutes)}`);
-  lines.push("");
-  lines.push("O dispositivo segue offline apos a janela de validacao do monitoramento.");
-  lines.push("Monitoramento Global IA");
+  lines.push("Alerta automatico - Monitoramento Global IA");
 
   return lines.join("\n");
 }
 
 function buildOfflineReasonUpdateMessage({
+  projectName,
   clientName,
   storeName,
   deviceName,
   offlineReason,
+  offlineSince,
 }) {
   return [
-    "ATUALIZACAO DO ALERTA OFFLINE",
+    "📝 ATUALIZACAO: Motivo do OFFLINE",
     "",
-    `Rede: ${clientName || "Nao informada"}`,
-    `Loja: ${storeName || "Nao informada"}`,
     `Dispositivo: ${deviceName || "Sem nome"}`,
-    `Motivo informado: ${safeTrim(offlineReason) || "Nao informado"}`,
+    `📦 Projeto: ${resolveProjectLabel(projectName, clientName)}`,
+    `📍 Loja: ${storeName || "Nao informada"}`,
+    `🏢 Cliente: ${clientName || "Nao informado"}`,
+    `🕐 Queda detectada em: ${formatDateTime(offlineSince)}`,
+    `⚠️ Motivo informado: ${safeTrim(offlineReason) || "Nao informado"}`,
     "",
-    "Monitoramento Global IA",
+    "Alerta automatico - Monitoramento Global IA",
   ].join("\n");
 }
 
 function buildResolvedMessage({
+  projectName,
   clientName,
   storeName,
   deviceName,
+  offlineSince,
   resolvedAt,
 }) {
   return [
-    "RESOLVIDO: dispositivo voltou online",
+    "✅ ATUALIZACAO: Dispositivo ONLINE",
     "",
-    `Rede: ${clientName || "Nao informada"}`,
-    `Loja: ${storeName || "Nao informada"}`,
-    `Dispositivo: ${deviceName || "Sem nome"}`,
-    `Normalizado em: ${formatDateTime(resolvedAt)}`,
+    `O dispositivo ${deviceName || "Sem nome"} voltou a ficar online.`,
     "",
-    "Monitoramento Global IA",
+    `📦 Projeto: ${resolveProjectLabel(projectName, clientName)}`,
+    `📍 Loja: ${storeName || "Nao informada"}`,
+    `🏢 Cliente: ${clientName || "Nao informado"}`,
+    `🔴 Queda detectada em: ${formatDateTime(offlineSince)}`,
+    `🟢 Normalizado em: ${formatDateTime(resolvedAt)}`,
+    "",
+    "Alerta automatico - Monitoramento Global IA",
+  ].join("\n");
+}
+
+function buildOfflineAlertMessageV2({
+  projectName,
+  clientName,
+  storeName,
+  deviceName,
+  offlineSince,
+  nowIso,
+  reminder = false,
+}) {
+  const offlineFor = formatElapsedOfflineLabel(offlineSince, nowIso);
+  const normalizedDeviceName = deviceName || "Sem nome";
+  const actionLine = reminder
+    ? `O dispositivo ${normalizedDeviceName} continua offline ha ${offlineFor}`
+    : `O dispositivo ${normalizedDeviceName} esta offline ha ${offlineFor}`;
+
+  return [
+    reminder ? "\u{1F4CB} LEMBRETE: Dispositivo OFFLINE" : "\u{1F6A8} ALERTA: Dispositivo OFFLINE",
+    "",
+    actionLine,
+    "",
+    `\u{1F4E6} Projeto: ${resolveProjectLabel(projectName, clientName)}`,
+    `\u{1F4CD} Loja: ${storeName || "Nao informada"}`,
+    `\u{1F3E2} Cliente: ${clientName || "Nao informado"}`,
+    `\u{1F550} Horario: ${formatDateTime(offlineSince)}`,
+    "",
+    "Alerta automatico - Monitoramento Global IA",
+  ].join("\n");
+}
+
+function buildOfflineReasonUpdateMessageV2({
+  projectName,
+  clientName,
+  storeName,
+  deviceName,
+  offlineReason,
+  offlineSince,
+}) {
+  return [
+    "\u{1F4DD} ATUALIZACAO: Motivo do OFFLINE",
+    "",
+    `O dispositivo ${deviceName || "Sem nome"} continua offline.`,
+    "",
+    `\u{1F4E6} Projeto: ${resolveProjectLabel(projectName, clientName)}`,
+    `\u{1F4CD} Loja: ${storeName || "Nao informada"}`,
+    `\u{1F3E2} Cliente: ${clientName || "Nao informado"}`,
+    `\u{1F550} Horario: ${formatDateTime(offlineSince)}`,
+    `\u26A0\uFE0F Motivo informado: ${safeTrim(offlineReason) || "Nao informado"}`,
+    "",
+    "Alerta automatico - Monitoramento Global IA",
+  ].join("\n");
+}
+
+function buildResolvedMessageV2({
+  projectName,
+  clientName,
+  storeName,
+  deviceName,
+  offlineSince,
+  resolvedAt,
+}) {
+  return [
+    "\u2705 ATUALIZACAO: Dispositivo ONLINE",
+    "",
+    `O dispositivo ${deviceName || "Sem nome"} voltou a ficar online.`,
+    "",
+    `\u{1F4E6} Projeto: ${resolveProjectLabel(projectName, clientName)}`,
+    `\u{1F4CD} Loja: ${storeName || "Nao informada"}`,
+    `\u{1F3E2} Cliente: ${clientName || "Nao informado"}`,
+    `\u{1F534} Horario da queda: ${formatDateTime(offlineSince)}`,
+    `\u{1F7E2} Horario de retorno: ${formatDateTime(resolvedAt)}`,
+    "",
+    "Alerta automatico - Monitoramento Global IA",
   ].join("\n");
 }
 
@@ -195,19 +289,25 @@ async function sendMessageToRecipients(recipients, message) {
   };
 }
 
-async function loadClientName(supabase, clientId) {
+async function loadClientContext(supabase, clientId) {
   const { data, error } = await supabase
     .from("clients")
-    .select("name")
+    .select("name, company")
     .eq("id", clientId)
     .maybeSingle();
 
   if (error) {
     console.warn("[monitoring] Erro ao buscar nome do cliente:", error.message || error);
-    return "";
+    return {
+      clientName: "",
+      projectName: "",
+    };
   }
 
-  return safeTrim(data?.name);
+  return {
+    clientName: safeTrim(data?.name),
+    projectName: safeTrim(data?.company),
+  };
 }
 
 async function loadActiveMonitoringContacts(supabase, clientId) {
@@ -354,7 +454,9 @@ export async function dispatchPendingOfflineAlerts({
   }
 
   const nowIso = new Date().toISOString();
-  const resolvedClientName = safeTrim(clientName) || (await loadClientName(supabase, clientId));
+  const clientContext = await loadClientContext(supabase, clientId);
+  const resolvedClientName = safeTrim(clientName) || clientContext.clientName;
+  const resolvedProjectName = clientContext.projectName || resolvedClientName;
 
   const contactsResult = await loadActiveMonitoringContacts(supabase, clientId);
   if (contactsResult.missingTables) {
@@ -495,29 +597,31 @@ export async function dispatchPendingOfflineAlerts({
       continue;
     }
 
-    const sendResult = await sendMessageToRecipients(
-      recipients,
-      buildGroupedOfflineAlertMessage({
-        clientName: resolvedClientName || group.clientName,
-        storeName: group.storeName,
-        alerts: alertsForSend,
-        delayMinutes: offlineDelayMinutes,
-      })
-    );
-
-    const errorMessage =
-      sendResult.failures.length > 0
-        ? sendResult.failures.join(" | ").slice(0, 800)
-        : null;
-
-    if (sendResult.sentCount > 0) {
-      summary.sent += 1;
-    } else {
-      summary.errors.push(errorMessage || "Falha ao enviar alerta");
-    }
-
     for (const alert of alertsForSend) {
       const previousSentCount = getSuccessfulNotificationCount(alert);
+      const sendResult = await sendMessageToRecipients(
+        recipients,
+        buildOfflineAlertMessageV2({
+          projectName: resolvedProjectName,
+          clientName: resolvedClientName || group.clientName,
+          storeName: safeTrim(alert?.store_name) || group.storeName,
+          deviceName: safeTrim(alert?.device_name) || "Sem nome",
+          offlineSince: alert.first_detected_at,
+          nowIso,
+          reminder: previousSentCount > 0,
+        })
+      );
+      const errorMessage =
+        sendResult.failures.length > 0
+          ? sendResult.failures.join(" | ").slice(0, 800)
+          : null;
+
+      if (sendResult.sentCount > 0) {
+        summary.sent += 1;
+      } else {
+        summary.errors.push(errorMessage || "Falha ao enviar alerta");
+      }
+
       updates.push(
         buildAlertUpsertPayload({
           alert,
@@ -571,7 +675,9 @@ export async function processOfflineMonitoring({
 
   const now = new Date();
   const nowIso = now.toISOString();
-  const resolvedClientName = safeTrim(clientName) || (await loadClientName(supabase, clientId));
+  const clientContext = await loadClientContext(supabase, clientId);
+  const resolvedClientName = safeTrim(clientName) || clientContext.clientName;
+  const resolvedProjectName = clientContext.projectName || resolvedClientName;
   const storeNameById = new Map(
     (storesPayload || []).map((store) => [safeTrim(store.id), safeTrim(store.name)])
   );
@@ -711,11 +817,13 @@ export async function processOfflineMonitoring({
         } else {
           const sendResult = await sendMessageToRecipients(
             recipients,
-            buildOfflineReasonUpdateMessage({
+            buildOfflineReasonUpdateMessageV2({
+              projectName: resolvedProjectName,
               clientName: resolvedClientName,
               storeName,
               deviceName,
               offlineReason,
+              offlineSince: alert.first_detected_at,
             })
           );
 
@@ -772,10 +880,12 @@ export async function processOfflineMonitoring({
       if (recipients.length > 0) {
         const sendResult = await sendMessageToRecipients(
           recipients,
-          buildResolvedMessage({
+          buildResolvedMessageV2({
+            projectName: resolvedProjectName,
             clientName: resolvedClientName,
             storeName,
             deviceName,
+            offlineSince: alert.first_detected_at,
             resolvedAt: nowIso,
           })
         );

@@ -20,6 +20,7 @@ const supabase = createClient(_url, _key, {
 const DISPLAYFORCE_SESSION_TTL_MS = 30 * 60 * 1000; // 30 min
 let displayforceSessionCache = null;
 const platformCache = new Map();
+const apiTokenCache = new Map();
 
 function parseSetCookies(currentCookieHeader, response) {
   const setCookieHeader = response.headers.get("set-cookie") || "";
@@ -152,6 +153,93 @@ function buildPlatformCandidates(values) {
   return [...candidates];
 }
 
+async function loadDisplayforceApiToken(clientId) {
+  if (apiTokenCache.has(clientId)) {
+    return apiTokenCache.get(clientId) || undefined;
+  }
+
+  const { data, error } = await supabase
+    .from("client_api_configs")
+    .select("api_key")
+    .eq("client_id", clientId)
+    .maybeSingle();
+
+  if (error) {
+    console.warn(`[displayforce] Falha ao carregar api_key do cliente ${clientId}:`, error.message || error);
+    apiTokenCache.set(clientId, null);
+    return undefined;
+  }
+
+  const token = String(data?.api_key ?? "").trim();
+  apiTokenCache.set(clientId, token || null);
+  return token || undefined;
+}
+
+async function buildAuthCandidates(clientId) {
+  const candidates = [];
+  const seen = new Set();
+  const apiToken = await loadDisplayforceApiToken(clientId);
+
+  const pushCandidate = (label, headers) => {
+    const signature = `${label}:${Object.entries(headers).map(([key, value]) => `${key}=${value}`).join("|")}`;
+    if (seen.has(signature)) return;
+    seen.add(signature);
+    candidates.push({ label, headers });
+  };
+
+  if (apiToken) {
+    pushCandidate("api_token", { "X-APT-Token": apiToken });
+  }
+
+  try {
+    const cookieHeader = await getDisplayforceAuthCookie();
+    if (cookieHeader) pushCandidate("cookie", { Cookie: cookieHeader });
+  } catch (error) {
+    if (candidates.length === 0) {
+      console.warn(`[displayforce] Sem cookie de autenticacao para cliente ${clientId}:`, error);
+    }
+  }
+
+  return candidates;
+}
+
+function normalizeEmotionCounts(source) {
+  return {
+    neutral: Number(source?.neutral ?? 0) || 0,
+    happiness: Number(source?.happiness ?? 0) || 0,
+    surprise: Number(source?.surprise ?? source?.surprised ?? 0) || 0,
+    anger: Number(source?.anger ?? source?.angry ?? 0) || 0,
+    disgust: Number(source?.disgust ?? source?.disgusted ?? 0) || 0,
+  };
+}
+
+function summarizeEmotionCounts(entries) {
+  const activeKeys = new Set();
+  let totalSamples = 0;
+
+  for (const entry of entries || []) {
+    if (!entry || typeof entry !== "object") continue;
+    for (const [key, raw] of Object.entries(entry)) {
+      const value = Number(raw) || 0;
+      totalSamples += value;
+      if (value > 0) activeKeys.add(key);
+    }
+  }
+
+  return {
+    totalSamples,
+    activeKinds: activeKeys.size,
+  };
+}
+
+function isBetterEmotionSummary(nextSummary, currentSummary) {
+  if (!currentSummary) return true;
+  if (nextSummary.activeKinds !== currentSummary.activeKinds) {
+    return nextSummary.activeKinds > currentSummary.activeKinds;
+  }
+  return nextSummary.totalSamples > currentSummary.totalSamples;
+}
+
 export async function resolveDisplayforcePlatform(clientId) {
   const cached = platformCache.get(clientId);
   if (cached !== undefined) return cached;
@@ -172,26 +260,33 @@ export async function resolveDisplayforcePlatform(clientId) {
     return null;
   }
 
-  const cookieHeader = await getDisplayforceAuthCookie();
-  for (const platformSlug of candidates) {
-    try {
-      const { json } = await fetchJson(
-        `https://api.displayforce.ai/v5/platforms/${platformSlug}/summary`,
-        {
-          headers: {
-            Accept: "application/json,text/plain,*/*",
-            Cookie: cookieHeader,
-          },
-        },
-      );
-      const platformId = Number(json?.platform?.id);
-      if (!Number.isFinite(platformId) || platformId <= 0) continue;
+  const authCandidates = await buildAuthCandidates(clientId);
+  if (authCandidates.length === 0) {
+    platformCache.set(clientId, null);
+    return null;
+  }
 
-      const resolved = { platformId, platformSlug };
-      platformCache.set(clientId, resolved);
-      return resolved;
-    } catch {
-      continue;
+  for (const candidate of authCandidates) {
+    for (const platformSlug of candidates) {
+      try {
+        const { json } = await fetchJson(
+          `https://api.displayforce.ai/v5/platforms/${platformSlug}/summary`,
+          {
+            headers: {
+              Accept: "application/json,text/plain,*/*",
+              ...candidate.headers,
+            },
+          },
+        );
+        const platformId = Number(json?.platform?.id);
+        if (!Number.isFinite(platformId) || platformId <= 0) continue;
+
+        const resolved = { platformId, platformSlug };
+        platformCache.set(clientId, resolved);
+        return resolved;
+      } catch {
+        continue;
+      }
     }
   }
 
@@ -240,9 +335,62 @@ export async function fetchFacialExpressionHourlyMap(clientId, rangeStart, range
   const buckets = buildHourlyUnixRanges(rangeStart, rangeEnd);
   if (buckets.length === 0) return {};
 
-  const cookieHeader = await getDisplayforceAuthCookie();
+  const authCandidates = await buildAuthCandidates(clientId);
+  if (authCandidates.length === 0) return null;
   const out = {};
   const chunkSize = 168; // 7 dias por chamada
+
+  for (let i = 0; i < buckets.length; i += chunkSize) {
+    const chunk = buckets.slice(i, i + chunkSize);
+    let bestChunkCounts = null;
+    let bestSummary = null;
+    let lastError = null;
+
+    for (const candidate of authCandidates) {
+      try {
+        const { json } = await fetchJson(
+          `https://api.displayforce.ai/v5/platforms/${platform.platformId}/stats/visitor_view/emotion`,
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json,text/plain,*/*",
+              "Content-Type": "application/json",
+              ...candidate.headers,
+            },
+            body: JSON.stringify({
+              ranges: chunk.map(({ from, to }) => ({ from, to })),
+              finetuning: false,
+            }),
+          },
+        );
+
+        const apiRanges = Array.isArray(json?.ranges) ? json.ranges : [];
+        const candidateCounts = chunk.map((_, index) => normalizeEmotionCounts(apiRanges[index] ?? {}));
+        const candidateSummary = summarizeEmotionCounts(candidateCounts);
+
+        if (isBetterEmotionSummary(candidateSummary, bestSummary)) {
+          bestSummary = candidateSummary;
+          bestChunkCounts = candidateCounts;
+        }
+      } catch (error) {
+        lastError = error;
+      }
+    }
+
+    if (!bestChunkCounts) {
+      if (lastError) throw lastError;
+      continue;
+    }
+
+    chunk.forEach((bucket, index) => {
+      const counts = bestChunkCounts[index] ?? normalizeEmotionCounts({});
+      if (counts.neutral + counts.happiness + counts.surprise + counts.anger + counts.disgust > 0) {
+        out[bucket.hourKey] = counts;
+      }
+    });
+  }
+
+  return out;
 
   for (let i = 0; i < buckets.length; i += chunkSize) {
     const chunk = buckets.slice(i, i + chunkSize);
