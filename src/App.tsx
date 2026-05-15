@@ -6,6 +6,8 @@ import { Permissions } from './pages/Permissions';
 import { Dashboard } from './pages/Dashboard';
 import { ClientDashboard } from './pages/ClientDashboard';
 import { ClientDashboardConfig } from './pages/ClientDashboardConfig';
+import { ClientDashboardBRF } from './pages/ClientDashboardBRF';
+import { ClientDashboardLED } from './pages/ClientDashboardLED';
 import { Settings } from './pages/Settings';
 import { Reports } from './pages/Reports';
 import { Logs } from './pages/Logs';
@@ -138,6 +140,8 @@ function App() {
 
               {/* Rotas do cliente */}
               <Route path="clientes/:id/dashboard" element={<ClientDashboard />} />
+              <Route path="clientes/:id/dashboard-brf" element={<ClientDashboardBRF />} />
+              <Route path="clientes/:id/dashboard-led" element={<ClientDashboardLED />} />
               <Route path="clientes/:id/dashboard-config" element={<ClientDashboardConfig />} />
 
               {/* Rotas liberadas por permissão */}

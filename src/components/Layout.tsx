@@ -1,7 +1,8 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { logService } from '@/services/logService';
+import supabase from '@/lib/supabase';
 import {
   LayoutDashboard,
   Users,
@@ -15,6 +16,7 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import globaliaLogo from '../assets/globalia.png';
+import globaliaLogoLight from '../assets/globalia-light.png';
 
 export function Layout() {
   const location = useLocation();
@@ -24,11 +26,75 @@ export function Layout() {
   const navStateRef = useRef<{ path: string; atMs: number } | null>(null);
   const pathRef = useRef<string>('');
   const lastClickAtRef = useRef<number>(0);
+  const [appTheme, setAppTheme] = useState<'dark' | 'light'>(() => {
+    try { return localStorage.getItem('app-theme') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
+  });
+  const applyTheme = (value: string | null) => {
+    const theme = value === 'light' ? 'light' : 'dark';
+    document.documentElement.dataset.appTheme = theme;
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    setAppTheme(theme);
+  };
 
   useEffect(() => {
-    document.documentElement.classList.add('dark');
-    localStorage.setItem('theme', 'dark');
+    applyTheme(localStorage.getItem('app-theme') || localStorage.getItem('theme'));
+    const onThemeChange = (event: Event) => {
+      const theme = (event as CustomEvent<{ theme?: string }>).detail?.theme;
+      applyTheme(theme || localStorage.getItem('app-theme') || localStorage.getItem('theme'));
+    };
+    window.addEventListener('app-theme-change', onThemeChange);
+    return () => window.removeEventListener('app-theme-change', onThemeChange);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const localTheme = localStorage.getItem('app-theme') || localStorage.getItem('theme');
+    if (localTheme === 'light' || localTheme === 'dark') {
+      applyTheme(localTheme);
+      return () => { cancelled = true; };
+    }
+    const readTheme = (cfg: any) => {
+      const raw = String(cfg?.theme || cfg?.dashboard_theme || '').toLowerCase();
+      return raw === 'light' || raw === 'dark' ? raw : null;
+    };
+    const fetchConfigTheme = async () => {
+      if (!user) return;
+      try {
+        let cfg: any = null;
+        if (user.role === 'client' && user.clientId) {
+          const { data } = await supabase
+            .from('dashboard_configs')
+            .select('widgets_config, updated_at')
+            .eq('layout_name', 'client')
+            .eq('client_id', user.clientId)
+            .order('updated_at', { ascending: false })
+            .limit(1);
+          cfg = data?.[0]?.widgets_config ?? null;
+        }
+        if (!cfg) {
+          const { data } = await supabase
+            .from('dashboard_configs')
+            .select('widgets_config, updated_at')
+            .eq('layout_name', 'global')
+            .is('client_id', null)
+            .order('updated_at', { ascending: false })
+            .limit(1);
+          cfg = data?.[0]?.widgets_config ?? null;
+        }
+        const theme = readTheme(cfg);
+        if (!cancelled && theme) {
+          localStorage.setItem('app-theme', theme);
+          localStorage.setItem('theme', theme);
+          applyTheme(theme);
+          window.dispatchEvent(new CustomEvent('dashboard-theme-change', { detail: { theme } }));
+        }
+      } catch {
+        // Mantem o tema local se a configuracao remota falhar.
+      }
+    };
+    void fetchConfigTheme();
+    return () => { cancelled = true; };
+  }, [user?.role, user?.clientId]);
 
   useEffect(() => {
     pathRef.current = `${location.pathname}${location.search || ''}`;
@@ -185,7 +251,7 @@ export function Layout() {
         {/* Logo Area */}
         <div className="p-6 flex items-center gap-3">
           <div>
-            <img src={globaliaLogo} alt="Global IA" className="h-8 w-auto mb-1" />
+            <img src={appTheme === 'light' ? globaliaLogoLight : globaliaLogo} alt="Global IA" className="h-8 w-auto mb-1" />
           </div>
         </div>
 

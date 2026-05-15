@@ -29,6 +29,8 @@ type Client = {
   color: string;
   stores?: Store[];
   logo_url?: string;
+  logo_url_light?: string;
+  logo_url_dark?: string;
   entry_date?: string;
   block_starts_at?: string | null;
   block_ends_at?: string | null;
@@ -109,6 +111,14 @@ export function Clients() {
   const [activeTab, setActiveTab] = useState<'details' | 'permissions' | 'api' | 'stores'>('details');
   const [_loading, setLoading] = useState(false);
   const [clients, setClients] = useState<Client[]>([]);
+  const readAppTheme = (): 'dark' | 'light' => {
+    try {
+      return localStorage.getItem('app-theme') === 'light' ? 'light' : 'dark';
+    } catch {
+      return 'dark';
+    }
+  };
+  const [appTheme, setAppTheme] = useState<'dark' | 'light'>(readAppTheme);
 
   const [formData, setFormData] = useState({
     name: '',
@@ -119,11 +129,17 @@ export function Clients() {
     plan: 'basic' as 'enterprise' | 'pro' | 'basic',
     notes: '',
     logo_url: '',
+    logo_url_light: '',
+    logo_url_dark: '',
     entryDate: ''
   });
 
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoPreview, setLogoPreview] = useState<string | null>(null);
+  const [logoLightFile, setLogoLightFile] = useState<File | null>(null);
+  const [logoLightPreview, setLogoLightPreview] = useState<string | null>(null);
+  const [logoDarkFile, setLogoDarkFile] = useState<File | null>(null);
+  const [logoDarkPreview, setLogoDarkPreview] = useState<string | null>(null);
 
   // ✅ CORREÇÃO 1: customHeaderKey e customHeaderValue começam VAZIOS
   // O token vai apenas em api_key (X-API-Token). Nunca preencher Authorization aqui.
@@ -164,6 +180,12 @@ export function Clients() {
     const client = clients.find(c => c.id === clientId);
     return client?.stores || [];
   };
+
+  const getClientLogoForTheme = (client: Client) => (
+    appTheme === 'light'
+      ? (client.logo_url_dark || client.logo_url || client.logo_url_light)
+      : (client.logo_url_light || client.logo_url || client.logo_url_dark)
+  );
 
   const fetchClients = async () => {
     try {
@@ -233,6 +255,16 @@ export function Clients() {
 
   useEffect(() => {
     fetchClients();
+  }, []);
+
+  useEffect(() => {
+    const updateTheme = () => setAppTheme(readAppTheme());
+    window.addEventListener('app-theme-change', updateTheme);
+    window.addEventListener('storage', updateTheme);
+    return () => {
+      window.removeEventListener('app-theme-change', updateTheme);
+      window.removeEventListener('storage', updateTheme);
+    };
   }, []);
 
   const [perms, setPerms] = useState({
@@ -385,10 +417,16 @@ export function Clients() {
       plan: client.plan,
       notes: '',
       logo_url: client.logo_url || '',
+      logo_url_light: client.logo_url_light || '',
+      logo_url_dark: client.logo_url_dark || '',
       entryDate: client.entry_date ? new Date(client.entry_date).toISOString().split('T')[0] : (client.createdAt ? new Date(client.createdAt).toISOString().split('T')[0] : '')
     });
     setLogoPreview(client.logo_url || null);
     setLogoFile(null);
+    setLogoLightPreview(client.logo_url_light || null);
+    setLogoLightFile(null);
+    setLogoDarkPreview(client.logo_url_dark || null);
+    setLogoDarkFile(null);
     setPerms({ view_dashboard: true, view_reports: false, view_analytics: false, export_data: false, manage_settings: false });
     setApiConfig(emptyApiConfig());
     setApiStatus('idle');
@@ -497,11 +535,15 @@ export function Clients() {
     setSelectedClient(null);
     setFormData({
       name: '', email: '', phone: '', company: '',
-      status: 'active', plan: 'basic', notes: '', logo_url: '',
+      status: 'active', plan: 'basic', notes: '', logo_url: '', logo_url_light: '', logo_url_dark: '',
       entryDate: new Date().toISOString().split('T')[0]
     });
     setLogoFile(null);
     setLogoPreview(null);
+    setLogoLightFile(null);
+    setLogoLightPreview(null);
+    setLogoDarkFile(null);
+    setLogoDarkPreview(null);
     setPerms({ view_dashboard: true, view_reports: false, view_analytics: false, export_data: false, manage_settings: false });
     setApiConfig(emptyApiConfig()); // ✅ Sempre vazio para novo cliente
     setEditingStores([]);
@@ -640,32 +682,36 @@ export function Clients() {
     }
   };
 
+  const uploadLogoFile = async (file: File | null, currentUrl: string) => {
+    if (!file) return currentUrl;
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${crypto.randomUUID()}.${fileExt}`;
+      const { error: uploadError } = await supabase.storage.from('logos').upload(fileName, file);
+      if (uploadError) throw uploadError;
+      const { data: { publicUrl } } = supabase.storage.from('logos').getPublicUrl(fileName);
+      return publicUrl;
+    } catch (uploadError: any) {
+      console.error('Erro ao enviar logo:', uploadError);
+      const msg = String(uploadError?.message || '');
+      if (msg.includes('Bucket not found')) {
+        const toDataUrl = (fallbackFile: File) => new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result));
+          reader.onerror = reject;
+          reader.readAsDataURL(fallbackFile);
+        });
+        try { return await toDataUrl(file); } catch { return currentUrl; }
+      }
+      throw uploadError;
+    }
+  };
+
   const handleSave = async () => {
     try {
-      let logoUrl = formData.logo_url;
-
-      if (logoFile) {
-        try {
-          const fileExt = logoFile.name.split('.').pop();
-          const fileName = `${Math.random()}.${fileExt}`;
-          const { error: uploadError } = await supabase.storage.from('logos').upload(fileName, logoFile);
-          if (uploadError) throw uploadError;
-          const { data: { publicUrl } } = supabase.storage.from('logos').getPublicUrl(fileName);
-          logoUrl = publicUrl;
-        } catch (uploadError: any) {
-          console.error('Erro ao enviar logo:', uploadError);
-          const msg = String(uploadError?.message || '');
-          if (msg.includes('Bucket not found')) {
-            const toDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve(String(reader.result));
-              reader.onerror = reject;
-              reader.readAsDataURL(file);
-            });
-            try { logoUrl = await toDataUrl(logoFile); } catch { logoUrl = formData.logo_url; }
-          } else { throw uploadError; }
-        }
-      }
+      const logoUrl = await uploadLogoFile(logoFile, formData.logo_url);
+      const logoUrlLight = await uploadLogoFile(logoLightFile, formData.logo_url_light);
+      const logoUrlDark = await uploadLogoFile(logoDarkFile, formData.logo_url_dark);
 
       const newClientId = selectedClient?.id || crypto.randomUUID();
       const newClientPayload: any = {
@@ -677,6 +723,8 @@ export function Clients() {
         status: formData.status,
         notes: formData.notes,
         logo_url: logoUrl,
+        logo_url_light: logoUrlLight,
+        logo_url_dark: logoUrlDark,
         entry_date: formData.entryDate ? new Date(formData.entryDate + 'T12:00:00').toISOString() : new Date().toISOString()
       };
 
@@ -687,7 +735,7 @@ export function Clients() {
         const { data, error } = await supabase.from('clients').update({
           name: formData.name, email: formData.email || selectedClient.email,
           phone: formData.phone, company: formData.company, status: formData.status,
-          notes: formData.notes, logo_url: logoUrl,
+          notes: formData.notes, logo_url: logoUrl, logo_url_light: logoUrlLight, logo_url_dark: logoUrlDark,
           entry_date: formData.entryDate ? new Date(formData.entryDate + 'T12:00:00').toISOString() : undefined
         }).eq('id', selectedClient.id).select().single();
         clientData = data; clientError = error;
@@ -956,13 +1004,15 @@ export function Clients() {
             </button>
           </div>
         ) : (
-          clients.map((client) => (
+          clients.map((client) => {
+            const logoForTheme = getClientLogoForTheme(client);
+            return (
           <div key={client.id} className="bg-gray-900 border border-gray-800 rounded-xl p-6 hover:border-gray-700 transition-all group relative flex flex-col gap-4">
             <div className="w-full flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-14 h-14 rounded-2xl bg-gray-900 flex items-center justify-center text-white font-bold text-2xl shadow-inner overflow-hidden">
-                  {client.logo_url ? (
-                    <img src={client.logo_url} alt={client.name} className="w-full h-full object-contain" />
+                  {logoForTheme ? (
+                    <img src={logoForTheme} alt={client.name} className="w-full h-full object-contain" />
                   ) : (
                     <Building size={24} />
                   )}
@@ -1129,7 +1179,8 @@ export function Clients() {
               </div>
             )}
           </div>
-          ))
+          );
+          })
         )}
       </div>
 
@@ -1188,7 +1239,34 @@ export function Clients() {
                       <input type="date" value={formData.entryDate} onChange={(e) => setFormData({...formData, entryDate: e.target.value})} className="w-full bg-gray-950 border border-gray-800 rounded-lg px-4 py-2.5 text-white focus:ring-1 focus:ring-emerald-500 outline-none" />
                     </div>
                   </div>
-                  <div className="space-y-2">
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-sm font-medium text-gray-400">Logos por tema</label>
+                      <p className="text-xs text-gray-500 mt-1">Envie uma versao clara para fundo escuro e uma versao escura para fundo claro.</p>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Logo clara (fundo escuro)</span>
+                        <div className="w-full h-32 bg-gray-950 border border-gray-800 rounded-lg flex items-center justify-center overflow-hidden relative cursor-pointer hover:border-emerald-500 transition-colors">
+                          {logoLightPreview ? <img src={logoLightPreview} alt="Logo clara" className="h-full w-full object-contain p-3" /> : (
+                            <div className="flex flex-col items-center text-gray-600"><Upload size={24} className="mb-2" /><span className="text-xs">Upload</span></div>
+                          )}
+                          <input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) { setLogoLightFile(file); setLogoLightPreview(URL.createObjectURL(file)); } }} className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </div>
+                      </div>
+                      <div className="space-y-2">
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">Logo escura (fundo claro)</span>
+                        <div className="w-full h-32 bg-white border border-gray-300 rounded-lg flex items-center justify-center overflow-hidden relative cursor-pointer hover:border-emerald-500 transition-colors">
+                          {logoDarkPreview ? <img src={logoDarkPreview} alt="Logo escura" className="h-full w-full object-contain p-3" /> : (
+                            <div className="flex flex-col items-center text-gray-500"><Upload size={24} className="mb-2" /><span className="text-xs">Upload</span></div>
+                          )}
+                          <input type="file" accept="image/*" onChange={(e) => { const file = e.target.files?.[0]; if (file) { setLogoDarkFile(file); setLogoDarkPreview(URL.createObjectURL(file)); } }} className="absolute inset-0 opacity-0 cursor-pointer" />
+                        </div>
+                      </div>
+                    </div>
+                    <p className="text-xs text-gray-500">Formatos aceitos: PNG, JPG, SVG.</p>
+                  </div>
+                  <div className="hidden">
                     <label className="text-sm font-medium text-gray-400">Logo da Empresa</label>
                     <div className="w-full h-32 bg-gray-950 border border-gray-800 rounded-lg flex items-center justify-center overflow-hidden relative cursor-pointer hover:border-emerald-500 transition-colors">
                       {logoPreview ? <img src={logoPreview} alt="Preview" className="h-full object-contain p-2" /> : (

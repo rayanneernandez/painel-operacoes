@@ -1344,6 +1344,49 @@ async function saveRollup(rr: ReturnType<typeof buildRollup>) {
 
 const _serverRebuilding = new Set<string>();
 const _activeSyncs      = new Set<string>();
+const _recentSyncStarts = new Map<string, number>();
+const BACKGROUND_SYNC_COOLDOWN_MS = 2 * 60 * 1000;
+
+function normalizeSyncDeviceKey(devices: any[]) {
+  if (!Array.isArray(devices) || devices.length === 0) return "all";
+  const normalized = [...new Set(
+    devices
+      .map((device) => String(device ?? "").trim())
+      .filter(Boolean)
+  )].sort();
+  return normalized.join(",");
+}
+
+function buildBackgroundSyncKey(client_id: string, syncStart: string, syncEnd: string, devices: any[]) {
+  const startKey = startOfUtcDay(syncStart).toISOString();
+  const endKey = endOfUtcDay(syncEnd).toISOString();
+  const deviceKey = normalizeSyncDeviceKey(devices);
+  return `${client_id}:${startKey}:${endKey}:${deviceKey}`;
+}
+
+function beginBackgroundSync(client_id: string, syncStart: string, syncEnd: string, devices: any[]) {
+  const syncKey = buildBackgroundSyncKey(client_id, syncStart, syncEnd, devices);
+  const now = Date.now();
+
+  if (_activeSyncs.has(syncKey)) {
+    return { started: false, reason: "in_progress" as const, syncKey };
+  }
+
+  const recentStart = _recentSyncStarts.get(syncKey);
+  if (typeof recentStart === "number" && now - recentStart < BACKGROUND_SYNC_COOLDOWN_MS) {
+    return { started: false, reason: "cooldown" as const, syncKey };
+  }
+
+  _recentSyncStarts.set(syncKey, now);
+
+  for (const [key, startedAt] of _recentSyncStarts.entries()) {
+    if (now - startedAt > BACKGROUND_SYNC_COOLDOWN_MS * 3) {
+      _recentSyncStarts.delete(key);
+    }
+  }
+
+  return { started: true, reason: "started" as const, syncKey };
+}
 
 async function markSyncDone(client_id: string) {
   await supabase.from("client_sync_state").upsert(
@@ -1496,10 +1539,10 @@ async function rebuildBackgroundRollups(client_id: string, cfg: ClientApiConfig,
 }
 
 // ── Background sync: usa janelas menores para completar melhor dias densos ──────
-async function runBackgroundSync(client_id: string, cfg: ClientApiConfig, syncStart: string, syncEnd: string, devices: any[]) {
-  const syncKey = `${client_id}:${syncStart}:${syncEnd}`;
+async function runBackgroundSync(client_id: string, cfg: ClientApiConfig, syncStart: string, syncEnd: string, devices: any[], reservedSyncKey?: string) {
+  const syncKey = reservedSyncKey || buildBackgroundSyncKey(client_id, syncStart, syncEnd, devices);
   if (_activeSyncs.has(syncKey)) { console.log(`[BgSync] Já em andamento, pulando.`); return; }
-  _activeSyncs.add(syncKey);
+  if (!_activeSyncs.has(syncKey)) _activeSyncs.add(syncKey);
   console.log(`[BgSync] Iniciando: ${syncStart} → ${syncEnd}`);
 
   try {
@@ -1647,8 +1690,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const syncStart = String(start || (forceSync ? forceStart : (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart)));
       const syncEnd   = String(end   || cfg.collection_end   || now.toISOString());
       const deviceList = Array.isArray(devices) ? devices : [];
+      const syncReservation = beginBackgroundSync(client_id, syncStart, syncEnd, deviceList);
+      if (!syncReservation.started) {
+        const message = syncReservation.reason === "in_progress"
+          ? "Sync equivalente já está em andamento"
+          : "Sync equivalente em cooldown";
+        return ok(res, {
+          message,
+          needs_sync: true,
+          started: false,
+          reason: syncReservation.reason,
+          range: { start: syncStart, end: syncEnd }
+        });
+      }
 
-      runBackgroundSync(client_id, cfg, syncStart, syncEnd, deviceList).catch(e => console.error("[BgSync] Erro:", e));
+      runBackgroundSync(client_id, cfg, syncStart, syncEnd, deviceList, syncReservation.syncKey).catch(e => console.error("[BgSync] Erro:", e));
 
       return ok(res, { message: "Sync iniciado em background", needs_sync: true, started: true, range: { start: syncStart, end: syncEnd } });
     }

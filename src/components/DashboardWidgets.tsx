@@ -3,17 +3,40 @@ import { Activity, Clock, SlidersHorizontal, Users } from 'lucide-react';
 import supabase from '../lib/supabase';
 
 // ── Chart.js helpers ─────────────────────────────────────────────────────────
+const isLightDashboardTheme = () => {
+  if (typeof document === 'undefined') return false;
+  return document.documentElement.dataset.appTheme === 'light'
+    || Boolean(document.querySelector('[data-dashboard-theme="light"]'));
+};
+
 const CJ = {
-  grid:           'rgba(255,255,255,0.06)',
-  label:          '#9ca3af',
+  get grid() { return isLightDashboardTheme() ? 'rgba(15,23,42,0.10)' : 'rgba(255,255,255,0.06)'; },
+  get label() { return isLightDashboardTheme() ? '#475569' : '#9ca3af'; },
   male:           '#2563eb',
   female:         '#ef4444',
   neutral:        '#1D9E75',
-  bg:             'rgba(10,10,20,0.95)',
+  get bg() { return isLightDashboardTheme() ? 'rgba(255,255,255,0.96)' : 'rgba(10,10,20,0.95)'; },
   tooltipPadding: { top: 10, bottom: 10, left: 14, right: 14 },
   titleFont:      { size: 13, weight: 'bold' as const },
   bodyFont:       { size: 13 },
 };
+
+function useDashboardThemeSignal() {
+  const [tick, setTick] = React.useState(0);
+  React.useEffect(() => {
+    const update = () => setTick((value) => value + 1);
+    window.addEventListener('dashboard-theme-change', update);
+    const observer = new MutationObserver(update);
+    document.querySelectorAll('[data-dashboard-theme]').forEach((el) => {
+      observer.observe(el, { attributes: true, attributeFilter: ['data-dashboard-theme'] });
+    });
+    return () => {
+      window.removeEventListener('dashboard-theme-change', update);
+      observer.disconnect();
+    };
+  }, []);
+  return tick;
+}
 
 // Altura padrão de todos os canvas Chart.js — NUNCA use flex-1 com Chart.js
 const CHART_H = 220;
@@ -24,14 +47,30 @@ function useChartJs(
   deps: any[],
 ) {
   const chartRef = React.useRef<any>(null);
+  const themeTick = useDashboardThemeSignal();
   React.useEffect(() => {
     let cancelled = false;
     const init = () => {
       if (cancelled || !canvasRef.current) return;
       const ChartJs = (window as any).Chart;
       if (!ChartJs) return;
-      const cfg = config();
+      const cfg = config() as any;
       if (!cfg) return;
+
+      // Default UX (apenas para line charts): tooltip/hover acompanha o mouse
+      // (sem precisar "acertar a bolinha"). Ainda permite overrides específicos.
+      if (String(cfg.type || '') === 'line') {
+        cfg.options = cfg.options || {};
+        cfg.options.interaction = { ...(cfg.options.interaction || {}), mode: 'index', intersect: false };
+        cfg.options.hover = { ...(cfg.options.hover || {}), mode: 'index', intersect: false };
+        cfg.options.plugins = cfg.options.plugins || {};
+        cfg.options.plugins.tooltip = {
+          ...(cfg.options.plugins.tooltip || {}),
+          mode: 'index',
+          intersect: false,
+        };
+      }
+
       if (chartRef.current) { chartRef.current.destroy(); chartRef.current = null; }
       chartRef.current = new ChartJs(canvasRef.current, cfg);
     };
@@ -46,7 +85,7 @@ function useChartJs(
     }
     return () => { cancelled = true; chartRef.current?.destroy(); chartRef.current = null; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
+  }, [...deps, themeTick]);
 }
 
 const CanvasBox = ({
@@ -730,7 +769,65 @@ const cleanCampaignContentName = (raw?: string | null) => {
     .trim();
 };
 
-const CAMPAIGN_REFRESH_MS = 10 * 60 * 1000;
+const CAMPAIGN_REFRESH_MS = 60 * 60 * 1000;
+
+const campaignRangeIso = (value?: Date | string | null, endOfDay = false) => {
+  if (!value) return null;
+  const d = value instanceof Date ? new Date(value) : new Date(value);
+  if (Number.isNaN(d.getTime())) return null;
+  if (endOfDay) d.setHours(23, 59, 59, 999);
+  else d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+};
+
+const overlapsCampaignRange = (row: any, rangeStartIso: string | null, rangeEndIso: string | null) => {
+  if (!rangeStartIso || !rangeEndIso) return true;
+  const rowStart = Date.parse(row.sync_range_start || row.first_seen_at || row.start_date || '');
+  const rowEnd = Date.parse(row.sync_range_end || row.last_seen_at || row.end_date || '');
+  const rangeStart = Date.parse(rangeStartIso);
+  const rangeEnd = Date.parse(rangeEndIso);
+  if (!Number.isFinite(rowStart) || !Number.isFinite(rowEnd)) return true;
+  return rowStart <= rangeEnd && rowEnd >= rangeStart;
+};
+
+const mergeBreakdown = (target: Record<string, number>, source: any) => {
+  if (!source || typeof source !== 'object') return target;
+  for (const [key, value] of Object.entries(source)) {
+    target[key] = (target[key] || 0) + (Number(value) || 0);
+  }
+  return target;
+};
+
+const fmtCampaignDuration = (seconds: number) => {
+  const total = Math.max(0, Math.round(Number(seconds) || 0));
+  if (total <= 0) return '-';
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  if (h > 0) return `${h}h ${String(m).padStart(2, '0')}min`;
+  return `${Math.max(1, m)}min`;
+};
+
+const summarizeGender = (breakdown: any) => {
+  const male = Number(breakdown?.male) || 0;
+  const female = Number(breakdown?.female) || 0;
+  const unknown = Number(breakdown?.unknown) || 0;
+  const parts = [
+    male > 0 ? `M ${male.toLocaleString('pt-BR')}` : '',
+    female > 0 ? `F ${female.toLocaleString('pt-BR')}` : '',
+    unknown > 0 ? `N/I ${unknown.toLocaleString('pt-BR')}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' / ') : '-';
+};
+
+const summarizeAge = (breakdown: any) => {
+  if (!breakdown || typeof breakdown !== 'object') return '-';
+  const entries = Object.entries(breakdown)
+    .map(([label, value]) => [label, Number(value) || 0] as const)
+    .filter(([, value]) => value > 0)
+    .sort((a, b) => b[1] - a[1]);
+  if (entries.length === 0) return '-';
+  return entries.slice(0, 2).map(([label, value]) => `${label} ${value.toLocaleString('pt-BR')}`).join(' / ');
+};
 
 function getCampaignStatusMeta(start?: string | null, end?: string | null, uploadedAt?: string | null, explicitStatus?: string | null) {
   const normalizedStatus = String(explicitStatus || '').trim().toLowerCase();
@@ -771,7 +868,18 @@ function getCampaignStatusMeta(start?: string | null, end?: string | null, uploa
   return { label: '—', color: 'text-gray-500', order: 3 };
 }
 
-export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clientId?: string; lojaFilter?: string | null }) => {
+export const WidgetCampaigns = ({
+  clientId,
+  lojaFilter,
+  startDate,
+  endDate,
+}: {
+  view?: string;
+  clientId?: string;
+  lojaFilter?: string | null;
+  startDate?: Date | string;
+  endDate?: Date | string;
+}) => {
   const [rows, setRows]                 = React.useState<any[]>([]);
   const [loading, setLoading]           = React.useState(false);
   const [lastSync, setLastSync]         = React.useState<string | null>(null);
@@ -779,6 +887,8 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
   const [branchFilter, setBranchFilter]     = React.useState('all');
   const [statusFilter, setStatusFilter]     = React.useState('all');
   const [showFilters, setShowFilters]       = React.useState(false);
+  const rangeStartIso = React.useMemo(() => campaignRangeIso(startDate, false), [startDate]);
+  const rangeEndIso = React.useMemo(() => campaignRangeIso(endDate, true), [endDate]);
 
   const fetchData = React.useCallback(async () => {
     if (!clientId) {
@@ -790,42 +900,84 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
 
     setLoading(true);
     try {
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error('Timeout ao carregar campanhas')), 10000);
-      });
+      const withCampaignTimeout = <T,>(promiseLike: PromiseLike<T>, label: string): Promise<T> => (
+        Promise.race([
+          Promise.resolve(promiseLike),
+          new Promise<T>((_, reject) => {
+            window.setTimeout(() => reject(new Error(`Timeout ao carregar campanhas (${label})`)), 12000);
+          }),
+        ])
+      );
+      const normalizeFilter = (value: any) => String(value || '')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toLowerCase();
+      const matchesLoja = (row: any) => {
+        if (!lojaFilter) return true;
+        const rowLoja = normalizeFilter(row?.loja);
+        const filterLoja = normalizeFilter(lojaFilter);
+        if (!rowLoja || !filterLoja) return true;
+        return rowLoja.includes(filterLoja) || filterLoja.includes(rowLoja);
+      };
 
       const buildViewQuery = () => {
         let query = supabase
           .from('campaigns_dashboard_vw')
-          .select('name,content_name,tipo_midia,loja,start_date,end_date,duration_days,display_count,visitors,avg_attention_sec,uploaded_at,status,last_seen_at,first_seen_at')
+          .select('*')
           .eq('client_id', clientId)
           .order('last_seen_at', { ascending: false })
           .order('uploaded_at', { ascending: false })
           .limit(2000);
-        if (lojaFilter) query = (query as any).ilike('loja', `%${lojaFilter}%`);
         return query;
       };
 
       const buildTableQuery = () => {
         let query = supabase
           .from('campaigns')
-          .select('name,content_name,tipo_midia,loja,start_date,end_date,duration_days,display_count,visitors,avg_attention_sec,uploaded_at,status,last_seen_at,first_seen_at')
+          .select('*')
           .eq('client_id', clientId)
           .order('uploaded_at', { ascending: false })
           .order('start_date', { ascending: false })
           .limit(2000);
-        if (lojaFilter) query = (query as any).ilike('loja', `%${lojaFilter}%`);
         return query;
       };
 
-      let result = await Promise.race([buildViewQuery(), timeoutPromise]) as { data: any[] | null; error?: any };
-      if (result?.error) {
-        console.warn('[Campaigns] campaigns_dashboard_vw indisponível, usando tabela campaigns:', result.error);
-        result = await Promise.race([buildTableQuery(), timeoutPromise]) as { data: any[] | null; error?: any };
+      let result: { data: any[] | null; error?: any } | null = null;
+      let lastError: any = null;
+      try {
+        const viewResult = await withCampaignTimeout(buildViewQuery(), 'view') as { data: any[] | null; error?: any };
+        if (viewResult?.error) throw viewResult.error;
+        result = viewResult;
+      } catch (error) {
+        lastError = error;
+        console.warn('[Campaigns] campaigns_dashboard_vw indisponivel, usando tabela campaigns:', error);
       }
-      if (result?.error) throw result.error;
+      if (!result || result?.error) {
+        console.warn('[Campaigns] campaigns_dashboard_vw indisponivel, usando tabela campaigns:', result?.error || lastError);
+        try {
+          const tableResult = await withCampaignTimeout(buildTableQuery(), 'tabela') as { data: any[] | null; error?: any };
+          if (tableResult?.error) throw tableResult.error;
+          result = tableResult;
+        } catch (error) {
+          lastError = error;
+          result = null;
+        }
+      }
+      if (!result) throw lastError || new Error('Nao foi possivel carregar campanhas');
 
-      const data = result?.data || [];
+      const rawData = result?.data || [];
+      const rangeData = rawData.filter((row) => overlapsCampaignRange(row, rangeStartIso, rangeEndIso));
+      const data = rangeData.filter(matchesLoja);
+      console.log('[Campaigns] carregadas:', {
+        clientId,
+        lojaFilter,
+        rangeStartIso,
+        rangeEndIso,
+        total: rawData.length,
+        aposData: rangeData.length,
+        aposLoja: data.length,
+      });
       setRows(data);
       if (data.length > 0 && data[0].uploaded_at) {
         setLastSync(new Date(data[0].uploaded_at).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }));
@@ -839,7 +991,7 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
     } finally {
       setLoading(false);
     }
-  }, [clientId, lojaFilter]);
+  }, [clientId, lojaFilter, rangeStartIso, rangeEndIso]);
 
   React.useEffect(() => {
     fetchData();
@@ -875,19 +1027,27 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
         String(rawRow.tipo_midia || '').trim().toLowerCase(),
       ].join('||');
       const existing = deduped.get(key);
-      const rowScore = Math.max(
-        Date.parse(rawRow.uploaded_at || '') || 0,
-        Date.parse(rawRow.start_date || '') || 0,
-        Date.parse(rawRow.end_date || '') || 0,
-      );
-      const existingScore = existing
-        ? Math.max(
-            Date.parse(existing.uploaded_at || '') || 0,
-            Date.parse(existing.start_date || '') || 0,
-            Date.parse(existing.end_date || '') || 0,
-          )
-        : -1;
-      if (!existing || rowScore >= existingScore) {
+      if (existing) {
+        const displayCount = (Number(existing.display_count) || 0) + (Number(rawRow.display_count) || 0);
+        const visitors = (Number(existing.visitors) || 0) + (Number(rawRow.visitors) || 0);
+        const totalPlaySeconds = (Number(existing.total_play_seconds) || 0) + (Number(rawRow.total_play_seconds) || 0);
+        const genderBreakdown = mergeBreakdown({ ...(existing.gender_breakdown || {}) }, rawRow.gender_breakdown);
+        const ageBreakdown = mergeBreakdown({ ...(existing.age_breakdown || {}) }, rawRow.age_breakdown);
+        deduped.set(key, {
+          ...existing,
+          display_count: displayCount,
+          visitors,
+          total_play_seconds: totalPlaySeconds,
+          duration_hms: fmtCampaignDuration(totalPlaySeconds),
+          gender_breakdown: genderBreakdown,
+          age_breakdown: ageBreakdown,
+          first_seen_at: [existing.first_seen_at, rawRow.first_seen_at].filter(Boolean).sort()[0] || existing.first_seen_at,
+          last_seen_at: [existing.last_seen_at, rawRow.last_seen_at].filter(Boolean).sort().slice(-1)[0] || existing.last_seen_at,
+          uploaded_at: (Date.parse(rawRow.uploaded_at || '') || 0) > (Date.parse(existing.uploaded_at || '') || 0)
+            ? rawRow.uploaded_at
+            : existing.uploaded_at,
+        });
+      } else {
         deduped.set(key, normalizedRow);
       }
     }
@@ -935,6 +1095,7 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
 
   const totalVisitantes = filteredRows.reduce((acc, row) => acc + (Number(row.visitors) || 0), 0);
   const totalExibicoes = filteredRows.reduce((acc, row) => acc + (Number(row.display_count) || 0), 0);
+  const totalTempoExibido = filteredRows.reduce((acc, row) => acc + (Number(row.total_play_seconds) || 0), 0);
   const activeFilterCount = [campaignFilter, branchFilter, statusFilter].filter((value) => value !== 'all').length;
 
   return (
@@ -959,7 +1120,7 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
                 ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
                 : 'border-gray-800 bg-gray-950 text-gray-500 hover:text-gray-300'
             }`}
-            title="Filtrar campanhas"
+            title="Filtrar conteúdos"
           >
             <SlidersHorizontal size={11} />
             Filtros
@@ -985,7 +1146,7 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
           onChange={(e) => setCampaignFilter(e.target.value)}
           className="bg-gray-950 border border-gray-800 rounded-lg px-3 py-2 text-[11px] text-gray-200 focus:outline-none focus:border-emerald-500"
         >
-          <option value="all">Todas as campanhas</option>
+          <option value="all">Todos os conteúdos</option>
           {campaignOptions.map((option) => (
             <option key={option} value={option}>{option}</option>
           ))}
@@ -1020,44 +1181,37 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
         </div>
       ) : filteredRows.length === 0 ? (
         <div className="flex-1 min-h-0 flex flex-col items-center justify-center gap-2 text-gray-500 text-sm">
-          <p>{lojaFilter ? `Nenhuma campanha para a loja "${lojaFilter}".` : 'Nenhuma campanha disponível.'}</p>
-          {!lojaFilter && <p className="text-xs text-gray-600">Aguardando sincronização automática pela API.</p>}
+          <p>{lojaFilter ? `Nenhum conteúdo para a loja "${lojaFilter}" no período.` : 'Nenhum conteúdo exibido no período.'}</p>
+          {!lojaFilter && <p className="text-xs text-gray-600">Aguardando dados de conteúdo da DisplayForce.</p>}
         </div>
       ) : (
         <div className="flex-1 overflow-auto" style={{ minHeight: 0 }}>
           <table className="min-w-full text-left text-xs border-separate border-spacing-0">
             <thead>
               <tr className="sticky top-0 z-10">
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Campanha</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Por Loja</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Device</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Status</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Qtd. Exibições</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Dias de Exibição Ativa</th>
-                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Visitantes</th>
-                <th className="bg-gray-900 pb-2 pt-1 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Atenção Média</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Conteudo</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Tempo Total</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Vezes no Período</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Total Visualizado</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Genero</th>
+                <th className="bg-gray-900 pb-2 pt-1 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Idade</th>
               </tr>
             </thead>
             <tbody>
               {filteredRows.map((r, i) => {
-                const status = r._status || getCampaignStatusMeta(r.start_date, r.end_date, r.uploaded_at, r.status);
                 const campaignTitle = r._campaignTitle || r.content_name || r.name || '';
-                const campaignLabel = r._campaignLabel || r.content_name || r.name || '—';
+                const campaignLabel = r._campaignLabel || r.content_name || r.name || '-';
                 return (
                 <tr
                   key={`${campaignLabel}-${r.loja || 'loja'}-${r.tipo_midia || 'device'}-${i}`}
                   className={`transition-colors hover:bg-gray-800/50 ${i % 2 === 0 ? 'bg-transparent' : 'bg-gray-800/20'}`}
                 >
-                  <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap max-w-[200px] truncate" title={campaignTitle}>{campaignLabel}</td>
-                  <td className="py-2 pr-4 text-gray-200 whitespace-nowrap">{r.loja || '—'}</td>
-                  <td className="py-2 pr-4 text-cyan-400 whitespace-nowrap">{r.tipo_midia || '—'}</td>
-                  <td className="py-2 pr-4 whitespace-nowrap">
-                    <span className={`font-semibold ${status.color}`}>{status.label}</span>
-                  </td>
+                  <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap max-w-[280px] truncate" title={campaignTitle}>{campaignLabel}</td>
+                  <td className="py-2 pr-4 text-yellow-400 text-right font-mono">{fmtCampaignDuration(Number(r.total_play_seconds || 0))}</td>
                   <td className="py-2 pr-4 text-orange-400 text-right font-mono">{Number(r.display_count || 0).toLocaleString('pt-BR')}</td>
-                  <td className="py-2 pr-4 text-yellow-400 text-right font-mono">{r.duration_days != null ? Number(r.duration_days).toFixed(2) : '—'}</td>
                   <td className="py-2 pr-4 text-emerald-400 text-right font-bold">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
-                  <td className="py-2 text-blue-400 text-right font-bold">{fmtAtencao(r.avg_attention_sec)}</td>
+                  <td className="py-2 pr-4 text-cyan-300 whitespace-nowrap">{summarizeGender(r.gender_breakdown)}</td>
+                  <td className="py-2 text-blue-300 whitespace-nowrap">{summarizeAge(r.age_breakdown)}</td>
                 </tr>
                 );
               })}
@@ -1065,11 +1219,12 @@ export const WidgetCampaigns = ({ clientId, lojaFilter }: { view?: string; clien
             {filteredRows.length > 0 && (
               <tfoot>
                 <tr className="border-t border-gray-700">
-                  <td colSpan={4} className="pt-2 pr-4 text-gray-500 text-xs font-medium uppercase tracking-wider">Total</td>
+                  <td className="pt-2 pr-4 text-gray-500 text-xs font-medium uppercase tracking-wider">Total</td>
+                  <td className="pt-2 pr-4 text-yellow-300 text-right font-bold text-xs">{fmtCampaignDuration(totalTempoExibido)}</td>
                   <td className="pt-2 pr-4 text-orange-300 text-right font-bold text-xs">{totalExibicoes.toLocaleString('pt-BR')}</td>
-                  <td className="pt-2 pr-4 text-gray-600 text-right text-xs">—</td>
                   <td className="pt-2 pr-4 text-emerald-300 text-right font-bold text-xs">{totalVisitantes.toLocaleString('pt-BR')}</td>
-                  <td className="pt-2 text-gray-600 text-right text-xs">—</td>
+                  <td className="pt-2 pr-4 text-gray-600 text-xs">-</td>
+                  <td className="pt-2 text-gray-600 text-xs">-</td>
                 </tr>
               </tfoot>
             )}

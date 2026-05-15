@@ -1,5 +1,6 @@
 param(
-  [switch]$Once = $true
+  [switch]$Once,
+  [int]$IntervalMinutes = 60
 )
 
 $ErrorActionPreference = 'Stop'
@@ -30,32 +31,26 @@ if (-not (Test-Path $logsDir)) {
 }
 
 $logFile = Join-Path $logsDir 'displayforce-campaign-bot.log'
-$runId = (Get-Date).ToString('yyyyMMdd_HHmmss_fff')
-$stdoutFile = Join-Path $logsDir "displayforce-campaign-bot.$runId.stdout.log"
-$stderrFile = Join-Path $logsDir "displayforce-campaign-bot.$runId.stderr.log"
-
-$pythonCandidates = @(
-  (Join-Path $repoRoot '.venv\Scripts\python.exe'),
-  (Join-Path $repoRoot 'venv\Scripts\python.exe'),
-  'python'
+$nodeCandidates = @(
+  (Join-Path $repoRoot 'node_modules\.bin\node.cmd'),
+  'node'
 )
 
-$pythonExe = $pythonCandidates | Where-Object { $_ -eq 'python' -or (Test-Path $_) } | Select-Object -First 1
-if (-not $pythonExe) {
-  throw 'Python não encontrado para executar o bot da DisplayForce.'
+$nodeExe = $nodeCandidates | Where-Object { $_ -eq 'node' -or (Test-Path $_) } | Select-Object -First 1
+if (-not $nodeExe) {
+  throw 'Node nao encontrado para executar o sincronizador da Display Force.'
 }
 
-$args = @('bot_displayforce.py')
-if ($Once) {
-  $args += '--once'
-}
+function Invoke-CampaignSync {
+  $runId = (Get-Date).ToString('yyyyMMdd_HHmmss_fff')
+  $stdoutFile = Join-Path $logsDir "displayforce-campaign-bot.$runId.stdout.log"
+  $stderrFile = Join-Path $logsDir "displayforce-campaign-bot.$runId.stderr.log"
+  $args = @('scripts/sync-displayforce-campaigns.mjs', '--days=1')
 
-Push-Location $repoRoot
-try {
-  "[$((Get-Date).ToString('s'))] Iniciando bot de campanhas DisplayForce: $($args -join ' ')" | Out-File -FilePath $logFile -Append -Encoding utf8
+  "[$((Get-Date).ToString('s'))] Iniciando sync de engajamento Display Force: node $($args -join ' ')" | Out-File -FilePath $logFile -Append -Encoding utf8
 
   $proc = Start-Process `
-    -FilePath $pythonExe `
+    -FilePath $nodeExe `
     -ArgumentList $args `
     -WorkingDirectory $repoRoot `
     -NoNewWindow `
@@ -76,10 +71,19 @@ try {
   }
 
   if ($proc.ExitCode -ne 0) {
-    throw "Bot DisplayForce falhou com exit code $($proc.ExitCode)"
+    throw "Sync Display Force falhou com exit code $($proc.ExitCode)"
   }
 
-  "[$((Get-Date).ToString('s'))] Bot finalizado com sucesso" | Out-File -FilePath $logFile -Append -Encoding utf8
+  "[$((Get-Date).ToString('s'))] Sync finalizado com sucesso" | Out-File -FilePath $logFile -Append -Encoding utf8
+}
+
+Push-Location $repoRoot
+try {
+  do {
+    Invoke-CampaignSync
+    if ($Once) { break }
+    Start-Sleep -Seconds ([Math]::Max(1, $IntervalMinutes) * 60)
+  } while ($true)
 } finally {
   Pop-Location
 }

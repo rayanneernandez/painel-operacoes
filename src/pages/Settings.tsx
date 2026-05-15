@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2, Bot, Clock, RefreshCw, AlertCircle, RotateCcw } from 'lucide-react';
+import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2, Bot, Clock, RefreshCw, AlertCircle, RotateCcw, Moon, Sun } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
@@ -127,6 +127,9 @@ export function Settings() {
   const [botConfig, setBotConfig]           = useState<BotConfig>(emptyBotConfig());
   const [botSaveStatus, setBotSaveStatus]   = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [botLoading, setBotLoading]         = useState(false);
+  const [dashboardTheme, setDashboardTheme] = useState<'dark' | 'light'>(() => {
+    try { return localStorage.getItem('app-theme') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
+  });
 
   useEffect(() => {
     if (!user) return;
@@ -135,6 +138,17 @@ export function Settings() {
       else navigate('/', { replace: true });
     }
   }, [navigate, user]);
+
+  useEffect(() => {
+    document.documentElement.dataset.appTheme = dashboardTheme;
+    document.documentElement.classList.toggle('dark', dashboardTheme === 'dark');
+    try {
+      localStorage.setItem('app-theme', dashboardTheme);
+      localStorage.setItem('theme', dashboardTheme);
+    } catch {}
+    window.dispatchEvent(new CustomEvent('app-theme-change', { detail: { theme: dashboardTheme } }));
+    window.dispatchEvent(new CustomEvent('dashboard-theme-change', { detail: { theme: dashboardTheme } }));
+  }, [dashboardTheme]);
   // Dashboard Config State
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
   const [availableWidgets, setAvailableWidgets] = useState<WidgetType[]>([]);
@@ -275,7 +289,7 @@ export function Settings() {
     return Math.max(1, Math.ceil((resolvedHeightPx + GRID_ROW_GAP_PX) / (GRID_AUTO_ROW_PX + GRID_ROW_GAP_PX)));
   };
 
-  const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> } => {
+  const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }>; theme: 'dark' | 'light' | null } => {
     const ids = Array.isArray(widgetsConfig)
       ? widgetsConfig.filter((x) => typeof x === 'string')
       : widgetsConfig && Array.isArray(widgetsConfig.widget_ids)
@@ -295,8 +309,10 @@ export function Settings() {
       }
     }
 
-    return { ids, widgetLayout: wl };
-  };
+      const rawTheme = String(widgetsConfig?.theme || widgetsConfig?.dashboard_theme || '').toLowerCase();
+      const theme = rawTheme === 'light' || rawTheme === 'dark' ? rawTheme : null;
+      return { ids, widgetLayout: wl, theme };
+    };
 
   useEffect(() => {
     let cancelled = false;
@@ -348,6 +364,8 @@ export function Settings() {
         setActiveWidgets(active);
         setAvailableWidgets(available);
         setWidgetLayout(resolved.widgetLayout);
+        // Abrir a tela de configuracoes nao deve trocar o tema atual do sistema.
+        // O tema global só muda quando o usuario clica no toggle.
       }
     })();
 
@@ -636,7 +654,7 @@ export function Settings() {
       const payload = {
         layout_name: layoutName,
         client_id: clientId,
-        widgets_config: { widget_ids: widgetIds, widget_layout: widgetLayoutPayload },
+        widgets_config: { widget_ids: widgetIds, widget_layout: widgetLayoutPayload, theme: dashboardTheme },
         updated_at: new Date().toISOString(),
       };
 
@@ -649,7 +667,7 @@ export function Settings() {
       }
 
       const storageKey = isGlobal ? 'dashboard-config-global' : `dashboard-config-${selectedScope}`;
-      localStorage.setItem(storageKey, JSON.stringify({ widget_ids: widgetIds, widget_layout: widgetLayoutPayload }));
+      localStorage.setItem(storageKey, JSON.stringify({ widget_ids: widgetIds, widget_layout: widgetLayoutPayload, theme: dashboardTheme }));
 
       setSaveStatus('saved');
       setTimeout(() => setSaveStatus('idle'), 3000);
@@ -742,6 +760,19 @@ export function Settings() {
                 <RotateCcw size={15} className="transition-transform duration-200 group-hover:-rotate-45" />
               </button>
             )}
+            <button
+              type="button"
+              onClick={() => { setDashboardTheme((value) => value === 'dark' ? 'light' : 'dark'); setSaveStatus('idle'); }}
+              className={`inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-sm font-medium transition-all ${
+                dashboardTheme === 'light'
+                  ? 'border-yellow-400/50 bg-yellow-400/10 text-yellow-200 hover:bg-yellow-400/15'
+                  : 'border-gray-700 bg-gray-950/50 text-gray-300 hover:border-indigo-500/40 hover:text-white'
+              }`}
+              title="Alternar modo claro/escuro do dashboard geral"
+            >
+              {dashboardTheme === 'light' ? <Sun size={15} /> : <Moon size={15} />}
+              {dashboardTheme === 'light' ? 'Modo claro' : 'Modo escuro'}
+            </button>
             <button
               onClick={handleSave}
               className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
@@ -854,7 +885,7 @@ export function Settings() {
 
             {/* PREVIEW MODE */}
             {dashboardView === 'preview' && (
-              <div className="bg-gray-950 border border-gray-800 rounded-2xl p-6 animate-in zoom-in-95 duration-300">
+              <div data-dashboard-theme={dashboardTheme} className="bg-gray-950 border border-gray-800 rounded-2xl p-6 animate-in zoom-in-95 duration-300">
                 <div className="mb-6 flex items-center justify-between border-b border-gray-800 pb-4">
                   <h3 className="text-lg font-bold text-white flex items-center gap-2">
                      <Monitor size={20} className="text-emerald-500" />

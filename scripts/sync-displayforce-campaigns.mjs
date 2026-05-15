@@ -16,6 +16,10 @@ const DEFAULT_CONTENT_ENDPOINT = "/public/v1/content/list";
 const DEFAULT_SHOWS_ENDPOINT = "/public/v1/stats/content-show/list";
 const DEFAULT_VISITORS_ENDPOINT = "/public/v1/stats/visitor/list";
 const DEFAULT_DAYS = 120;
+const SHOWS_CONTENT_CHUNK_SIZE = 1;
+const SHOWS_REQUEST_DELAY_MS = 7000;
+const LOCK_MAX_AGE_MS = 3 * 60 * 60 * 1000;
+const LOCK_FILE = ".locks/displayforce-content-sync.lock";
 
 function getArg(name, fallback = null) {
   const prefix = `--${name}=`;
@@ -77,6 +81,30 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function acquireLockIfRequested() {
+  if (!hasFlag("lock")) return null;
+
+  fs.mkdirSync(".locks", { recursive: true });
+  if (fs.existsSync(LOCK_FILE)) {
+    const stat = fs.statSync(LOCK_FILE);
+    const ageMs = Date.now() - stat.mtimeMs;
+    if (ageMs < LOCK_MAX_AGE_MS) {
+      console.log(`[campaign-sync] ja existe uma sincronizacao em andamento (${Math.round(ageMs / 60000)} min). Pulando esta rodada.`);
+      process.exit(0);
+    }
+    console.warn("[campaign-sync] lock antigo encontrado; substituindo.");
+  }
+
+  fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, started_at: new Date().toISOString() }, null, 2));
+  return () => {
+    try {
+      if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
+    } catch {
+      // best effort
+    }
+  };
+}
+
 async function withRetry(label, fn, retries = 5) {
   let lastError = null;
   for (let attempt = 1; attempt <= retries; attempt += 1) {
@@ -90,7 +118,10 @@ async function withRetry(label, fn, retries = 5) {
         const retryAfterMs = Number(error?.retryAfterMs);
         const delayMs = Number.isFinite(retryAfterMs) && retryAfterMs > 0
           ? retryAfterMs
-          : 1000 * attempt;
+          : message.includes("429")
+            ? 60000 * attempt
+            : 1000 * attempt;
+        console.warn(`[campaign-sync] ${label} aguardando ${Math.round(delayMs / 1000)}s antes de tentar de novo`);
         await sleep(delayMs);
       }
     }
@@ -159,6 +190,17 @@ function parseDateArg(value, endOfDay = false) {
   return endOfDay
     ? new Date(Date.UTC(year, month, day, 23, 59, 59, 999))
     : new Date(Date.UTC(year, month, day, 0, 0, 0, 0));
+}
+
+function getTodayInSaoPaulo() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
 }
 
 function startOfUtcDay(dateLike) {
@@ -299,6 +341,25 @@ async function fetchJson(url, init, label) {
 
     return json;
   });
+}
+
+async function fetchJsonOnce(url, init) {
+  const response = await fetch(url, init);
+  const text = await response.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    json = null;
+  }
+
+  if (!response.ok) {
+    const error = new Error(`${response.status} ${response.statusText} @ ${url}: ${text.slice(0, 400)}`);
+    error.status = response.status;
+    throw error;
+  }
+
+  return json;
 }
 
 async function fetchAllPages(url, headers, bodyBase, label, pageSize = 1000) {
@@ -513,16 +574,34 @@ async function fetchContentMapForCampaigns(base, headers, campaigns) {
   return { contentByCampaign, contentById };
 }
 
+async function fetchContentCatalog(base, headers, contentEndpoint = DEFAULT_CONTENT_ENDPOINT) {
+  const contents = await fetchAllPages(
+    `${base}${contentEndpoint}`,
+    headers,
+    {},
+    "contents",
+    1000,
+  );
+
+  const contentById = new Map();
+  for (const content of contents) {
+    const contentId = Number(content?.id);
+    if (Number.isFinite(contentId)) contentById.set(contentId, content);
+  }
+
+  return { contents, contentById };
+}
+
 async function fetchShowsAggregate(base, headers, rangeStartIso, rangeEndIso, contentIds, showsEndpoint) {
   const showAgg = new Map();
 
-  for (const idsChunk of chunk(contentIds, 100)) {
+  for (const idsChunk of chunk(contentIds, SHOWS_CONTENT_CHUNK_SIZE)) {
     const shows = await fetchAllPages(
       `${base}${showsEndpoint}`,
       headers,
       { start: rangeStartIso, end: rangeEndIso, content: idsChunk },
       `shows content_chunk=${idsChunk[0]}-${idsChunk[idsChunk.length - 1]}`,
-      10000,
+      1000,
     );
 
     for (const show of shows) {
@@ -540,7 +619,7 @@ async function fetchShowsAggregate(base, headers, rangeStartIso, rangeEndIso, co
       showAgg.set(key, current);
     }
 
-    await sleep(120);
+    await sleep(SHOWS_REQUEST_DELAY_MS);
   }
 
   return showAgg;
@@ -688,6 +767,484 @@ function buildCampaignRows({
   };
 }
 
+function toFiniteNumber(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function stableHash(value) {
+  return crypto.createHash("sha1").update(String(value)).digest("hex");
+}
+
+function secondsBetween(startValue, endValue) {
+  const startMs = Date.parse(startValue || "");
+  const endMs = Date.parse(endValue || "");
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return 0;
+  return Math.round((endMs - startMs) / 1000);
+}
+
+function overlapSeconds(aStart, aEnd, bStart, bEnd) {
+  const start = Math.max(Date.parse(aStart || ""), Date.parse(bStart || ""));
+  const end = Math.min(Date.parse(aEnd || ""), Date.parse(bEnd || ""));
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+  return Math.round((end - start) / 1000);
+}
+
+function normalizeSex(value) {
+  const raw = normalizeText(value);
+  if (!raw) return "unknown";
+  if (["m", "male", "masculino", "homem"].includes(raw)) return "male";
+  if (["f", "female", "feminino", "mulher"].includes(raw)) return "female";
+  return "unknown";
+}
+
+function ageBucket(value) {
+  const age = Number(value);
+  if (!Number.isFinite(age) || age <= 0) return "unknown";
+  if (age <= 17) return "0-17";
+  if (age <= 24) return "18-24";
+  if (age <= 34) return "25-34";
+  if (age <= 44) return "35-44";
+  if (age <= 54) return "45-54";
+  if (age <= 64) return "55-64";
+  return "65+";
+}
+
+function incrementCounter(target, key, amount = 1) {
+  target[key] = (Number(target[key]) || 0) + amount;
+}
+
+async function fetchShowsList(base, headers, rangeStartIso, rangeEndIso, contentIds, showsEndpoint) {
+  const allShows = [];
+
+  for (const idsChunk of chunk(contentIds, SHOWS_CONTENT_CHUNK_SIZE)) {
+    const label = `shows content_chunk=${idsChunk[0]}-${idsChunk[idsChunk.length - 1]}`;
+    const url = `${base}${showsEndpoint}`;
+    let preflight = null;
+    try {
+      preflight = await fetchJsonOnce(
+        url,
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ start: rangeStartIso, end: rangeEndIso, content: idsChunk, limit: 1, offset: 0 }),
+        },
+      );
+    } catch (error) {
+      if (error?.status === 429 || String(error?.message || "").includes("429")) {
+        console.warn(`[campaign-sync] ${label} pulado por rate limit da DisplayForce`);
+        await sleep(SHOWS_REQUEST_DELAY_MS);
+        continue;
+      }
+      throw error;
+    }
+
+    const total = extractTotal(preflight, extractArray(preflight).length);
+    if (total <= 0) {
+      await sleep(SHOWS_REQUEST_DELAY_MS);
+      continue;
+    }
+
+    let shows = [];
+    try {
+      shows = await fetchAllPages(
+        url,
+        headers,
+        { start: rangeStartIso, end: rangeEndIso, content: idsChunk },
+        label,
+        1000,
+      );
+    } catch (error) {
+      if (error?.status === 429 || String(error?.message || "").includes("429")) {
+        console.warn(`[campaign-sync] ${label} pulado por rate limit da DisplayForce`);
+        await sleep(SHOWS_REQUEST_DELAY_MS);
+        continue;
+      }
+      throw error;
+    }
+
+    for (const show of shows) {
+      const campaignId = toFiniteNumber(show?.campaign_id);
+      const contentId = toFiniteNumber(show?.content_id);
+      const deviceId = toFiniteNumber(show?.device_id);
+      if (!Number.isFinite(campaignId) || !Number.isFinite(contentId) || !Number.isFinite(deviceId)) continue;
+      const start = formatUtcDateTime(show?.start);
+      const end = formatUtcDateTime(show?.end);
+      if (!start || !end) continue;
+      allShows.push({
+        showId: String(show?.show_id || `${campaignId}-${contentId}-${deviceId}-${start}-${end}`),
+        campaignId,
+        contentId,
+        deviceId,
+        start,
+        end,
+        durationSeconds: secondsBetween(start, end),
+      });
+    }
+
+    await sleep(SHOWS_REQUEST_DELAY_MS);
+  }
+
+  return allShows;
+}
+
+async function fetchShowsChunk(base, headers, rangeStartIso, rangeEndIso, contentIds, showsEndpoint) {
+  const label = `shows content_chunk=${contentIds[0]}-${contentIds[contentIds.length - 1]}`;
+  const url = `${base}${showsEndpoint}`;
+
+  let preflight = null;
+  try {
+    preflight = await fetchJsonOnce(
+      url,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ start: rangeStartIso, end: rangeEndIso, content: contentIds, limit: 1, offset: 0 }),
+      },
+    );
+  } catch (error) {
+    if (error?.status === 429 || String(error?.message || "").includes("429")) {
+      console.warn(`[campaign-sync] ${label} pulado por rate limit da DisplayForce`);
+      await sleep(SHOWS_REQUEST_DELAY_MS);
+      return { shows: [], skipped: true, empty: false };
+    }
+    throw error;
+  }
+
+  const total = extractTotal(preflight, extractArray(preflight).length);
+  if (total <= 0) {
+    await sleep(SHOWS_REQUEST_DELAY_MS);
+    return { shows: [], skipped: false, empty: true };
+  }
+
+  try {
+    const shows = await fetchAllPages(
+      url,
+      headers,
+      { start: rangeStartIso, end: rangeEndIso, content: contentIds },
+      label,
+      1000,
+    );
+    await sleep(SHOWS_REQUEST_DELAY_MS);
+    return { shows, skipped: false, empty: shows.length === 0 };
+  } catch (error) {
+    if (error?.status === 429 || String(error?.message || "").includes("429")) {
+      console.warn(`[campaign-sync] ${label} pulado por rate limit da DisplayForce`);
+      await sleep(SHOWS_REQUEST_DELAY_MS);
+      return { shows: [], skipped: true, empty: false };
+    }
+    throw error;
+  }
+}
+
+function extractVisitIntervals(visit) {
+  const sessionStart = formatUtcDateTime(visit?.start);
+  const sessionEnd = formatUtcDateTime(visit?.end);
+  const intervals = [];
+
+  if (Array.isArray(visit?.tracks)) {
+    for (const track of visit.tracks) {
+      const deviceId = toFiniteNumber(track?.device_id ?? track?.device ?? track?.deviceId);
+      const start = formatUtcDateTime(track?.start ?? track?.start_at ?? visit?.start);
+      const end = formatUtcDateTime(track?.end ?? track?.end_at ?? visit?.end);
+      if (Number.isFinite(deviceId) && start && end) intervals.push({ deviceId, start, end });
+    }
+  }
+
+  if (intervals.length === 0 && sessionStart && sessionEnd) {
+    const deviceIds = Array.isArray(visit?.devices) ? visit.devices.map(toFiniteNumber).filter(Number.isFinite) : [];
+    for (const deviceId of deviceIds) intervals.push({ deviceId, start: sessionStart, end: sessionEnd });
+  }
+
+  return intervals;
+}
+
+async function fetchVisitorSessions(base, headers, rangeStartIso, rangeEndIso, campaignIds, visitorsEndpoint) {
+  const visitorsByKey = new Map();
+  const chunks = Array.isArray(campaignIds) && campaignIds.length > 0 ? chunk(campaignIds, 25) : [[]];
+
+  for (const idsChunk of chunks) {
+    const body = { start: rangeStartIso, end: rangeEndIso, tracks: true };
+    if (idsChunk.length > 0) body.campaigns = idsChunk;
+
+    const visits = await fetchAllPages(
+      `${base}${visitorsEndpoint}`,
+      headers,
+      body,
+      idsChunk.length > 0
+        ? `visitors campaign_chunk=${idsChunk[0]}-${idsChunk[idsChunk.length - 1]}`
+        : "visitors all",
+      1000,
+    );
+
+    for (const visit of visits) {
+      const visitorId = String(visit?.visitor_id || visit?.session_id || "").trim();
+      if (!visitorId) continue;
+      const campaignsInVisit = Array.isArray(visit?.campaigns) ? visit.campaigns.map(Number).filter(Number.isFinite) : [];
+      const intervals = extractVisitIntervals(visit);
+      if (intervals.length === 0) continue;
+      const sessionStart = formatUtcDateTime(visit?.start);
+      const sessionEnd = formatUtcDateTime(visit?.end);
+      const sessionId = String(visit?.session_id || `${visitorId}-${sessionStart || ""}-${sessionEnd || ""}`);
+      const key = `${sessionId}||${visitorId}`;
+      visitorsByKey.set(key, {
+        visitorId,
+        sessionId,
+        campaigns: campaignsInVisit,
+        intervals,
+        age: visit?.age,
+        sex: visit?.sex,
+        attentionSeconds: Math.max(0, Math.round(Number(visit?.content_view_duration ?? visit?.tracks_duration) || 0)),
+      });
+    }
+
+    await sleep(120);
+  }
+
+  return [...visitorsByKey.values()];
+}
+
+function buildCampaignEngagementRows({
+  clientId,
+  campaigns,
+  contentById,
+  deviceMap,
+  shows,
+  visitors,
+  nowIso,
+  rangeStartIso,
+  rangeEndIso,
+}) {
+  const rowsByKey = new Map();
+  const campaignNames = new Set();
+  const campaignsById = new Map(
+    campaigns
+      .map((campaign) => [toFiniteNumber(campaign?.id), campaign])
+      .filter(([campaignId]) => Number.isFinite(campaignId)),
+  );
+
+  for (const show of shows) {
+    const campaign = campaignsById.get(show.campaignId);
+    const campaignName = String(campaign?.name || "").trim() || `Campaign ${show.campaignId}`;
+    campaignNames.add(campaignName);
+    const content = contentById.get(show.contentId);
+    const deviceMeta = deviceMap.get(show.deviceId);
+    const key = `${show.campaignId}||${show.contentId}||${show.deviceId}`;
+    const current = rowsByKey.get(key) || {
+      campaign,
+      campaignName,
+      contentId: show.contentId,
+      campaignId: show.campaignId,
+      deviceId: show.deviceId,
+      contentLabel: cleanContentName(content?.name) || cleanContentName(campaignName) || campaignName,
+      storeName: deviceMeta?.loja || "-",
+      mediaType: deviceMeta?.tipo_midia || "-",
+      displayCount: 0,
+      totalPlaySeconds: 0,
+      firstSeenAt: null,
+      lastSeenAt: null,
+      matchedViews: new Set(),
+      genderBreakdown: {},
+      ageBreakdown: {},
+      attentionSum: 0,
+      attentionCount: 0,
+    };
+
+    current.displayCount += 1;
+    current.totalPlaySeconds += show.durationSeconds;
+    if (!current.firstSeenAt || show.start < current.firstSeenAt) current.firstSeenAt = show.start;
+    if (!current.lastSeenAt || show.end > current.lastSeenAt) current.lastSeenAt = show.end;
+
+    for (const visitor of visitors) {
+      if (visitor.campaigns.length > 0 && !visitor.campaigns.includes(show.campaignId)) continue;
+      let bestOverlap = 0;
+      for (const interval of visitor.intervals) {
+        if (interval.deviceId !== show.deviceId) continue;
+        bestOverlap = Math.max(bestOverlap, overlapSeconds(show.start, show.end, interval.start, interval.end));
+      }
+      if (bestOverlap <= 0) continue;
+
+      const viewKey = `${show.showId}||${visitor.sessionId}||${visitor.visitorId}`;
+      if (current.matchedViews.has(viewKey)) continue;
+      current.matchedViews.add(viewKey);
+      incrementCounter(current.genderBreakdown, normalizeSex(visitor.sex));
+      incrementCounter(current.ageBreakdown, ageBucket(visitor.age));
+      current.attentionSum += visitor.attentionSeconds || bestOverlap;
+      current.attentionCount += 1;
+    }
+
+    rowsByKey.set(key, current);
+  }
+
+  const rows = [...rowsByKey.values()].map((draft) => {
+    const startDate = draft.firstSeenAt || rangeStartIso;
+    const endDate = draft.lastSeenAt || rangeEndIso;
+    const { duration_days } = calcDuration(startDate, endDate);
+    const totalSeconds = Math.max(0, Math.round(Number(draft.totalPlaySeconds) || 0));
+    const hh = Math.floor(totalSeconds / 3600);
+    const mm = Math.floor((totalSeconds % 3600) / 60);
+    const ss = totalSeconds % 60;
+    return {
+      id: stableHash(`${clientId}|${rangeStartIso}|${rangeEndIso}|${draft.campaignId}|${draft.contentId}|${draft.deviceId}`),
+      client_id: clientId,
+      name: draft.campaignName,
+      content_name: draft.contentLabel || draft.campaignName,
+      tipo_midia: draft.mediaType,
+      loja: draft.storeName,
+      start_date: startDate,
+      end_date: endDate,
+      duration_days,
+      duration_hms: `${hh}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`,
+      display_count: draft.displayCount,
+      visitors: draft.matchedViews.size,
+      avg_attention_sec: draft.attentionCount ? Math.round(draft.attentionSum / draft.attentionCount) : 0,
+      uploaded_at: nowIso,
+      status: mapCampaignStatus(draft.campaign, nowIso),
+      first_seen_at: draft.firstSeenAt || startDate,
+      last_seen_at: draft.lastSeenAt || endDate,
+      content_id: draft.contentId,
+      campaign_id: draft.campaignId,
+      device_id: draft.deviceId,
+      total_play_seconds: totalSeconds,
+      gender_breakdown: draft.genderBreakdown,
+      age_breakdown: draft.ageBreakdown,
+      sync_range_start: rangeStartIso,
+      sync_range_end: rangeEndIso,
+      source: "displayforce_api",
+    };
+  });
+
+  return {
+    rows,
+    campaignNames: [...campaignNames],
+  };
+}
+
+function buildContentEngagementRows({
+  clientId,
+  contentById,
+  deviceMap,
+  shows,
+  visitors,
+  nowIso,
+  rangeStartIso,
+  rangeEndIso,
+}) {
+  const rowsByKey = new Map();
+
+  for (const show of shows) {
+    const content = contentById.get(show.contentId);
+    const deviceMeta = deviceMap.get(show.deviceId);
+    const key = `${show.contentId}||${show.deviceId}`;
+    const current = rowsByKey.get(key) || {
+      contentId: show.contentId,
+      campaignId: Number.isFinite(show.campaignId) ? show.campaignId : null,
+      deviceId: show.deviceId,
+      contentLabel: cleanContentName(content?.name) || String(content?.name || `Content ${show.contentId}`).trim(),
+      storeName: deviceMeta?.loja || "-",
+      mediaType: deviceMeta?.tipo_midia || "-",
+      displayCount: 0,
+      totalPlaySeconds: 0,
+      firstSeenAt: null,
+      lastSeenAt: null,
+      matchedViews: new Set(),
+      genderBreakdown: {},
+      ageBreakdown: {},
+      attentionSum: 0,
+      attentionCount: 0,
+    };
+
+    current.displayCount += 1;
+    current.totalPlaySeconds += show.durationSeconds;
+    if (!current.firstSeenAt || show.start < current.firstSeenAt) current.firstSeenAt = show.start;
+    if (!current.lastSeenAt || show.end > current.lastSeenAt) current.lastSeenAt = show.end;
+
+    for (const visitor of visitors) {
+      let bestOverlap = 0;
+      for (const interval of visitor.intervals) {
+        if (interval.deviceId !== show.deviceId) continue;
+        bestOverlap = Math.max(bestOverlap, overlapSeconds(show.start, show.end, interval.start, interval.end));
+      }
+      if (bestOverlap <= 0) continue;
+
+      const viewKey = `${show.showId}||${visitor.sessionId}||${visitor.visitorId}`;
+      if (current.matchedViews.has(viewKey)) continue;
+      current.matchedViews.add(viewKey);
+      incrementCounter(current.genderBreakdown, normalizeSex(visitor.sex));
+      incrementCounter(current.ageBreakdown, ageBucket(visitor.age));
+      current.attentionSum += visitor.attentionSeconds || bestOverlap;
+      current.attentionCount += 1;
+    }
+
+    rowsByKey.set(key, current);
+  }
+
+  const rows = [...rowsByKey.values()].map((draft) => {
+    const startDate = draft.firstSeenAt || rangeStartIso;
+    const endDate = draft.lastSeenAt || rangeEndIso;
+    const { duration_days } = calcDuration(startDate, endDate);
+    const totalSeconds = Math.max(0, Math.round(Number(draft.totalPlaySeconds) || 0));
+    const hh = Math.floor(totalSeconds / 3600);
+    const mm = Math.floor((totalSeconds % 3600) / 60);
+    const ss = totalSeconds % 60;
+    return {
+      id: stableHash(`${clientId}|content|${rangeStartIso}|${rangeEndIso}|${draft.contentId}|${draft.deviceId}`),
+      client_id: clientId,
+      name: draft.contentLabel,
+      content_name: draft.contentLabel,
+      tipo_midia: draft.mediaType,
+      loja: draft.storeName,
+      start_date: startDate,
+      end_date: endDate,
+      duration_days,
+      duration_hms: `${hh}:${String(mm).padStart(2, "0")}:${String(ss).padStart(2, "0")}`,
+      display_count: draft.displayCount,
+      visitors: draft.matchedViews.size,
+      avg_attention_sec: draft.attentionCount ? Math.round(draft.attentionSum / draft.attentionCount) : 0,
+      uploaded_at: nowIso,
+      status: "Ativa",
+      first_seen_at: draft.firstSeenAt || startDate,
+      last_seen_at: draft.lastSeenAt || endDate,
+      content_id: draft.contentId,
+      campaign_id: draft.campaignId,
+      device_id: draft.deviceId,
+      total_play_seconds: totalSeconds,
+      gender_breakdown: draft.genderBreakdown,
+      age_breakdown: draft.ageBreakdown,
+      sync_range_start: rangeStartIso,
+      sync_range_end: rangeEndIso,
+      source: "displayforce_api",
+    };
+  });
+
+  return { rows };
+}
+
+async function deleteExistingContentSnapshot(supabase, clientId, rangeStartIso, rangeEndIso) {
+  const { error } = await supabase
+    .from("campaigns")
+    .delete()
+    .eq("client_id", clientId)
+    .eq("source", "displayforce_api")
+    .eq("sync_range_start", rangeStartIso)
+    .eq("sync_range_end", rangeEndIso);
+  if (error) throw error;
+}
+
+async function deleteExistingContentRows(supabase, clientId, rangeStartIso, rangeEndIso, contentIds) {
+  for (const idsChunk of chunk(contentIds.filter(Number.isFinite), 100)) {
+    const { error } = await supabase
+      .from("campaigns")
+      .delete()
+      .eq("client_id", clientId)
+      .eq("source", "displayforce_api")
+      .eq("sync_range_start", rangeStartIso)
+      .eq("sync_range_end", rangeEndIso)
+      .in("content_id", idsChunk);
+    if (error) throw error;
+  }
+}
+
 async function deleteExistingCampaignSnapshots(supabase, clientId, campaignNames) {
   for (const namesChunk of chunk(campaignNames.filter(Boolean), 100)) {
     const { error } = await supabase
@@ -718,8 +1275,9 @@ async function syncClientCampaigns(supabase, target, options) {
   const deviceEndpoint = endpointOrDefault(target.cfg?.device_endpoint, DEFAULT_DEVICE_ENDPOINT);
   const visitorsEndpoint = endpointOrDefault(target.cfg?.analytics_endpoint, DEFAULT_VISITORS_ENDPOINT);
   const showsEndpoint = endpointOrDefault(target.cfg?.shows_endpoint, DEFAULT_SHOWS_ENDPOINT);
+  const contentEndpoint = endpointOrDefault(target.cfg?.content_endpoint, DEFAULT_CONTENT_ENDPOINT);
 
-  console.log(`[campaign-sync] ${target.client.name}: carregando catálogos`);
+  console.log(`[campaign-sync] ${target.client.name}: carregando catalogos`);
   const folders = await fetchFolderList(base, headers, { folder_endpoint: folderEndpoint });
   const devices = await fetchAllPages(
     `${base}${deviceEndpoint}`,
@@ -730,45 +1288,60 @@ async function syncClientCampaigns(supabase, target, options) {
   );
   const deviceMap = buildDeviceMap(folders, devices, target.client.id);
 
-  const campaigns = await fetchRelevantCampaigns(base, headers, rangeStartIso, rangeEndIso);
-  console.log(`[campaign-sync] ${target.client.name}: ${campaigns.length} campanhas relevantes no período`);
-  if (campaigns.length === 0) {
-    return { client: target.client.key, deleted: 0, inserted: 0, campaigns: 0 };
+  const { contents, contentById } = await fetchContentCatalog(base, headers, contentEndpoint);
+  const contentIds = [...contentById.keys()];
+  console.log(`[campaign-sync] ${target.client.name}: ${contentIds.length} conteudos no catalogo`);
+  if (contentIds.length === 0) {
+    return { client: target.client.key, deleted: 0, inserted: 0, contents: 0 };
   }
 
-  const { contentByCampaign, contentById } = await fetchContentMapForCampaigns(base, headers, campaigns);
-  const contentIds = [...contentById.keys()];
-  const campaignIds = campaigns.map((campaign) => Number(campaign.id)).filter(Number.isFinite);
+  const visitors = await fetchVisitorSessions(base, headers, rangeStartIso, rangeEndIso, [], visitorsEndpoint);
 
-  const showAgg = contentIds.length > 0
-    ? await fetchShowsAggregate(base, headers, rangeStartIso, rangeEndIso, contentIds, showsEndpoint)
-    : new Map();
-  const visitorAgg = campaignIds.length > 0
-    ? await fetchVisitorAggregate(base, headers, rangeStartIso, rangeEndIso, campaignIds, visitorsEndpoint)
-    : new Map();
+  let inserted = 0;
+  let showsTotal = 0;
+  let skippedRateLimit = 0;
+  let emptyContents = 0;
 
-  const built = buildCampaignRows({
-    clientId: target.client.id,
-    campaigns,
-    contentByCampaign,
-    deviceMap,
-    showAgg,
-    visitorAgg,
-    nowIso,
-  });
+  for (const idsChunk of chunk(contentIds, SHOWS_CONTENT_CHUNK_SIZE)) {
+    const result = await fetchShowsChunk(base, headers, rangeStartIso, rangeEndIso, idsChunk, showsEndpoint);
+    if (result.skipped) {
+      skippedRateLimit += idsChunk.length;
+      continue;
+    }
+    if (result.empty) {
+      emptyContents += idsChunk.length;
+      await deleteExistingContentRows(supabase, target.client.id, rangeStartIso, rangeEndIso, idsChunk);
+      continue;
+    }
 
-  await deleteExistingCampaignSnapshots(supabase, target.client.id, built.campaignNames);
-  if (built.rows.length > 0) {
-    await insertCampaignRows(supabase, built.rows);
+    showsTotal += result.shows.length;
+    const built = buildContentEngagementRows({
+      clientId: target.client.id,
+      contentById,
+      deviceMap,
+      shows: result.shows,
+      visitors,
+      nowIso,
+      rangeStartIso,
+      rangeEndIso,
+    });
+
+    await deleteExistingContentRows(supabase, target.client.id, rangeStartIso, rangeEndIso, idsChunk);
+    if (built.rows.length > 0) {
+      await insertCampaignRows(supabase, built.rows);
+      inserted += built.rows.length;
+      console.log(`[campaign-sync] ${target.client.name}: ${inserted} linhas salvas ate agora`);
+    }
   }
 
   return {
     client: target.client.key,
-    deleted: built.campaignNames.length,
-    inserted: built.rows.length,
-    campaigns: campaigns.length,
-    contents: contentIds.length,
-    shows: showAgg.size,
+    inserted,
+    contents: contents.length,
+    empty_contents: emptyContents,
+    skipped_rate_limit: skippedRateLimit,
+    shows: showsTotal,
+    visitor_sessions: visitors.length,
   };
 }
 
@@ -777,12 +1350,15 @@ async function main() {
     console.log("Uso:");
     console.log("  node scripts/sync-displayforce-campaigns.mjs");
     console.log("  node scripts/sync-displayforce-campaigns.mjs --days=180");
+    console.log("  node scripts/sync-displayforce-campaigns.mjs --today");
     console.log("  node scripts/sync-displayforce-campaigns.mjs --start=2026-04-01 --end=2026-04-30");
     console.log("  node scripts/sync-displayforce-campaigns.mjs --clients=panvel,assai");
     console.log("  node scripts/sync-displayforce-campaigns.mjs --env-file=.env.production.local");
     process.exit(0);
   }
 
+  const releaseLock = acquireLockIfRequested();
+  try {
   const env = loadEnv();
   const supabaseUrl = env.SUPABASE_URL || env.VITE_SUPABASE_URL;
   const supabaseKey = env.SUPABASE_SERVICE_ROLE_KEY || env.SUPABASE_KEY;
@@ -791,8 +1367,9 @@ async function main() {
   }
 
   const days = Math.max(1, Number(getArg("days", DEFAULT_DAYS)) || DEFAULT_DAYS);
-  const startArg = getArg("start", null);
-  const endArg = getArg("end", null);
+  const todayArg = hasFlag("today") ? getTodayInSaoPaulo() : null;
+  const startArg = getArg("start", todayArg);
+  const endArg = getArg("end", todayArg);
   const requestedClients = String(getArg("clients", ""))
     .split(",")
     .map((value) => value.trim())
@@ -831,6 +1408,9 @@ async function main() {
   }
 
   console.log(JSON.stringify({ ok: true, range: { start: startIso, end: endIso }, results }, null, 2));
+  } finally {
+    releaseLock?.();
+  }
 }
 
 main().catch((error) => {

@@ -1,0 +1,328 @@
+import { useCallback, useEffect, useState } from 'react';
+import { useNavigate, useParams } from 'react-router-dom';
+import { Calendar, Clock, Image, RefreshCw } from 'lucide-react';
+import supabase from '../lib/supabase';
+import { StorePlan3D, LED_CONTACT_POINTS, type ContactPoint } from '../components/StorePlan3D';
+import { DashboardChat } from '../components/DashboardChat';
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+// ── Date helpers ──────────────────────────────────────────────────────────────
+
+function alignStartOfDay(d: Date) { const n = new Date(d); n.setHours(0,0,0,0); return n; }
+function alignEndOfDay(d: Date)   { const n = new Date(d); n.setHours(23,59,59,999); return n; }
+function fmtDateInput(d: Date) {
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+function parseDateInput(s: string, end = false) {
+  const [y,m,d] = s.split('-').map(Number);
+  if (!y||!m||!d) return null;
+  const dt = new Date(y, m-1, d);
+  if (isNaN(dt.getTime())) return null;
+  if (end) dt.setHours(23,59,59,999); else dt.setHours(0,0,0,0);
+  return dt;
+}
+
+function readAppTheme(): 'dark' | 'light' {
+  try {
+    if (document.documentElement.dataset.appTheme === 'light') return 'light';
+    if (document.documentElement.dataset.appTheme === 'dark') return 'dark';
+    return localStorage.getItem('app-theme') === 'light' ? 'light' : 'dark';
+  } catch {
+    return 'dark';
+  }
+}
+
+// ── KPI Card ──────────────────────────────────────────────────────────────────
+
+function KpiCard({ title, value, sub, color }: { title: string; value: string; sub?: string; color: string }) {
+  return (
+    <div className="bg-white dark:bg-[#0d1117] border border-slate-200 dark:border-gray-800/60 rounded-2xl px-4 py-3 flex flex-col gap-1 hover:border-slate-300 dark:hover:border-gray-700/60 transition-all">
+      <div className="text-[11px] uppercase tracking-widest font-semibold text-slate-600 dark:text-gray-400">{title}</div>
+      {sub && <div className="text-[10px] text-slate-500 dark:text-gray-500">{sub}</div>}
+      <div className="flex items-end gap-1.5 mt-1">
+        <div className="text-2xl font-bold tabular-nums" style={{ color }}>{value}</div>
+        <span className="w-1.5 h-1.5 rounded-full mb-1 animate-pulse" style={{ backgroundColor: color }} />
+      </div>
+    </div>
+  );
+}
+
+// ── Main page ─────────────────────────────────────────────────────────────────
+
+export function ClientDashboardLED() {
+  const { id } = useParams();
+  const navigate = useNavigate();
+
+  const [clientName, setClientName]         = useState('The LED');
+  const [clientLogoUrl, setClientLogoUrl]   = useState('');
+  const [clientLogoLightUrl, setClientLogoLightUrl] = useState('');
+  const [clientLogoDarkUrl, setClientLogoDarkUrl] = useState('');
+  const [appTheme, setAppTheme] = useState<'dark' | 'light'>(readAppTheme);
+  const [startDate, setStartDate]           = useState<Date>(() => alignStartOfDay(new Date()));
+  const [endDate, setEndDate]               = useState<Date>(() => alignEndOfDay(new Date()));
+  const [startHour, setStartHour]           = useState(0);
+  const [endHour, setEndHour]               = useState(23);
+  const [isLoading, setIsLoading]           = useState(false);
+  const [contacts, setContacts]             = useState<ContactPoint[]>(LED_CONTACT_POINTS);
+
+  // KPIs
+  const [totalFlow, setTotalFlow]           = useState(0);
+  const [peakPoint, setPeakPoint]           = useState('—');
+  const [peakCount, setPeakCount]           = useState(0);
+  const [avgHeat, setAvgHeat]               = useState(0);
+
+  // Load client info
+  useEffect(() => {
+    const updateTheme = () => setAppTheme(readAppTheme());
+    window.addEventListener('app-theme-change', updateTheme);
+    window.addEventListener('dashboard-theme-change', updateTheme);
+    const observer = new MutationObserver(updateTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-app-theme', 'class'] });
+    return () => {
+      window.removeEventListener('app-theme-change', updateTheme);
+      window.removeEventListener('dashboard-theme-change', updateTheme);
+      observer.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!id) return;
+    supabase.from('clients').select('name, logo_url, logo_url_light, logo_url_dark').eq('id', id).maybeSingle().then(({ data }) => {
+      if (data?.name) setClientName(String(data.name));
+      if ((data as any)?.logo_url) setClientLogoUrl(String((data as any).logo_url));
+      if ((data as any)?.logo_url_light) setClientLogoLightUrl(String((data as any).logo_url_light));
+      if ((data as any)?.logo_url_dark) setClientLogoDarkUrl(String((data as any).logo_url_dark));
+    });
+  }, [id]);
+
+  const loadData = useCallback(async () => {
+    if (!id) return;
+    setIsLoading(true);
+    const sd = new Date(startDate); sd.setHours(startHour, 0, 0, 0);
+    const ed = new Date(endDate);   ed.setHours(endHour, 59, 59, 999);
+
+    try {
+      // Try to load visitor flow from brf_queue_detections (same detection pattern)
+      // or any analytics table available — gracefully fall back to demo values
+      const { data } = await supabase
+        .from('brf_operation_detections')
+        .select('attendant_count, detected_at')
+        .eq('client_id', id)
+        .gte('detected_at', sd.toISOString())
+        .lte('detected_at', ed.toISOString());
+
+      if (data && data.length > 0) {
+        // If real data exists, distribute proportionally to contact heatValues
+        const total = data.reduce((s: number, r: any) => s + (r.attendant_count || 0), 0);
+        const updated = LED_CONTACT_POINTS.map((cp) => ({
+          ...cp,
+          flowCount: Math.round(total * (cp.heatValue ?? 0.5)),
+        }));
+        setContacts(updated);
+        const peak = [...updated].sort((a, b) => (b.flowCount ?? 0) - (a.flowCount ?? 0))[0];
+        setTotalFlow(updated.reduce((s, c) => s + (c.flowCount ?? 0), 0));
+        setPeakPoint(peak?.name ?? '—');
+        setPeakCount(peak?.flowCount ?? 0);
+        setAvgHeat(Math.round(updated.reduce((s, c) => s + (c.heatValue ?? 0), 0) / updated.length * 100));
+      } else {
+        // Demo / no data yet: use LED_CONTACT_POINTS defaults
+        setContacts(LED_CONTACT_POINTS);
+        const peak = [...LED_CONTACT_POINTS].sort((a, b) => (b.flowCount ?? 0) - (a.flowCount ?? 0))[0];
+        setTotalFlow(LED_CONTACT_POINTS.reduce((s, c) => s + (c.flowCount ?? 0), 0));
+        setPeakPoint(peak?.name ?? '—');
+        setPeakCount(peak?.flowCount ?? 0);
+        setAvgHeat(Math.round(LED_CONTACT_POINTS.reduce((s, c) => s + (c.heatValue ?? 0), 0) / LED_CONTACT_POINTS.length * 100));
+      }
+    } catch {
+      setContacts(LED_CONTACT_POINTS);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [id, startDate, endDate, startHour, endHour]);
+
+  useEffect(() => { void loadData(); }, [loadData]);
+
+  if (!id) return null;
+  const clientLogoForTheme = appTheme === 'light'
+    ? (clientLogoDarkUrl || clientLogoUrl || clientLogoLightUrl)
+    : (clientLogoLightUrl || clientLogoUrl || clientLogoDarkUrl);
+  const selectOptionStyle = appTheme === 'light'
+    ? { backgroundColor: '#ffffff', color: '#0f172a' }
+    : { backgroundColor: '#161b22', color: '#ffffff' };
+
+  return (
+    <div className="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto">
+
+      {/* ── Header ───────────────────────────────────────────────── */}
+      <div className="flex flex-col gap-5 mb-6">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-center gap-4 min-w-0">
+            <div className="h-12 w-12 sm:h-14 sm:w-14 rounded-2xl bg-white dark:bg-[#0d1117] border border-slate-200 dark:border-gray-800/60 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-lg">
+              {clientLogoForTheme
+                ? <img src={clientLogoForTheme} alt="Logo" className="h-full w-auto object-contain p-1.5" />
+                : <Image size={20} className="text-slate-400 dark:text-gray-600" />
+              }
+            </div>
+            <div className="min-w-0">
+              <div className="flex items-center gap-2.5">
+                <h1 className="text-slate-950 dark:text-white text-xl sm:text-2xl font-bold leading-tight">{clientName}</h1>
+                <span className="px-2 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/20 text-violet-400 text-[10px] font-semibold uppercase tracking-widest">LED</span>
+              </div>
+              <p className="text-slate-600 dark:text-gray-400 text-sm mt-0.5">Mapa de Fluxo · Calor · Pontos de Contato</p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => navigate(`/clientes/${id}/dashboard`)}
+              className="h-9 px-3.5 rounded-xl bg-white dark:bg-[#0d1117] border border-slate-200 dark:border-gray-800/60 hover:border-slate-300 dark:hover:border-gray-700 text-slate-700 dark:text-gray-300 hover:text-slate-950 dark:hover:text-white text-xs font-medium inline-flex items-center transition-all"
+            >
+              Dashboard Geral
+            </button>
+            <button
+              type="button"
+              onClick={loadData}
+              disabled={isLoading}
+              className="h-9 w-9 rounded-xl bg-white dark:bg-[#0d1117] border border-slate-200 dark:border-gray-800/60 hover:border-violet-500/40 text-slate-500 dark:text-gray-400 hover:text-violet-600 dark:hover:text-violet-300 flex items-center justify-center transition-all disabled:opacity-50"
+              title="Recarregar"
+            >
+              <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
+            </button>
+          </div>
+        </div>
+
+        {/* ── Filters ──────────────────────────────────────────────── */}
+        <div className="flex flex-wrap items-center gap-2.5 p-3 bg-white dark:bg-[#0d1117] border border-slate-200 dark:border-gray-800/40 rounded-2xl">
+          {/* Start date + hour */}
+          <div className="flex items-center gap-1.5">
+            <div className="relative">
+              <input
+                type="date"
+                className="h-9 bg-white dark:bg-[#161b22] border border-slate-200 dark:border-gray-800/60 text-slate-950 dark:text-white pl-9 pr-2.5 rounded-xl focus:outline-none focus:ring-1 focus:ring-violet-500/50 text-xs font-medium w-[140px] transition-all"
+                value={fmtDateInput(startDate)}
+                onChange={(e) => { const n = parseDateInput(e.target.value); if (n) setStartDate(n); }}
+              />
+              <div className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-gray-500">
+                <Calendar size={14} />
+              </div>
+            </div>
+            <div className="relative">
+              <select
+                className="h-9 bg-white dark:bg-[#161b22] border border-slate-200 dark:border-gray-800/60 text-slate-950 dark:text-white pl-8 pr-6 rounded-xl focus:outline-none appearance-none cursor-pointer text-xs font-medium w-[100px] transition-all"
+                value={startHour}
+                onChange={(e) => setStartHour(Number(e.target.value))}
+              >
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={i} style={selectOptionStyle}>{String(i).padStart(2,'0')}:00</option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-gray-500">
+                <Clock size={13} />
+              </div>
+            </div>
+          </div>
+
+          <span className="text-slate-500 dark:text-gray-600 text-xs">até</span>
+
+          {/* End date + hour */}
+          <div className="flex items-center gap-1.5">
+            <div className="relative">
+              <input
+                type="date"
+                className="h-9 bg-white dark:bg-[#161b22] border border-slate-200 dark:border-gray-800/60 text-slate-950 dark:text-white pl-9 pr-2.5 rounded-xl focus:outline-none focus:ring-1 focus:ring-violet-500/50 text-xs font-medium w-[140px] transition-all"
+                value={fmtDateInput(endDate)}
+                onChange={(e) => { const n = parseDateInput(e.target.value, true); if (n) setEndDate(n); }}
+              />
+              <div className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-gray-500">
+                <Calendar size={14} />
+              </div>
+            </div>
+            <div className="relative">
+              <select
+                className="h-9 bg-white dark:bg-[#161b22] border border-slate-200 dark:border-gray-800/60 text-slate-950 dark:text-white pl-8 pr-6 rounded-xl focus:outline-none appearance-none cursor-pointer text-xs font-medium w-[100px] transition-all"
+                value={endHour}
+                onChange={(e) => setEndHour(Number(e.target.value))}
+              >
+                {Array.from({ length: 24 }, (_, i) => (
+                  <option key={i} value={i} style={selectOptionStyle}>{String(i).padStart(2,'0')}:00</option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-gray-500">
+                <Clock size={13} />
+              </div>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={loadData}
+            disabled={isLoading}
+            className="h-9 px-4 rounded-xl bg-violet-600 hover:bg-violet-500 disabled:opacity-50 text-white text-xs font-semibold flex items-center gap-1.5 transition-all shadow-lg shadow-violet-500/20"
+          >
+            <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
+            Aplicar
+          </button>
+        </div>
+      </div>
+
+      {/* ── KPI row ───────────────────────────────────────────────── */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
+        <KpiCard
+          title="Fluxo Total"
+          value={totalFlow.toLocaleString('pt-BR')}
+          sub="Visitantes estimados"
+          color="#a78bfa"
+        />
+        <KpiCard
+          title="Ponto de Pico"
+          value={peakPoint}
+          sub={`${peakCount.toLocaleString('pt-BR')} visitantes`}
+          color="#ef4444"
+        />
+        <KpiCard
+          title="Calor Médio"
+          value={`${avgHeat}%`}
+          sub="Média dos 11 pontos"
+          color="#f59e0b"
+        />
+        <KpiCard
+          title="Pontos Ativos"
+          value={String(contacts.length)}
+          sub="Câmeras / telas"
+          color="#10b981"
+        />
+      </div>
+
+      {/* ── 3D Store Plan ─────────────────────────────────────────── */}
+      <StorePlan3D contacts={contacts} />
+
+      {/* ── Lia chat ──────────────────────────────────────────────── */}
+      <DashboardChat
+        context={{
+          dashboardName: `${clientName} — Mapa de Fluxo`,
+          data: {
+            periodo: {
+              inicio: startDate.toLocaleDateString('pt-BR'),
+              fim: endDate.toLocaleDateString('pt-BR'),
+              horaInicio: startHour,
+              horaFim: endHour,
+            },
+            fluxo: {
+              total: totalFlow,
+              pontoDePico: peakPoint,
+              visitantesNoPico: peakCount,
+              calorMedio: `${avgHeat}%`,
+            },
+            pontosDeContato: contacts.map((c) => ({
+              nome: c.name,
+              visitantes: c.flowCount,
+              calor: `${Math.round((c.heatValue ?? 0) * 100)}%`,
+            })),
+          },
+        }}
+      />
+    </div>
+  );
+}

@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import { DashboardChat } from '../components/DashboardChat';
 import {
   Globe, Clock, Building2, ChevronRight, ChevronDown,
-  LayoutGrid, Users, BarChart2, Image, Upload, Calendar,
+  LayoutGrid, Users, BarChart2, Image, Upload, Calendar, Camera,
   Maximize2, Minimize2, Move, Save, X, GripVertical, ArrowUp, ArrowDown, Wand2
 } from 'lucide-react';
 
@@ -12,9 +13,11 @@ import type { WidgetType } from '../components/DashboardWidgets';
 import { ExportButton } from '../components/ExportButton';
 import supabase from '../lib/supabase';
 import { FACIAL_EXPRESSION_SERIES, getDominantFacialExpression, normalizeFacialExpression } from '../utils/facialExpressions';
+import { ClientDashboardLED } from './ClientDashboardLED';
 
 // ── Controle de rebuild em andamento (nível de módulo) ───────────────────────
 const _rebuilding = new Set<string>();
+const _backgroundSyncRequests = new Map<string, number>();
 
 // ── Intervalo mínimo entre syncs background (1 hora) ─────────────────────────
 const SYNC_INTERVAL_MS = 10 * 60 * 1000;
@@ -58,6 +61,20 @@ function markSynced(clientId: string) {
   try { localStorage.setItem(lastSyncKey(clientId), String(Date.now())); } catch {}
 }
 
+function buildBackgroundSyncRequestKey(clientId: string, startIso: string | undefined, endIso: string, deviceIds: number[]) {
+  const normalizedDevices = [...new Set(deviceIds.map((id) => Number(id)).filter((id) => Number.isFinite(id)))].sort((a, b) => a - b);
+  return `${clientId}:${String(startIso || '')}:${endIso}:${normalizedDevices.join(',') || 'all'}`;
+}
+
+function stableNumberListKey(values: number[]) {
+  const normalized = values.map((v) => Number(v)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b);
+  const unique: number[] = [];
+  for (const v of normalized) {
+    if (unique.length === 0 || unique[unique.length - 1] !== v) unique.push(v);
+  }
+  return unique.join(',');
+}
+
 type CameraType = {
   id: string; name: string; status: 'online' | 'offline';
   type: 'dome' | 'bullet' | 'ptz'; resolution: '1080p' | '4k';
@@ -66,6 +83,11 @@ type CameraType = {
 type StoreType = {
   id: string; name: string; address: string; city: string;
   status: 'online' | 'offline'; cameras: CameraType[];
+};
+type DeviceFilterOption = {
+  key: string;
+  store: StoreType;
+  camera: CameraType;
 };
 type ClientApiConfig = {
   api_endpoint: string; analytics_endpoint: string; api_key: string;
@@ -552,12 +574,13 @@ export function ClientDashboard() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user: authUser } = useAuth();
+  const isBrf = id === 'b93d290b-b069-4715-84cc-ddc393c9bfc1';
 
   const [view, setView] = useState<'network' | 'store' | 'camera'>('network');
   const [selectedStore, setSelectedStore] = useState<StoreType | null>(null);
   const [selectedCamera, setSelectedCamera] = useState<CameraType | null>(null);
   const [stores, setStores] = useState<StoreType[]>([]);
-  const [clientData, setClientData] = useState<{ name: string; logo?: string } | null>(null);
+  const [clientData, setClientData] = useState<{ name: string; logo?: string; logoLight?: string; logoDark?: string } | null>(null);
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
   const [selectedStartDate, setSelectedStartDate] = useState<Date>(() => {
@@ -585,7 +608,13 @@ export function ClientDashboard() {
   const [syncMessage, setSyncMessage] = useState('');
   const [isSyncingStores, setIsSyncingStores] = useState(false);
   const syncingRef = useRef(false);
-  const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('unknown');
+  // Neste projeto/ambiente atual nao existem as tabelas public.sales_daily/public.sales.
+  // Comecamos com "none" para evitar rajadas de 404 no Supabase ao carregar ou trocar filtros.
+  const salesSourceRef = useRef<'unknown' | 'sales_daily' | 'sales' | 'none'>('none');
+  const missingSalesTablesRef = useRef<{ sales_daily: boolean; sales: boolean }>({
+    sales_daily: false,
+    sales: false
+  });
 
   const [isFullscreen, setIsFullscreen] = useState(false);
   const dashboardRef = useRef<HTMLDivElement>(null);
@@ -652,8 +681,36 @@ export function ClientDashboard() {
   type Span = typeof SPANS[number];
   const [widgetLayout, setWidgetLayout] = useState<Record<string, { colSpanLg?: Span; heightPx?: number }>>({});
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
+  const readCurrentAppTheme = (): 'dark' | 'light' => {
+    try {
+      if (document.documentElement.dataset.appTheme === 'light') return 'light';
+      if (document.documentElement.dataset.appTheme === 'dark') return 'dark';
+      return localStorage.getItem('app-theme') === 'light' ? 'light' : 'dark';
+    } catch {
+      return 'dark';
+    }
+  };
+  const [dashboardTheme, setDashboardTheme] = useState<'dark' | 'light'>(readCurrentAppTheme);
   const [isLoadingConfig, setIsLoadingConfig] = useState(true);
   const [isLoadingData, setIsLoadingData] = useState(false);
+
+  useEffect(() => {
+    const syncTheme = () => {
+      const theme = readCurrentAppTheme();
+      setDashboardTheme(theme);
+      window.dispatchEvent(new CustomEvent('dashboard-theme-change', { detail: { theme } }));
+    };
+    syncTheme();
+    window.addEventListener('app-theme-change', syncTheme);
+    window.addEventListener('storage', syncTheme);
+    const observer = new MutationObserver(syncTheme);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-app-theme'] });
+    return () => {
+      window.removeEventListener('app-theme-change', syncTheme);
+      window.removeEventListener('storage', syncTheme);
+      observer.disconnect();
+    };
+  }, []);
 
   // Modo de edicao de layout (drag-and-drop inline)
   const [editLayoutMode, setEditLayoutMode] = useState(false);
@@ -793,7 +850,7 @@ export function ClientDashboard() {
         if (Number.isFinite(Number(cur.heightPx))) entry.heightPx = Math.round(Number(cur.heightPx));
         if (Object.keys(entry).length) widgetLayoutPayload[w.id] = entry;
       }
-      const payload = { widget_ids: widgetIds, widget_layout: widgetLayoutPayload };
+      const payload = { widget_ids: widgetIds, widget_layout: widgetLayoutPayload, theme: dashboardTheme };
 
       try {
         const { data: existing } = await supabase
@@ -865,16 +922,58 @@ export function ClientDashboard() {
     return top;
   };
 
+  const resolvedSelectedStore = useMemo(() => {
+    if (!selectedStore?.id) return null;
+    return stores.find((store) => store.id === selectedStore.id) || selectedStore;
+  }, [stores, selectedStore]);
+
+  const resolvedSelectedCamera = useMemo(() => {
+    if (!selectedCamera?.id) return null;
+    if (resolvedSelectedStore) {
+      return (resolvedSelectedStore.cameras || []).find((camera) => camera.id === selectedCamera.id) || selectedCamera;
+    }
+    for (const store of stores) {
+      const found = (store.cameras || []).find((camera) => camera.id === selectedCamera.id);
+      if (found) return found;
+    }
+    return selectedCamera;
+  }, [stores, resolvedSelectedStore, selectedCamera]);
+
+  const deviceIdsCacheRef = useRef<{ key: string; value: number[] }>({ key: '', value: [] });
   const deviceIds = useMemo(() => {
-    if (view === 'camera' && selectedCamera) {
-      const n = Number((selectedCamera as any).macAddress);
-      return Number.isFinite(n) ? [n] : [];
+    const computed: number[] = [];
+    if (resolvedSelectedCamera) {
+      const n = Number((resolvedSelectedCamera as any).macAddress);
+      if (Number.isFinite(n)) computed.push(n);
     }
-    if ((view === 'store' || (view === 'network' && selectedStore)) && selectedStore) {
-      return selectedStore.cameras.map((c) => Number((c as any).macAddress)).filter((n) => Number.isFinite(n));
+    else if (resolvedSelectedStore) {
+      for (const c of (resolvedSelectedStore.cameras || [])) {
+        const n = Number((c as any).macAddress);
+        if (Number.isFinite(n)) computed.push(n);
+      }
     }
-    return [];
-  }, [view, selectedStore, selectedCamera]);
+    const key = stableNumberListKey(computed);
+    if (deviceIdsCacheRef.current.key === key) return deviceIdsCacheRef.current.value;
+    const next = key ? key.split(',').map((v) => Number(v)).filter((v) => Number.isFinite(v)) : [];
+    deviceIdsCacheRef.current = { key, value: next };
+    return next;
+  }, [resolvedSelectedStore, resolvedSelectedCamera]);
+
+  const deviceOptions = useMemo(() => {
+    const sourceStores = selectedStore
+      ? stores.filter((store) => store.id === selectedStore.id)
+      : stores;
+
+    return sourceStores.flatMap((store) =>
+      (store.cameras || [])
+        .filter((camera) => String(camera?.id || '').trim() && String((camera as any)?.macAddress || '').trim())
+        .map((camera) => ({
+          key: String(camera.id),
+          store,
+          camera,
+        } satisfies DeviceFilterOption))
+    );
+  }, [stores, selectedStore]);
 
   const deviceNameByMac = useMemo(() => {
     const map = new Map<string, string>();
@@ -1133,7 +1232,7 @@ export function ClientDashboard() {
       id || '',
       selectedStartDate.toISOString(),
       selectedEndDate.toISOString(),
-      deviceIds.join(','),
+      stableNumberListKey(deviceIds),
     ].join('|');
 
     bgReloadTimeoutsRef.current.forEach(clearTimeout);
@@ -1497,7 +1596,6 @@ export function ClientDashboard() {
       // mostraríamos dados de TODA a rede para uma loja específica.
       // → Aguarda até 3s por cameras; se não carregarem, mostra zeros.
       if (selectedStore && deviceIds.length === 0) {
-        zeroAll();
         // Aguarda cameras carregarem (até 3 tentativas de 1s)
         let waited = 0;
         while (waited < 3 && selectedStore && deviceIds.length === 0) {
@@ -1506,8 +1604,8 @@ export function ClientDashboard() {
         }
         if (!isCurrent()) return;
         if (deviceIds.length === 0) {
-          // Ainda sem cameras → dispara sync e fica em zero (evita dados de rede global)
-          syncStoresFromServer(true).catch(() => {});
+          // Ainda sem cameras no filtro atual. Evita disparar sync automatico
+          // para nao entrar em loop de recarga enquanto o usuario navega.
           return;
         }
       }
@@ -1517,7 +1615,6 @@ export function ClientDashboard() {
       // Limpa imediatamente os dados antigos (rede global) para não mostrar
       // dados de uma loja diferente enquanto a API responde.
       if (deviceIds.length > 0) {
-        zeroAll();
         try {
           const json = await fetchJsonWithTimeout('/api/sync-analytics', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -1749,12 +1846,129 @@ export function ClientDashboard() {
                   end: endIso,
                 }),
               }).catch(() => {}); // fire-and-forget
-              zeroAll();
+              if (isCurrent()) zeroAll();
             }
           }
         } catch (e) {
           console.warn('[loadData] Erro no filtro por dispositivo:', e);
-          zeroAll();
+          const PAGE_ROWS = 1000;
+          const allRows: any[] = [];
+          let rowFrom = 0;
+          while (true) {
+            const { data: rowPage } = await withTimeout(
+              supabase
+                .from('visitor_analytics')
+                .select('timestamp,visit_time_seconds,contact_time_seconds,gender,age,attributes,raw_data')
+                .eq('client_id', id)
+                .in('device_id', deviceIds)
+                .gte('timestamp', startIso)
+                .lte('timestamp', endIso)
+                .order('timestamp', { ascending: true })
+                .range(rowFrom, rowFrom + PAGE_ROWS - 1) as any,
+              10000,
+              'visitor_analytics rows for device catch fallback',
+            ) as any;
+            if (!Array.isArray(rowPage) || rowPage.length === 0) break;
+            allRows.push(...rowPage);
+            if (rowPage.length < PAGE_ROWS) break;
+            rowFrom += PAGE_ROWS;
+            if (rowFrom > 50000) break;
+          }
+
+          if (allRows.length > 0 && isCurrent()) {
+            const total       = allRows.length;
+            const dRange      = Math.max(1, Math.ceil((endAligned.getTime() - startAligned.getTime() + 1) / 86400000));
+            const visitTimes  = allRows.map(r => Number(r.visit_time_seconds) || 0).filter(v => v > 0);
+            const contactTimes= allRows.map(r => Number(r.contact_time_seconds) || 0).filter(v => v > 0);
+            const avgVisit    = visitTimes.length   > 0 ? Math.round(visitTimes.reduce((a,b)=>a+b,0)   / visitTimes.length)   : 0;
+            const avgContact  = contactTimes.length > 0 ? Math.round(contactTimes.reduce((a,b)=>a+b,0) / contactTimes.length) : 0;
+            const perHourTotal = new Array(24).fill(0);
+            const perDay: Record<string, number> = {};
+            const genderC = { male: 0, female: 0 };
+            const ageBuckets: Record<string, { m: number; f: number }> = {
+              '<18':{m:0,f:0},'18-24':{m:0,f:0},'25-34':{m:0,f:0},'35-44':{m:0,f:0},
+              '45-54':{m:0,f:0},'55-64':{m:0,f:0},'65+':{m:0,f:0},
+            };
+            const toAgeBucket = (age: number) => {
+              if (age < 18) return '<18'; if (age < 25) return '18-24';
+              if (age < 35) return '25-34'; if (age < 45) return '35-44';
+              if (age < 55) return '45-54'; if (age < 65) return '55-64';
+              return '65+';
+            };
+
+            allRows.forEach(r => {
+              const ts = new Date(r.timestamp);
+              if (!isNaN(ts.getTime())) {
+                perHourTotal[ts.getHours()]++;
+                const dk = formatLocalDateKey(ts);
+                perDay[dk] = (perDay[dk] ?? 0) + 1;
+              }
+              const g = r.gender;
+              const isMale   = g === 1 || g === 'male';
+              const isFemale = g === 2 || g === 'female';
+              if (isMale) genderC.male++;
+              if (isFemale) genderC.female++;
+              const ageVal = Number(r.age);
+              if (Number.isFinite(ageVal) && ageVal > 0) {
+                const bucket = toAgeBucket(ageVal);
+                if (isMale) ageBuckets[bucket].m++;
+                if (isFemale) ageBuckets[bucket].f++;
+              }
+            });
+
+            setTotalVisitors(total);
+            setAvgVisitorsPerDay(Math.round(total / dRange));
+            setAvgVisitSeconds(avgVisit);
+            setAvgAttentionSeconds(avgContact);
+            setHourlyStats(perHourTotal.map(v => Math.round(v / dRange)));
+            setVisitorsPerDayMap(perDay);
+
+            const gTotal = Math.max(1, genderC.male + genderC.female);
+            setGenderStats([
+              { label: 'Masculino', value: Math.round((genderC.male / gTotal) * 100) },
+              { label: 'Feminino', value: Math.round((genderC.female / gTotal) * 100) },
+            ]);
+
+            setAgeStats(
+              Object.entries(ageBuckets).map(([age, v]) => ({
+                age,
+                m: Number(((v.m / Math.max(1, total)) * 100).toFixed(1)),
+                f: Number(((v.f / Math.max(1, total)) * 100).toFixed(1)),
+              }))
+            );
+
+            const buildPercentSeries = (key: string) => {
+              const counts = new Map<string, number>();
+              for (const row of allRows) {
+                const rawValue = row?.attributes?.[key];
+                const value = String(rawValue ?? '').trim();
+                if (!value) continue;
+                counts.set(value, (counts.get(value) ?? 0) + 1);
+              }
+              return [...counts.entries()]
+                .map(([label, count]) => ({
+                  label,
+                  value: Number(((count / Math.max(1, total)) * 100).toFixed(1)),
+                }))
+                .sort((a, b) => b.value - a.value);
+            };
+
+            setAttributeStats(
+              [
+                ...buildPercentSeries('glasses'),
+                ...buildPercentSeries('facial_hair'),
+              ].sort((a, b) => b.value - a.value).slice(0, 6)
+            );
+            setHairTypeData(buildPercentSeries('hair_type').slice(0, 4));
+            setHairColorData(buildPercentSeries('hair_color').slice(0, 4));
+
+            await Promise.all([
+              syncExpressions([]),
+              syncDeviceFlow([]),
+            ]);
+          } else if (isCurrent()) {
+            zeroAll();
+          }
         }
         return;
       }
@@ -1767,19 +1981,25 @@ export function ClientDashboard() {
         Math.ceil((selectedEndDate.getTime() - selectedStartDate.getTime()) / 86400000) + 1
       );
 
-      const { data: exactRollups } = await withTimeout(
-        supabase
-          .from('visitor_analytics_rollups')
-          .select('*')
-          .eq('client_id', id)
-          .eq('start', startIso)
-          .eq('end', endIso)
-          .gt('total_visitors', 0)
-          .order('updated_at', { ascending: false })
-          .limit(1),
-        10000,
-        'rollup exato'
-      );
+      let exactRollups: any[] | null = null;
+      try {
+        const exactResult = await withTimeout(
+          supabase
+            .from('visitor_analytics_rollups')
+            .select('*')
+            .eq('client_id', id)
+            .eq('start', startIso)
+            .eq('end', endIso)
+            .gt('total_visitors', 0)
+            .order('updated_at', { ascending: false })
+            .limit(1),
+          10000,
+          'rollup exato'
+        );
+        exactRollups = (exactResult as any)?.data || null;
+      } catch (error) {
+        console.warn('[loadData] rollup exato demorou, seguindo com fallback:', error);
+      }
 
       if (!isCurrent()) return;
 
@@ -2006,14 +2226,16 @@ export function ClientDashboard() {
             syncDeviceFlow([rollupPayload]),
           ]);
           setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes.`);
-        } else {
+        } else if (isCurrent()) {
           zeroAll();
           setSyncMessage('');
         }
       } catch (e) {
         console.warn('[loadData] rebuild falhou:', e);
-        zeroAll();
-        setSyncMessage('');
+        if (isCurrent()) {
+          zeroAll();
+          setSyncMessage('');
+        }
       } finally {
         _rebuilding.delete(rebuildKey);
       }
@@ -2032,25 +2254,36 @@ export function ClientDashboard() {
 
   const triggerBackgroundSync = useCallback(async (force = false) => {
     if (!id || syncingRef.current) return;
+    const hasScopedFilter = Boolean(selectedStore?.id || selectedCamera?.id || deviceIds.length > 0);
+    if (!force && hasScopedFilter) return;
     if (!force && !shouldSync(id)) return;
     if (document.visibilityState !== 'visible') return;
+
+    // Para clientes D-2 (ex: Panvel), o sync começa em D-2 para garantir que esses dados
+    // sejam buscados da API e salvos no banco antes de serem exibidos no dashboard
+    const syncStartDate = useD2DefaultRef.current
+      ? (() => { const d = new Date(); d.setDate(d.getDate() - 2); d.setUTCHours(0, 0, 0, 0); return d.toISOString(); })()
+      : undefined;
+    const syncEndDate = new Date().toISOString();
+    const requestKey = buildBackgroundSyncRequestKey(id, syncStartDate, syncEndDate, deviceIds);
+    const lastRequestAt = _backgroundSyncRequests.get(requestKey);
+    if (typeof lastRequestAt === 'number' && Date.now() - lastRequestAt < 2 * 60 * 1000) {
+      console.log('[BgSync] Requisição equivalente recente, pulando.');
+      return;
+    }
+    _backgroundSyncRequests.set(requestKey, Date.now());
 
     syncingRef.current = true;
     console.log(`[BgSync] Disparando sync (force=${force})...`);
 
     try {
-      // Para clientes D-2 (ex: Panvel), o sync começa em D-2 para garantir que esses dados
-      // sejam buscados da API e salvos no banco antes de serem exibidos no dashboard
-      const syncStartDate = useD2DefaultRef.current
-        ? (() => { const d = new Date(); d.setDate(d.getDate() - 2); d.setUTCHours(0, 0, 0, 0); return d.toISOString(); })()
-        : undefined;
 
       const resp = await fetch('/api/sync-analytics', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           client_id: id,
           ...(syncStartDate ? { start: syncStartDate } : {}),
-          end: new Date().toISOString(),
+          end: syncEndDate,
           background_sync: true,
           force_full_sync: force,
           ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
@@ -2167,6 +2400,7 @@ export function ClientDashboard() {
       return q;
     };
     const sumSalesCount = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
+      if (missingSalesTablesRef.current[table]) return null;
       const attempts: ('device' | 'store' | 'none')[] = [];
       if (deviceIds.length > 0) attempts.push('device');
       if (storeId) attempts.push('store');
@@ -2177,12 +2411,19 @@ export function ClientDashboard() {
           8000,
           `${table}.${dateCol}.${mode}`
         );
-        if (error) { if (isNotFound(error)) return null; continue; }
+        if (error) {
+          if (isNotFound(error)) {
+            missingSalesTablesRef.current[table] = true;
+            return null;
+          }
+          continue;
+        }
         return ((data as any[]) || []).reduce((acc, r) => acc + (Number(r?.sales_count) || 0), 0);
       }
       return undefined;
     };
     const countRows = async (table: 'sales_daily' | 'sales', dateCol: 'date' | 'created_at') => {
+      if (missingSalesTablesRef.current[table]) return null;
       const attempts: ('device' | 'store' | 'none')[] = [];
       if (deviceIds.length > 0) attempts.push('device');
       if (storeId) attempts.push('store');
@@ -2193,12 +2434,19 @@ export function ClientDashboard() {
           8000,
           `${table}.${dateCol}.${mode}.count`
         );
-        if (error) { if (isNotFound(error)) return null; continue; }
+        if (error) {
+          if (isNotFound(error)) {
+            missingSalesTablesRef.current[table] = true;
+            return null;
+          }
+          continue;
+        }
         return Number(count) || 0;
       }
       return undefined;
     };
     const readFrom = async (table: 'sales_daily' | 'sales') => {
+      if (missingSalesTablesRef.current[table]) return null;
       const a = await sumSalesCount(table, 'date');       if (typeof a === 'number') return a; if (a === null) return null;
       const b = await sumSalesCount(table, 'created_at'); if (typeof b === 'number') return b; if (b === null) return null;
       const c = await countRows(table, 'created_at');     if (typeof c === 'number') return c; if (c === null) return null;
@@ -2251,7 +2499,7 @@ export function ClientDashboard() {
     if (estimatedCount !== null) return estimatedCount;
 
     return 0;
-  }, [id, deviceIds]);
+  }, [id, deviceIds, selectedStore?.id, selectedCamera?.id]);
 
   const fetchHourlyStatsFromDb = useCallback(async (rangeStartIso: string, rangeEndIso: string) => {
     if (!id) return new Array(24).fill(0);
@@ -2633,13 +2881,30 @@ export function ClientDashboard() {
   const refreshClientAndStores = useCallback(async () => {
     if (!id) return;
     try {
-      const { data: client } = await withTimeout(
-        supabase.from('clients').select('name, logo_url').eq('id', id).single(),
-        10000,
-        'clients'
-      );
+      let client: any = null;
+      try {
+        const { data, error } = await withTimeout(
+          supabase.from('clients').select('name, logo_url, logo_url_light, logo_url_dark').eq('id', id).single(),
+          10000,
+          'clients'
+        );
+        if (error) throw error;
+        client = data;
+      } catch (clientThemeLogoError) {
+        const { data } = await withTimeout(
+          supabase.from('clients').select('name, logo_url').eq('id', id).single(),
+          10000,
+          'clients-fallback'
+        );
+        client = data;
+      }
       if (client) {
-        setClientData({ name: client.name, logo: client.logo_url });
+        setClientData({
+          name: client.name,
+          logo: client.logo_url,
+          logoLight: client.logo_url_light,
+          logoDark: client.logo_url_dark,
+        });
         useD2DefaultRef.current = false;
         didApplyD1DefaultRef.current = true;
       }
@@ -2715,11 +2980,6 @@ export function ClientDashboard() {
   // ── Limpa dados imediatamente quando muda a loja selecionada ─────────────
   // Evita que dados da Rede Global ou de outra loja fiquem visíveis
   // enquanto loadData ainda está buscando os dados filtrados.
-  useEffect(() => {
-    zeroAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStore?.id, selectedCamera?.id]);
-
   // ── Inicialização principal — roda 1x ao montar ──────────────────────────
   useEffect(() => {
     if (!id) return;
@@ -2731,7 +2991,7 @@ export function ClientDashboard() {
 
       if (cancelled) return;
 
-      if (shouldSync(id)) {
+      if (!selectedStore && !selectedCamera && shouldSync(id)) {
         triggerBackgroundSync(false);
       }
     };
@@ -2741,17 +3001,17 @@ export function ClientDashboard() {
     const t = setInterval(async () => {
       if (cancelled || document.visibilityState !== 'visible') return;
       await loadData();
-      if (shouldSync(id)) triggerBackgroundSync(false);
+      if (!selectedStore && !selectedCamera && shouldSync(id)) triggerBackgroundSync(false);
     }, 10 * 60 * 1000);
 
     const syncInterval = setInterval(() => {
-      if (!cancelled && document.visibilityState === 'visible' && shouldSync(id)) {
+      if (!cancelled && document.visibilityState === 'visible' && !selectedStore && !selectedCamera && shouldSync(id)) {
         triggerBackgroundSync(false);
       }
     }, 30 * 60 * 1000);
 
     return () => { cancelled = true; clearInterval(t); clearInterval(syncInterval); };
-  }, [id, loadData, refreshClientAndStores, syncStoresFromServer, triggerBackgroundSync]);
+  }, [id, loadData, refreshClientAndStores, syncStoresFromServer, triggerBackgroundSync, selectedStore?.id, selectedCamera?.id]);
 
   // ── Config de widgets ────────────────────────────────────────────────────
   useEffect(() => {
@@ -2793,7 +3053,7 @@ export function ClientDashboard() {
       return Math.max(minHeight, Math.min(1200, snappedHeight));
     };
 
-    const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }> } => {
+    const resolveDashboardConfig = (widgetsConfig: any): { ids: string[] | null; widgetLayout: Record<string, { colSpanLg?: Span; heightPx?: number }>; theme: 'dark' | 'light' | null } => {
       const ids = Array.isArray(widgetsConfig)
         ? widgetsConfig.filter((x) => typeof x === 'string')
         : widgetsConfig && Array.isArray(widgetsConfig.widget_ids)
@@ -2809,7 +3069,9 @@ export function ClientDashboard() {
           if (Number.isFinite(heightPx)) wl[wId] = { ...(wl[wId] || {}), heightPx: Math.round(heightPx) };
         }
       }
-      return { ids, widgetLayout: wl };
+      const rawTheme = String(widgetsConfig?.theme || widgetsConfig?.dashboard_theme || '').toLowerCase();
+      const theme = rawTheme === 'light' || rawTheme === 'dark' ? rawTheme : null;
+      return { ids, widgetLayout: wl, theme };
     };
     (async () => {
       if (!id) return;
@@ -2872,7 +3134,11 @@ export function ClientDashboard() {
       const mergedLayout = { ...allowedResolved.widgetLayout, ...userResolved.widgetLayout };
 
       const active = activeIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[];
-      if (!cancelled) { setActiveWidgets(active); setWidgetLayout(mergedLayout); }
+      if (!cancelled) {
+        setActiveWidgets(active);
+        setWidgetLayout(mergedLayout);
+        setDashboardTheme(readCurrentAppTheme());
+      }
     })()
       .catch((error) => {
         console.warn('[Dashboard] Erro ao resolver widgets, usando fallback padrao:', error);
@@ -2893,6 +3159,7 @@ export function ClientDashboard() {
           ];
           setActiveWidgets(defaultIds.map((wid) => AVAILABLE_WIDGETS.find((w) => w.id === wid)).filter(Boolean) as WidgetType[]);
           setWidgetLayout({});
+          setDashboardTheme(readCurrentAppTheme());
         }
       })
       .finally(() => {
@@ -2908,8 +3175,55 @@ export function ClientDashboard() {
     }
   }, [location.state, stores]);
 
+  useEffect(() => {
+    if (!selectedStore && !selectedCamera) return;
+
+    if (selectedStore) {
+      const refreshedStore = stores.find((store) => store.id === selectedStore.id) || null;
+      if (!refreshedStore) {
+        setSelectedStore(null);
+        setSelectedCamera(null);
+        setView('network');
+        return;
+      }
+      if (refreshedStore !== selectedStore) {
+        setSelectedStore(refreshedStore);
+      }
+    }
+
+    if (selectedCamera) {
+      const owningStore = stores.find((store) =>
+        (store.cameras || []).some((camera) => camera.id === selectedCamera.id)
+      ) || null;
+      if (!owningStore) {
+        setSelectedCamera(null);
+        setView('network');
+        return;
+      }
+
+      const refreshedCamera = (owningStore.cameras || []).find((camera) => camera.id === selectedCamera.id) || null;
+      if (!refreshedCamera) {
+        setSelectedCamera(null);
+        setView('network');
+        return;
+      }
+
+      if (owningStore !== selectedStore) {
+        setSelectedStore(owningStore);
+      }
+      if (refreshedCamera !== selectedCamera) {
+        setSelectedCamera(refreshedCamera);
+      }
+    }
+  }, [stores, selectedStore, selectedCamera]);
+
   const goToNetwork = () => { setView('network'); setSelectedStore(null); setSelectedCamera(null); };
   const goToStore = (store: StoreType) => { setSelectedStore(store); setView('network'); setSelectedCamera(null); };
+  const goToCamera = (camera: CameraType, store?: StoreType | null) => {
+    if (store) setSelectedStore(store);
+    setSelectedCamera(camera);
+    setView('camera');
+  };
 
   const periodSeries = useMemo(() => {
     const labels: string[] = []; const values: number[] = [];
@@ -2965,13 +3279,29 @@ export function ClientDashboard() {
 
 
   const clientName = clientData?.name || 'Carregando...';
-  const clientLogo = clientData?.logo;
+  const clientLogo = dashboardTheme === 'light'
+    ? (clientData?.logoDark || clientData?.logo || clientData?.logoLight)
+    : (clientData?.logoLight || clientData?.logo || clientData?.logoDark);
+  const dashboardSubtitle = selectedCamera
+    ? `Visualizando o dispositivo ${selectedCamera.name}${selectedStore ? ` em ${selectedStore.name}` : ''}`
+    : selectedStore
+      ? `Monitorando ${selectedStore.cameras.length} dispositivos em ${selectedStore.name}`
+      : `Monitorando ${stores.length} lojas nesta rede`;
+  const selectOptionStyle = dashboardTheme === 'light'
+    ? { backgroundColor: '#ffffff', color: '#0f172a' }
+    : { backgroundColor: '#111827', color: 'white' };
+
+  // ── The LED: dashboard exclusivo ──────────────────────────────────────────
+  if (id === 'b2058a65-1bee-43bf-ad44-cf30f6a68d32') {
+    return <ClientDashboardLED />;
+  }
 
   return (
     <div
       ref={dashboardRef}
+      data-dashboard-theme={dashboardTheme}
       className="space-y-6 animate-in fade-in duration-500"
-      style={isFullscreen ? { background: '#030712', padding: '24px', overflowY: 'auto', height: '100%' } : undefined}
+      style={isFullscreen ? { background: dashboardTheme === 'light' ? '#f8fafc' : '#030712', padding: '24px', overflowY: 'auto', height: '100%' } : undefined}
     >
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-2 text-sm text-gray-500">
@@ -2979,6 +3309,7 @@ export function ClientDashboard() {
           <ChevronRight size={14} />
           <button onClick={goToNetwork} className={`hover:text-emerald-400 transition-colors ${view === 'network' && !selectedStore ? 'text-white font-medium' : ''}`}>{clientName}</button>
           {selectedStore && (<><ChevronRight size={14} /><button onClick={() => goToStore(selectedStore)} className="hover:text-emerald-400 transition-colors text-white font-medium">{selectedStore.name}</button></>)}
+          {selectedCamera && (<><ChevronRight size={14} /><button onClick={() => goToCamera(selectedCamera, selectedStore)} className="hover:text-emerald-400 transition-colors text-white font-medium">{selectedCamera.name}</button></>)}
         </div>
 
         <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
@@ -2998,7 +3329,18 @@ export function ClientDashboard() {
             </div>
             <div>
               <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2"><Globe className="text-emerald-500" />Dashboard Geral</h1>
-              <p className="text-sm sm:text-base text-gray-400 mt-1">Monitorando {stores.length} lojas nesta rede</p>
+              <p className="text-sm sm:text-base text-gray-400 mt-1">{dashboardSubtitle}</p>
+              {isBrf && (
+                <div className="mt-2">
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/clientes/${id}/dashboard-brf`)}
+                    className="text-xs px-3 py-1.5 rounded-lg bg-emerald-50 dark:bg-gray-900 border border-emerald-700/40 dark:border-emerald-500/30 text-emerald-800 dark:text-emerald-200 hover:bg-emerald-100 dark:hover:bg-emerald-500/10 hover:border-emerald-700/70 dark:hover:border-emerald-500/60 transition-colors"
+                  >
+                    Abrir aba BRF (Ruptura, Operacao e Fila)
+                  </button>
+                </div>
+              )}
               {!apiConfig?.api_key && <p className="text-xs text-yellow-400 mt-1">API não configurada ⚠️</p>}
               {syncMessage && (
                 <p className={`text-xs mt-1 ${syncMessage.startsWith('✅') ? 'text-emerald-400' : 'text-blue-400'} flex items-center gap-1`}>
@@ -3016,10 +3358,39 @@ export function ClientDashboard() {
                 onChange={(e) => { const sid = e.target.value; if (sid === 'all') goToNetwork(); else { const s = stores.find((s) => s.id === sid); if (s) goToStore(s); } }}
                 value={selectedStore?.id || 'all'}
               >
-                <option value="all" style={{ backgroundColor: '#111827', color: 'white' }}>Rede Global</option>
-                {stores.map((store) => <option key={store.id} value={store.id} style={{ backgroundColor: '#111827', color: 'white' }}>{store.name}</option>)}
+                <option value="all" style={selectOptionStyle}>Rede Global</option>
+                {stores.map((store) => <option key={store.id} value={store.id} style={selectOptionStyle}>{store.name}</option>)}
               </select>
               <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
+              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
+            </div>
+
+            <div className="relative w-full sm:w-auto">
+              <select
+                className="bg-gray-900 border border-gray-800 text-white pl-10 pr-8 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-sm w-full sm:min-w-[260px] disabled:opacity-60"
+                onChange={(e) => {
+                  const cameraId = e.target.value;
+                  if (cameraId === 'all') {
+                    setSelectedCamera(null);
+                    setView('network');
+                    return;
+                  }
+                  const option = deviceOptions.find((item) => item.key === cameraId);
+                  if (option) goToCamera(option.camera, option.store);
+                }}
+                value={selectedCamera?.id || 'all'}
+                disabled={deviceOptions.length === 0}
+              >
+                <option value="all" style={selectOptionStyle}>
+                  {selectedStore ? 'Todos os dispositivos da loja' : 'Todos os dispositivos da rede'}
+                </option>
+                {deviceOptions.map((option) => (
+                  <option key={option.key} value={option.key} style={selectOptionStyle}>
+                    {selectedStore ? option.camera.name : `${option.store.name} - ${option.camera.name}`}
+                  </option>
+                ))}
+              </select>
+              <Camera className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
               <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
             </div>
 
@@ -3198,7 +3569,7 @@ export function ClientDashboard() {
 
       {/* Widgets */}
       <div className={`bg-gray-900 border ${editLayoutMode ? 'border-emerald-600/50' : 'border-gray-800'} rounded-xl overflow-hidden min-h-[400px] transition-colors`}>
-        {view === 'network' && (
+        {(
           <div ref={widgetsGridRef} onDragOver={handleGridDragOver} onDrop={(e) => { if (editLayoutMode) e.preventDefault(); }} style={{ gridAutoFlow: 'row dense', gridAutoRows: `${GRID_AUTO_ROW_PX}px` }} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-12 items-stretch content-start gap-4 p-1">
             {isLoadingConfig ? (
               <div className="col-span-full flex justify-center py-20">
@@ -3221,7 +3592,9 @@ export function ClientDashboard() {
                 if (spanLg === 4)  lgSpan = 'lg:col-span-4';
                 if (spanLg === 3)  lgSpan = 'lg:col-span-3';
                 const mdSpan = spanLg >= 8 ? 'md:col-span-2' : 'md:col-span-1';
-                const widgetProps: any = { view: 'network' };
+                const widgetProps: any = {
+                  view: selectedCamera ? 'camera' : selectedStore ? 'store' : 'network'
+                };
                 if (widget.id === 'flow_trend')              { widgetProps.dailyData = flowTrendSeries.values; widgetProps.dailyLabels = flowTrendSeries.labels; widgetProps.genderData = genderStats; }
                 if (widget.id === 'hourly_flow')             { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'chart_facial_expressions') {
@@ -3265,7 +3638,7 @@ export function ClientDashboard() {
                 if (widget.id === 'kpi_store_quarter')       { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
                 if (widget.id === 'chart_sales_quarter')     { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
                 if (widget.id === 'kpi_store_period')        { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }
-                if (widget.id === 'campaigns') { widgetProps.clientId = id; widgetProps.lojaFilter = selectedStore?.name ?? null; }
+                if (widget.id === 'campaigns') { widgetProps.clientId = id; widgetProps.lojaFilter = selectedStore?.name ?? null; widgetProps.startDate = selectedStartDate; widgetProps.endDate = selectedEndDate; }
                 if (widget.id === 'chart_sales_daily')       { widgetProps.labels = periodSeries.labels; widgetProps.visitors = periodSeries.values; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_bar')  { widgetProps.periodData = periodWeeks; widgetProps.loading = isLoadingData; }
                 if (widget.id === 'chart_sales_period_line') { widgetProps.labels = compareSeries.labels; widgetProps.current = compareSeries.current; widgetProps.previous = compareSeries.previous; widgetProps.loading = isLoadingCompare; }
@@ -3335,6 +3708,29 @@ export function ClientDashboard() {
           </div>
         )}
       </div>
+
+      <DashboardChat context={{
+        dashboardName: `${clientData?.name ?? 'Dashboard'} — Analytics`,
+        data: {
+          cliente: clientData?.name,
+          loja: selectedStore?.name ?? 'Rede completa',
+          periodo: {
+            inicio: selectedStartDate.toLocaleDateString('pt-BR'),
+            fim: selectedEndDate.toLocaleDateString('pt-BR'),
+          },
+          visitantes: {
+            total: totalVisitors,
+            mediaPorDia: avgVisitorsPerDay,
+            tempoMedioVisitaSegundos: avgVisitSeconds,
+            tempoMedioAtencaoSegundos: avgAttentionSeconds,
+            porHora: hourlyStats,
+            porDia: dailyStats,
+          },
+          genero: genderStats,
+          idade: ageStats,
+          atributos: attributeStats,
+        },
+      }} />
     </div>
   );
 }

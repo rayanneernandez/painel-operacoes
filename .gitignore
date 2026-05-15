@@ -12,6 +12,9 @@ node_modules
 dist
 dist-ssr
 *.local
+.env
+.env.*
+!.env.example
 
 # Editor directories and files
 .vscode/*
@@ -27,7 +30,14 @@ dist-ssr
 .env*.local
 
 # Claude Code worktrees (não subir para o repositório)
+.claude/settings.local.json
 .claude/worktrees/
 __pycache__/
 *.pyc
 downloads_displayforce/
+exports/
+hgit push
+.claude/
+supabase/.temp/
+
+.vercel
