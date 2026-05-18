@@ -156,6 +156,13 @@ export function ClientDashboardLED() {
 
   useEffect(() => { void loadData(); }, [loadData]);
 
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void loadData();
+    }, 120000);
+    return () => window.clearInterval(timer);
+  }, [loadData]);
+
   if (!id) return null;
 
   const clientLogoForTheme = appTheme === 'light'
