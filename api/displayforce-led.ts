@@ -9,7 +9,7 @@ const VISITORS_ENDPOINT = "/public/v1/stats/visitor/list";
 const DEVICES_ENDPOINT = "/public/v1/device/list";
 
 const POINTS = [
-  { id: "caixa", name: "Caixa", match: ["caixa", "cashier", "checkout"] },
+  { id: "caixa", name: "Caixa", match: ["entrada loja", "loja entrada", "store entrance", "shop entrance"] },
   { id: "dashboard_cam", name: "Dashboard", match: ["dashboard"] },
   { id: "entrada_tunel", name: "Entrada Tunel", match: ["entrada tunel", "tunel entrada", "tunnel entrance"] },
 ];
