@@ -12,6 +12,12 @@
     },
     "api/sync-analytics.ts": {
       "maxDuration": 60
+    },
+    "api/displayforce-led.ts": {
+      "maxDuration": 60
+    },
+    "api/lia-chat.ts": {
+      "maxDuration": 60
     }
   },
   "rewrites": [
