@@ -71,12 +71,15 @@ function localApiPlugin() {
         try { parsedBody = rawBody ? JSON.parse(rawBody) : {} } catch { /* noop */ }
 
         // Monta req/res no formato que o handler espera
+        const parsedUrl = new URL(req.url ?? '/api', 'http://localhost')
+        const query = Object.fromEntries(parsedUrl.searchParams.entries())
+
         const mockReq: any = {
           method: req.method ?? 'POST',
           headers: req.headers,
           body: parsedBody,
           url: req.url,
-          query: {},
+          query,
         }
 
         let statusCode = 200
@@ -93,6 +96,10 @@ function localApiPlugin() {
               ...extraHeaders,
             })
             res.end(payload)
+          },
+          end(data?: unknown) {
+            res.writeHead(statusCode, extraHeaders)
+            res.end(data as any)
           },
         }
 

@@ -1,0 +1,17 @@
+{
+  "api_url": "https://visitor-api-48fe.onrender.com",
+  "source": "THE_LED",
+  "camera_index": 0,
+  "camera_width": 640,
+  "camera_height": 360,
+  "max_frame_width": 640,
+  "roi": null,
+  "confidence": 0.45,
+  "process_every_n_frames": 3,
+  "max_match_distance": 95,
+  "max_missed_frames": 12,
+  "post_interval_seconds": 5,
+  "min_session_seconds": 1.5,
+  "show_window": true,
+  "dry_run": false
+}

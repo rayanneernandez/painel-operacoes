@@ -1,11 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import Anthropic from '@anthropic-ai/sdk';
 import { X, Send, Loader2, User, ChevronDown } from 'lucide-react';
-
-const anthropic = new Anthropic({
-  apiKey: import.meta.env.VITE_ANTHROPIC_API_KEY ?? '',
-  dangerouslyAllowBrowser: true,
-});
 
 export type ChatContext = {
   dashboardName: string;
@@ -21,147 +15,85 @@ type Message = {
   loading?: boolean;
 };
 
-const TOOL_DEF: Anthropic.Tool = {
-  name: 'buscar_dados',
-  description: 'Busca dados do dashboard para um período específico. Use quando o usuário perguntar sobre datas diferentes das exibidas atualmente.',
-  input_schema: {
-    type: 'object' as const,
-    properties: {
-      data_inicio: { type: 'string', description: 'Data de início no formato YYYY-MM-DD' },
-      data_fim:    { type: 'string', description: 'Data de fim no formato YYYY-MM-DD' },
-    },
-    required: ['data_inicio', 'data_fim'],
-  },
-};
-
-function buildSystemPrompt(ctx: ChatContext): string {
-  const today = new Date().toISOString().split('T')[0];
-  return `Você é a Lia, assistente de análise de dados integrada ao dashboard "${ctx.dashboardName}".
-Seja simpática e objetiva. Responda SEMPRE em português, em linguagem natural e amigável para o usuário final.
-NUNCA retorne JSON, listas técnicas ou dados brutos. Sempre interprete os números e escreva frases completas.
-
-Hoje é ${today}.
-
-DADOS ATUALMENTE EXIBIDOS NO DASHBOARD:
-${JSON.stringify(ctx.data, null, 2)}
-
-Quando o usuário perguntar sobre outra data ou período, use a ferramenta buscar_dados para buscar os dados reais antes de responder.
-Ao citar números, use os valores exatos dos dados. Nunca estime ou invente valores.`;
-}
+type HistoryMsg = { role: 'user' | 'assistant'; content: string };
 
 function TypingDots() {
   return (
     <span className="inline-flex gap-1 items-center h-4">
       {[0, 1, 2].map((i) => (
-        <span key={i} className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce"
-          style={{ animationDelay: `${i * 0.15}s` }} />
+        <span
+          key={i}
+          className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce"
+          style={{ animationDelay: `${i * 0.15}s` }}
+        />
       ))}
     </span>
   );
 }
 
-type HistoryMsg = { role: 'user' | 'assistant'; content: string | Anthropic.ContentBlock[] };
-
-export function DashboardChat({ context, queryFn }: { context: ChatContext; queryFn?: QueryFn }) {
-  const [open, setOpen]         = useState(false);
+export function DashboardChat({ context }: { context: ChatContext; queryFn?: QueryFn }) {
+  const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
-  const [input, setInput]       = useState('');
-  const [loading, setLoading]   = useState(false);
-  const bottomRef  = useRef<HTMLDivElement>(null);
-  const inputRef   = useRef<HTMLInputElement>(null);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
   const historyRef = useRef<HistoryMsg[]>([]);
 
   useEffect(() => {
-    if (open) {
-      setTimeout(() => inputRef.current?.focus(), 100);
-      if (messages.length === 0) {
-        setMessages([{
-          id: 'welcome', role: 'assistant',
-          content: `Olá! Sou a **Lia**, assistente do **${context.dashboardName}**. Pode me perguntar sobre os dados atuais ou de qualquer outro período!`,
-        }]);
-      }
+    if (!open) return;
+    setTimeout(() => inputRef.current?.focus(), 100);
+    if (messages.length === 0) {
+      setMessages([{
+        id: 'welcome',
+        role: 'assistant',
+        content: `Olá! Sou a **Lia**, assistente do **${context.dashboardName}**. Pode me perguntar sobre os dados atuais.`,
+      }]);
     }
-  }, [open]);
+  }, [open, messages.length, context.dashboardName]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  function setAssistant(id: string, content: string, loading = false) {
-    setMessages((prev) => prev.map((m) => m.id === id ? { ...m, content, loading } : m));
-  }
-
-  async function streamResponse(assistId: string, msgs: HistoryMsg[]) {
-    const stream = anthropic.messages.stream({
-      model: 'claude-sonnet-4-6',
-      max_tokens: 1024,
-      system: buildSystemPrompt(context),
-      tools: queryFn ? [TOOL_DEF] : undefined,
-      messages: msgs as Parameters<typeof anthropic.messages.stream>[0]['messages'],
-    });
-
-    let full = '';
-    for await (const chunk of stream) {
-      if (chunk.type === 'content_block_delta' && chunk.delta.type === 'text_delta') {
-        full += chunk.delta.text;
-        setAssistant(assistId, full, false);
-      }
-    }
-
-    const final = await stream.finalMessage();
-    return { text: full, message: final };
+  function setAssistant(id: string, content: string, loadingState = false) {
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content, loading: loadingState } : m)));
   }
 
   async function sendMessage() {
     if (!input.trim() || loading) return;
 
     const userText = input.trim();
-    const userId   = Date.now().toString();
+    const userId = Date.now().toString();
     const assistId = (Date.now() + 1).toString();
 
     setMessages((prev) => [
       ...prev,
-      { id: userId,   role: 'user',      content: userText },
+      { id: userId, role: 'user', content: userText },
       { id: assistId, role: 'assistant', content: '', loading: true },
     ]);
     setInput('');
     setLoading(true);
-
     historyRef.current.push({ role: 'user', content: userText });
 
     try {
-      const { text, message } = await streamResponse(assistId, historyRef.current);
+      const response = await fetch('/api/lia-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          context,
+          messages: historyRef.current,
+        }),
+      });
+      const json = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(json?.error || `HTTP ${response.status}`);
 
-      const toolUse = message.content.find((b) => b.type === 'tool_use') as Anthropic.ToolUseBlock | undefined;
-
-      if (toolUse && queryFn) {
-        // Lia quer buscar dados históricos
-        setAssistant(assistId, 'Buscando dados...', true);
-
-        historyRef.current.push({ role: 'assistant', content: message.content });
-
-        const inp = toolUse.input as { data_inicio: string; data_fim: string };
-        let toolResult: string;
-        try {
-          const result = await queryFn(inp.data_inicio, inp.data_fim);
-          toolResult = JSON.stringify(result);
-        } catch {
-          toolResult = JSON.stringify({ erro: 'Não foi possível buscar os dados solicitados.' });
-        }
-
-        historyRef.current.push({
-          role: 'user',
-          content: [{ type: 'tool_result' as const, tool_use_id: toolUse.id, content: toolResult }],
-        } as unknown as HistoryMsg);
-
-        // Segunda chamada — agora com streaming e dados reais
-        const { text: finalText } = await streamResponse(assistId, historyRef.current);
-        historyRef.current.push({ role: 'assistant', content: finalText });
-      } else {
-        historyRef.current.push({ role: 'assistant', content: text });
-      }
-    } catch {
-      setAssistant(assistId, 'Erro ao conectar com a Lia. Tente novamente.', false);
+      const text = String(json?.text || '').trim() || 'Não consegui responder agora.';
+      setAssistant(assistId, text, false);
+      historyRef.current.push({ role: 'assistant', content: text });
+    } catch (error) {
+      console.error('[Lia]', error);
+      setAssistant(assistId, 'Erro ao conectar com a Lia. Verifique a chave da Anthropic no ambiente e tente novamente.', false);
     } finally {
       setLoading(false);
     }
@@ -179,12 +111,15 @@ export function DashboardChat({ context, queryFn }: { context: ChatContext; quer
         onClick={() => setOpen((v) => !v)}
         className="fixed bottom-6 right-6 z-50 rounded-full shadow-lg shadow-violet-900/40 hover:scale-105 transition-transform overflow-hidden border-2 border-violet-500/60"
         style={{ width: 52, height: 52 }}
-        title="Lia — Assistente IA"
+        title="Lia - Assistente IA"
       >
-        {open
-          ? <div className="w-full h-full bg-[#0d1117] flex items-center justify-center"><ChevronDown size={20} className="text-violet-400" /></div>
-          : <img src="/lia.png" alt="Lia" className="w-full h-full object-cover" />
-        }
+        {open ? (
+          <div className="w-full h-full bg-[#0d1117] flex items-center justify-center">
+            <ChevronDown size={20} className="text-violet-400" />
+          </div>
+        ) : (
+          <img src="/lia.png" alt="Lia" className="w-full h-full object-cover" />
+        )}
       </button>
 
       {open && (
@@ -208,20 +143,24 @@ export function DashboardChat({ context, queryFn }: { context: ChatContext; quer
             {messages.map((msg) => (
               <div key={msg.id} className={`flex gap-2 ${msg.role === 'user' ? 'flex-row-reverse' : 'flex-row'}`}>
                 <div className="flex-shrink-0 w-6 h-6 rounded-full overflow-hidden mt-0.5 border border-gray-700/40">
-                  {msg.role === 'user'
-                    ? <div className="w-full h-full bg-indigo-600/20 flex items-center justify-center"><User size={12} className="text-indigo-400" /></div>
-                    : <img src="/lia.png" alt="Lia" className="w-full h-full object-cover" />
-                  }
+                  {msg.role === 'user' ? (
+                    <div className="w-full h-full bg-indigo-600/20 flex items-center justify-center">
+                      <User size={12} className="text-indigo-400" />
+                    </div>
+                  ) : (
+                    <img src="/lia.png" alt="Lia" className="w-full h-full object-cover" />
+                  )}
                 </div>
-                <div className={`max-w-[260px] rounded-xl px-3 py-2 text-xs leading-relaxed
-                  ${msg.role === 'user'
+                <div className={`max-w-[260px] rounded-xl px-3 py-2 text-xs leading-relaxed ${
+                  msg.role === 'user'
                     ? 'bg-indigo-600/20 text-gray-200 rounded-tr-sm'
                     : 'bg-gray-800/60 text-gray-300 rounded-tl-sm'
-                  }`}>
-                  {msg.loading
-                    ? <TypingDots />
-                    : <span dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }} />
-                  }
+                }`}>
+                  {msg.loading ? (
+                    <TypingDots />
+                  ) : (
+                    <span dangerouslySetInnerHTML={{ __html: renderContent(msg.content) }} />
+                  )}
                 </div>
               </div>
             ))}
@@ -243,10 +182,7 @@ export function DashboardChat({ context, queryFn }: { context: ChatContext; quer
                 disabled={!input.trim() || loading}
                 className="flex-shrink-0 w-6 h-6 rounded-lg bg-violet-600 disabled:opacity-30 flex items-center justify-center hover:bg-violet-500 transition-colors"
               >
-                {loading
-                  ? <Loader2 size={12} className="text-white animate-spin" />
-                  : <Send size={12} className="text-white" />
-                }
+                {loading ? <Loader2 size={12} className="text-white animate-spin" /> : <Send size={12} className="text-white" />}
               </button>
             </div>
           </div>

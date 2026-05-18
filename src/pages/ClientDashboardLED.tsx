@@ -5,21 +5,17 @@ import supabase from '../lib/supabase';
 import { StorePlan3D, LED_CONTACT_POINTS, type ContactPoint } from '../components/StorePlan3D';
 import { DashboardChat } from '../components/DashboardChat';
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
-// ── Date helpers ──────────────────────────────────────────────────────────────
-
-function alignStartOfDay(d: Date) { const n = new Date(d); n.setHours(0,0,0,0); return n; }
-function alignEndOfDay(d: Date)   { const n = new Date(d); n.setHours(23,59,59,999); return n; }
+function alignStartOfDay(d: Date) { const n = new Date(d); n.setHours(0, 0, 0, 0); return n; }
+function alignEndOfDay(d: Date) { const n = new Date(d); n.setHours(23, 59, 59, 999); return n; }
 function fmtDateInput(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 function parseDateInput(s: string, end = false) {
-  const [y,m,d] = s.split('-').map(Number);
-  if (!y||!m||!d) return null;
-  const dt = new Date(y, m-1, d);
-  if (isNaN(dt.getTime())) return null;
-  if (end) dt.setHours(23,59,59,999); else dt.setHours(0,0,0,0);
+  const [y, m, d] = s.split('-').map(Number);
+  if (!y || !m || !d) return null;
+  const dt = new Date(y, m - 1, d);
+  if (Number.isNaN(dt.getTime())) return null;
+  if (end) dt.setHours(23, 59, 59, 999); else dt.setHours(0, 0, 0, 0);
   return dt;
 }
 
@@ -33,7 +29,22 @@ function readAppTheme(): 'dark' | 'light' {
   }
 }
 
-// ── KPI Card ──────────────────────────────────────────────────────────────────
+const LED_ACTIVE_POINT_IDS = new Set(['caixa', 'dashboard_cam', 'entrada_tunel']);
+const LED_ACTIVE_CONTACTS = LED_CONTACT_POINTS.filter((point) => LED_ACTIVE_POINT_IDS.has(point.id));
+
+type LedDisplayforcePoint = { id: string; name: string; visitors: number };
+type LedDisplayforceResponse = {
+  total_visitors?: number;
+  points?: LedDisplayforcePoint[];
+  gender?: {
+    male?: number;
+    female?: number;
+    unknown?: number;
+    male_pct?: number;
+    female_pct?: number;
+  };
+  error?: string;
+};
 
 function KpiCard({ title, value, sub, color }: { title: string; value: string; sub?: string; color: string }) {
   return (
@@ -48,31 +59,28 @@ function KpiCard({ title, value, sub, color }: { title: string; value: string; s
   );
 }
 
-// ── Main page ─────────────────────────────────────────────────────────────────
-
 export function ClientDashboardLED() {
   const { id } = useParams();
   const navigate = useNavigate();
 
-  const [clientName, setClientName]         = useState('The LED');
-  const [clientLogoUrl, setClientLogoUrl]   = useState('');
+  const [clientName, setClientName] = useState('The LED');
+  const [clientLogoUrl, setClientLogoUrl] = useState('');
   const [clientLogoLightUrl, setClientLogoLightUrl] = useState('');
   const [clientLogoDarkUrl, setClientLogoDarkUrl] = useState('');
   const [appTheme, setAppTheme] = useState<'dark' | 'light'>(readAppTheme);
-  const [startDate, setStartDate]           = useState<Date>(() => alignStartOfDay(new Date()));
-  const [endDate, setEndDate]               = useState<Date>(() => alignEndOfDay(new Date()));
-  const [startHour, setStartHour]           = useState(0);
-  const [endHour, setEndHour]               = useState(23);
-  const [isLoading, setIsLoading]           = useState(false);
-  const [contacts, setContacts]             = useState<ContactPoint[]>(LED_CONTACT_POINTS);
+  const [startDate, setStartDate] = useState<Date>(() => alignStartOfDay(new Date()));
+  const [endDate, setEndDate] = useState<Date>(() => alignEndOfDay(new Date()));
+  const [startHour, setStartHour] = useState(0);
+  const [endHour, setEndHour] = useState(23);
+  const [isLoading, setIsLoading] = useState(false);
+  const [contacts, setContacts] = useState<ContactPoint[]>(LED_ACTIVE_CONTACTS);
+  const [totalFlow, setTotalFlow] = useState(0);
+  const [peakPoint, setPeakPoint] = useState('—');
+  const [peakCount, setPeakCount] = useState(0);
+  const [avgHeat, setAvgHeat] = useState(0);
+  const [malePct, setMalePct] = useState(0);
+  const [femalePct, setFemalePct] = useState(0);
 
-  // KPIs
-  const [totalFlow, setTotalFlow]           = useState(0);
-  const [peakPoint, setPeakPoint]           = useState('—');
-  const [peakCount, setPeakCount]           = useState(0);
-  const [avgHeat, setAvgHeat]               = useState(0);
-
-  // Load client info
   useEffect(() => {
     const updateTheme = () => setAppTheme(readAppTheme());
     window.addEventListener('app-theme-change', updateTheme);
@@ -88,62 +96,68 @@ export function ClientDashboardLED() {
 
   useEffect(() => {
     if (!id) return;
-    supabase.from('clients').select('name, logo_url, logo_url_light, logo_url_dark').eq('id', id).maybeSingle().then(({ data }) => {
-      if (data?.name) setClientName(String(data.name));
-      if ((data as any)?.logo_url) setClientLogoUrl(String((data as any).logo_url));
-      if ((data as any)?.logo_url_light) setClientLogoLightUrl(String((data as any).logo_url_light));
-      if ((data as any)?.logo_url_dark) setClientLogoDarkUrl(String((data as any).logo_url_dark));
-    });
+    supabase
+      .from('clients')
+      .select('name, logo_url, logo_url_light, logo_url_dark')
+      .eq('id', id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (data?.name) setClientName(String(data.name));
+        if ((data as any)?.logo_url) setClientLogoUrl(String((data as any).logo_url));
+        if ((data as any)?.logo_url_light) setClientLogoLightUrl(String((data as any).logo_url_light));
+        if ((data as any)?.logo_url_dark) setClientLogoDarkUrl(String((data as any).logo_url_dark));
+      });
   }, [id]);
 
   const loadData = useCallback(async () => {
-    if (!id) return;
     setIsLoading(true);
     const sd = new Date(startDate); sd.setHours(startHour, 0, 0, 0);
-    const ed = new Date(endDate);   ed.setHours(endHour, 59, 59, 999);
+    const ed = new Date(endDate); ed.setHours(endHour, 59, 59, 999);
 
     try {
-      // Try to load visitor flow from brf_queue_detections (same detection pattern)
-      // or any analytics table available — gracefully fall back to demo values
-      const { data } = await supabase
-        .from('brf_operation_detections')
-        .select('attendant_count, detected_at')
-        .eq('client_id', id)
-        .gte('detected_at', sd.toISOString())
-        .lte('detected_at', ed.toISOString());
+      const params = new URLSearchParams({ start: sd.toISOString(), end: ed.toISOString() });
+      const response = await fetch(`/api/displayforce-led?${params.toString()}`);
+      const json = await response.json().catch(() => ({})) as LedDisplayforceResponse;
+      if (!response.ok) throw new Error(json.error || `HTTP ${response.status}`);
 
-      if (data && data.length > 0) {
-        // If real data exists, distribute proportionally to contact heatValues
-        const total = data.reduce((s: number, r: any) => s + (r.attendant_count || 0), 0);
-        const updated = LED_CONTACT_POINTS.map((cp) => ({
-          ...cp,
-          flowCount: Math.round(total * (cp.heatValue ?? 0.5)),
-        }));
-        setContacts(updated);
-        const peak = [...updated].sort((a, b) => (b.flowCount ?? 0) - (a.flowCount ?? 0))[0];
-        setTotalFlow(updated.reduce((s, c) => s + (c.flowCount ?? 0), 0));
-        setPeakPoint(peak?.name ?? '—');
-        setPeakCount(peak?.flowCount ?? 0);
-        setAvgHeat(Math.round(updated.reduce((s, c) => s + (c.heatValue ?? 0), 0) / updated.length * 100));
-      } else {
-        // Demo / no data yet: use LED_CONTACT_POINTS defaults
-        setContacts(LED_CONTACT_POINTS);
-        const peak = [...LED_CONTACT_POINTS].sort((a, b) => (b.flowCount ?? 0) - (a.flowCount ?? 0))[0];
-        setTotalFlow(LED_CONTACT_POINTS.reduce((s, c) => s + (c.flowCount ?? 0), 0));
-        setPeakPoint(peak?.name ?? '—');
-        setPeakCount(peak?.flowCount ?? 0);
-        setAvgHeat(Math.round(LED_CONTACT_POINTS.reduce((s, c) => s + (c.heatValue ?? 0), 0) / LED_CONTACT_POINTS.length * 100));
-      }
-    } catch {
-      setContacts(LED_CONTACT_POINTS);
+      const total = Number(json.total_visitors || 0);
+      const pointsById = new Map((json.points || []).map((point) => [point.id, point]));
+      const updated = LED_ACTIVE_CONTACTS.map((contact) => {
+        const visitors = Number(pointsById.get(contact.id)?.visitors || 0);
+        return {
+          ...contact,
+          flowCount: visitors,
+          heatValue: total > 0 ? Math.min(1, visitors / total) : 0,
+        };
+      });
+      const fallbackTotal = updated.reduce((sum, item) => sum + (item.flowCount || 0), 0);
+      const peak = [...updated].sort((a, b) => (b.flowCount ?? 0) - (a.flowCount ?? 0))[0];
+
+      setContacts(updated);
+      setTotalFlow(total || fallbackTotal);
+      setPeakPoint(peak?.name ?? '—');
+      setPeakCount(peak?.flowCount ?? 0);
+      setAvgHeat(updated.length ? Math.round(updated.reduce((sum, item) => sum + ((item.heatValue ?? 0) * 100), 0) / updated.length) : 0);
+      setMalePct(Number(json.gender?.male_pct || 0));
+      setFemalePct(Number(json.gender?.female_pct || 0));
+    } catch (error) {
+      console.error('[The LED] erro ao buscar DisplayForce:', error);
+      setContacts(LED_ACTIVE_CONTACTS.map((point) => ({ ...point, flowCount: 0, heatValue: 0 })));
+      setTotalFlow(0);
+      setPeakPoint('—');
+      setPeakCount(0);
+      setAvgHeat(0);
+      setMalePct(0);
+      setFemalePct(0);
     } finally {
       setIsLoading(false);
     }
-  }, [id, startDate, endDate, startHour, endHour]);
+  }, [startDate, endDate, startHour, endHour]);
 
   useEffect(() => { void loadData(); }, [loadData]);
 
   if (!id) return null;
+
   const clientLogoForTheme = appTheme === 'light'
     ? (clientLogoDarkUrl || clientLogoUrl || clientLogoLightUrl)
     : (clientLogoLightUrl || clientLogoUrl || clientLogoDarkUrl);
@@ -153,23 +167,20 @@ export function ClientDashboardLED() {
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1600px] mx-auto">
-
-      {/* ── Header ───────────────────────────────────────────────── */}
       <div className="flex flex-col gap-5 mb-6">
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
           <div className="flex items-center gap-4 min-w-0">
             <div className="h-12 w-12 sm:h-14 sm:w-14 rounded-2xl bg-white dark:bg-[#0d1117] border border-slate-200 dark:border-gray-800/60 flex items-center justify-center overflow-hidden flex-shrink-0 shadow-lg">
               {clientLogoForTheme
                 ? <img src={clientLogoForTheme} alt="Logo" className="h-full w-auto object-contain p-1.5" />
-                : <Image size={20} className="text-slate-400 dark:text-gray-600" />
-              }
+                : <Image size={20} className="text-slate-400 dark:text-gray-600" />}
             </div>
             <div className="min-w-0">
               <div className="flex items-center gap-2.5">
                 <h1 className="text-slate-950 dark:text-white text-xl sm:text-2xl font-bold leading-tight">{clientName}</h1>
                 <span className="px-2 py-0.5 rounded-md bg-violet-500/15 border border-violet-500/20 text-violet-400 text-[10px] font-semibold uppercase tracking-widest">LED</span>
               </div>
-              <p className="text-slate-600 dark:text-gray-400 text-sm mt-0.5">Mapa de Fluxo · Calor · Pontos de Contato</p>
+              <p className="text-slate-600 dark:text-gray-400 text-sm mt-0.5">Mapa de Fluxo · Gênero · Pontos de Contato</p>
             </div>
           </div>
 
@@ -193,9 +204,7 @@ export function ClientDashboardLED() {
           </div>
         </div>
 
-        {/* ── Filters ──────────────────────────────────────────────── */}
         <div className="flex flex-wrap items-center gap-2.5 p-3 bg-white dark:bg-[#0d1117] border border-slate-200 dark:border-gray-800/40 rounded-2xl">
-          {/* Start date + hour */}
           <div className="flex items-center gap-1.5">
             <div className="relative">
               <input
@@ -215,7 +224,7 @@ export function ClientDashboardLED() {
                 onChange={(e) => setStartHour(Number(e.target.value))}
               >
                 {Array.from({ length: 24 }, (_, i) => (
-                  <option key={i} value={i} style={selectOptionStyle}>{String(i).padStart(2,'0')}:00</option>
+                  <option key={i} value={i} style={selectOptionStyle}>{String(i).padStart(2, '0')}:00</option>
                 ))}
               </select>
               <div className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-gray-500">
@@ -226,7 +235,6 @@ export function ClientDashboardLED() {
 
           <span className="text-slate-500 dark:text-gray-600 text-xs">até</span>
 
-          {/* End date + hour */}
           <div className="flex items-center gap-1.5">
             <div className="relative">
               <input
@@ -246,7 +254,7 @@ export function ClientDashboardLED() {
                 onChange={(e) => setEndHour(Number(e.target.value))}
               >
                 {Array.from({ length: 24 }, (_, i) => (
-                  <option key={i} value={i} style={selectOptionStyle}>{String(i).padStart(2,'0')}:00</option>
+                  <option key={i} value={i} style={selectOptionStyle}>{String(i).padStart(2, '0')}:00</option>
                 ))}
               </select>
               <div className="pointer-events-none absolute inset-y-0 left-2.5 flex items-center text-gray-500">
@@ -267,38 +275,17 @@ export function ClientDashboardLED() {
         </div>
       </div>
 
-      {/* ── KPI row ───────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        <KpiCard
-          title="Fluxo Total"
-          value={totalFlow.toLocaleString('pt-BR')}
-          sub="Visitantes estimados"
-          color="#a78bfa"
-        />
-        <KpiCard
-          title="Ponto de Pico"
-          value={peakPoint}
-          sub={`${peakCount.toLocaleString('pt-BR')} visitantes`}
-          color="#ef4444"
-        />
-        <KpiCard
-          title="Calor Médio"
-          value={`${avgHeat}%`}
-          sub="Média dos 11 pontos"
-          color="#f59e0b"
-        />
-        <KpiCard
-          title="Pontos Ativos"
-          value={String(contacts.length)}
-          sub="Câmeras / telas"
-          color="#10b981"
-        />
+      <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
+        <KpiCard title="Fluxo Total" value={totalFlow.toLocaleString('pt-BR')} sub="Visitantes Display Force" color="#a78bfa" />
+        <KpiCard title="Ponto de Pico" value={peakPoint} sub={`${peakCount.toLocaleString('pt-BR')} visitantes`} color="#ef4444" />
+        <KpiCard title="Calor Médio" value={`${avgHeat}%`} sub="Média dos 3 pontos" color="#f59e0b" />
+        <KpiCard title="Pontos Ativos" value={String(contacts.length)} sub="Caixa · Dashboard · Túnel" color="#10b981" />
+        <KpiCard title="Masculino" value={`${malePct.toFixed(1)}%`} sub="Gênero visitantes" color="#38bdf8" />
+        <KpiCard title="Feminino" value={`${femalePct.toFixed(1)}%`} sub="Gênero visitantes" color="#ec4899" />
       </div>
 
-      {/* ── 3D Store Plan ─────────────────────────────────────────── */}
       <StorePlan3D contacts={contacts} />
 
-      {/* ── Lia chat ──────────────────────────────────────────────── */}
       <DashboardChat
         context={{
           dashboardName: `${clientName} — Mapa de Fluxo`,
@@ -314,6 +301,8 @@ export function ClientDashboardLED() {
               pontoDePico: peakPoint,
               visitantesNoPico: peakCount,
               calorMedio: `${avgHeat}%`,
+              masculino: `${malePct.toFixed(1)}%`,
+              feminino: `${femalePct.toFixed(1)}%`,
             },
             pontosDeContato: contacts.map((c) => ({
               nome: c.name,

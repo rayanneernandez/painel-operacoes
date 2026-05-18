@@ -1,0 +1,17 @@
+{
+  "api_url": "https://visitor-api-48fe.onrender.com",
+  "source": "",
+  "camera_index": 0,
+  "camera_width": 640,
+  "camera_height": 360,
+  "max_frame_width": 640,
+  "roi": null,
+  "confidence": 0.45,
+  "process_every_n_frames": 3,
+  "stable_window": 7,
+  "min_post_interval_seconds": 3,
+  "heartbeat_seconds": 30,
+  "cap_count": 2,
+  "show_window": true,
+  "dry_run": false
+}

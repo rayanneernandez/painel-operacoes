@@ -39,5 +39,11 @@ exports/
 hgit push
 .claude/
 supabase/.temp/
+fila/config.json
+operadores/config.json
+fila/models/*.caffemodel
+fila/models/*.prototxt
+operadores/models/*.caffemodel
+operadores/models/*.prototxt
 
 .vercel
