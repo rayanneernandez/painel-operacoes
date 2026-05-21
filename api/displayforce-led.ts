@@ -32,13 +32,13 @@ function extractArray(json: any): any[] {
   return [];
 }
 
-function extractTotal(json: any, fallback: number): number {
+function extractTotal(json: any): number | null {
   for (const key of ["total", "count", "total_count", "recordsTotal"]) {
     const n = Number(json?.[key]);
     if (Number.isFinite(n) && n >= 0) return n;
   }
-  const nested = Number(json?.data?.total ?? json?.data?.count);
-  return Number.isFinite(nested) && nested >= 0 ? nested : fallback;
+  const nested = Number(json?.pagination?.total ?? json?.data?.total ?? json?.data?.count);
+  return Number.isFinite(nested) && nested >= 0 ? nested : null;
 }
 
 async function postAllPages(base: string, path: string, token: string, bodyBase: any, pageSize = 1000, maxPages = 20): Promise<any[]> {
@@ -61,8 +61,8 @@ async function postAllPages(base: string, path: string, token: string, bodyBase:
     }
     const pageItems = extractArray(json);
     all.push(...pageItems);
-    const total = extractTotal(json, pageItems.length);
-    if (pageItems.length < pageSize || all.length >= total || pageItems.length === 0) break;
+    const total = extractTotal(json);
+    if (pageItems.length === 0 || pageItems.length < pageSize || (total !== null && all.length >= total)) break;
     offset += pageSize;
   }
   return all;
