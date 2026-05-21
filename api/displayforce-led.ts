@@ -198,11 +198,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       visitors: pointVisitors.get(point.id)?.size || 0,
     }));
     const bestPoint = [...points].sort((a, b) => b.visitors - a.visitors)[0] || points[0];
+    const tunnelVisitors = pointVisitors.get("entrada_tunel") || new Set<string>();
+    const cashierVisitors = pointVisitors.get("caixa") || new Set<string>();
+    const matchedTunnelToCashier = [...tunnelVisitors].filter((visitorId) => cashierVisitors.has(visitorId)).length;
 
     return res.status(200).json({
       total_visitors: total,
       points,
       peak_point: bestPoint,
+      adherence: {
+        base: tunnelVisitors.size,
+        matched: matchedTunnelToCashier,
+        pct: pct(matchedTunnelToCashier, tunnelVisitors.size),
+      },
       gender: {
         male: genderCounts.male,
         female: genderCounts.female,
