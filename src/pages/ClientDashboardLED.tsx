@@ -77,7 +77,7 @@ export function ClientDashboardLED() {
   const [totalFlow, setTotalFlow] = useState(0);
   const [peakPoint, setPeakPoint] = useState('—');
   const [peakCount, setPeakCount] = useState(0);
-  const [avgHeat, setAvgHeat] = useState(0);
+  const [adherencePct, setAdherencePct] = useState(0);
   const [malePct, setMalePct] = useState(0);
   const [femalePct, setFemalePct] = useState(0);
 
@@ -132,12 +132,18 @@ export function ClientDashboardLED() {
       });
       const fallbackTotal = updated.reduce((sum, item) => sum + (item.flowCount || 0), 0);
       const peak = [...updated].sort((a, b) => (b.flowCount ?? 0) - (a.flowCount ?? 0))[0];
+      const denominator = total || fallbackTotal;
+      const caixaVisitors = Number(pointsById.get('caixa')?.visitors || 0);
+      const entradaTunelVisitors = Number(pointsById.get('entrada_tunel')?.visitors || 0);
+      const adherence = denominator > 0
+        ? Math.round((((caixaVisitors + entradaTunelVisitors) / 2) / denominator) * 100)
+        : 0;
 
       setContacts(updated);
-      setTotalFlow(total || fallbackTotal);
+      setTotalFlow(denominator);
       setPeakPoint(peak?.name ?? '—');
       setPeakCount(peak?.flowCount ?? 0);
-      setAvgHeat(updated.length ? Math.round(updated.reduce((sum, item) => sum + ((item.heatValue ?? 0) * 100), 0) / updated.length) : 0);
+      setAdherencePct(adherence);
       setMalePct(Number(json.gender?.male_pct || 0));
       setFemalePct(Number(json.gender?.female_pct || 0));
     } catch (error) {
@@ -146,7 +152,7 @@ export function ClientDashboardLED() {
       setTotalFlow(0);
       setPeakPoint('—');
       setPeakCount(0);
-      setAvgHeat(0);
+      setAdherencePct(0);
       setMalePct(0);
       setFemalePct(0);
     } finally {
@@ -285,7 +291,7 @@ export function ClientDashboardLED() {
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
         <KpiCard title="Fluxo Total" value={totalFlow.toLocaleString('pt-BR')} sub="Visitantes Display Force" color="#a78bfa" />
         <KpiCard title="Ponto de Pico" value={peakPoint} sub={`${peakCount.toLocaleString('pt-BR')} visitantes`} color="#ef4444" />
-        <KpiCard title="Calor Médio" value={`${avgHeat}%`} sub="Média dos 3 pontos" color="#f59e0b" />
+        <KpiCard title="Aderência" value={`${adherencePct}%`} sub="Entrada Túnel + Caixa / 2" color="#f59e0b" />
         <KpiCard title="Pontos Ativos" value={String(contacts.length)} sub="Caixa · Dashboard · Túnel" color="#10b981" />
         <KpiCard title="Masculino" value={`${malePct.toFixed(1)}%`} sub="Gênero visitantes" color="#38bdf8" />
         <KpiCard title="Feminino" value={`${femalePct.toFixed(1)}%`} sub="Gênero visitantes" color="#ec4899" />
@@ -307,7 +313,7 @@ export function ClientDashboardLED() {
               total: totalFlow,
               pontoDePico: peakPoint,
               visitantesNoPico: peakCount,
-              calorMedio: `${avgHeat}%`,
+              aderencia: `${adherencePct}%`,
               masculino: `${malePct.toFixed(1)}%`,
               feminino: `${femalePct.toFixed(1)}%`,
             },
