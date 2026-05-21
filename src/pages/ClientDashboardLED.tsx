@@ -132,15 +132,14 @@ export function ClientDashboardLED() {
       });
       const fallbackTotal = updated.reduce((sum, item) => sum + (item.flowCount || 0), 0);
       const peak = [...updated].sort((a, b) => (b.flowCount ?? 0) - (a.flowCount ?? 0))[0];
-      const denominator = total || fallbackTotal;
       const caixaVisitors = Number(pointsById.get('caixa')?.visitors || 0);
       const entradaTunelVisitors = Number(pointsById.get('entrada_tunel')?.visitors || 0);
-      const adherence = denominator > 0
-        ? Math.round((((caixaVisitors + entradaTunelVisitors) / 2) / denominator) * 100)
+      const adherence = caixaVisitors > 0
+        ? Math.round(((entradaTunelVisitors + caixaVisitors) / caixaVisitors) * 100)
         : 0;
 
       setContacts(updated);
-      setTotalFlow(denominator);
+      setTotalFlow(total || fallbackTotal);
       setPeakPoint(peak?.name ?? '—');
       setPeakCount(peak?.flowCount ?? 0);
       setAdherencePct(adherence);
@@ -291,7 +290,7 @@ export function ClientDashboardLED() {
       <div className="grid grid-cols-2 lg:grid-cols-6 gap-3 mb-5">
         <KpiCard title="Fluxo Total" value={totalFlow.toLocaleString('pt-BR')} sub="Visitantes Display Force" color="#a78bfa" />
         <KpiCard title="Ponto de Pico" value={peakPoint} sub={`${peakCount.toLocaleString('pt-BR')} visitantes`} color="#ef4444" />
-        <KpiCard title="Aderência" value={`${adherencePct}%`} sub="Entrada Túnel + Caixa / 2" color="#f59e0b" />
+        <KpiCard title="Aderência" value={`${adherencePct}%`} sub="Entrada Túnel + Caixa / Caixa" color="#f59e0b" />
         <KpiCard title="Pontos Ativos" value={String(contacts.length)} sub="Caixa · Dashboard · Túnel" color="#10b981" />
         <KpiCard title="Masculino" value={`${malePct.toFixed(1)}%`} sub="Gênero visitantes" color="#38bdf8" />
         <KpiCard title="Feminino" value={`${femalePct.toFixed(1)}%`} sub="Gênero visitantes" color="#ec4899" />
