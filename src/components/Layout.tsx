@@ -8,6 +8,7 @@ import {
   Users,
   Shield,
   Settings,
+  KeyRound,
   LogOut,
   FileText,
   History,
@@ -15,6 +16,8 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Wifi,
+  Moon,
+  Sun,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import globaliaLogo from '../assets/globalia.png';
@@ -44,6 +47,18 @@ export function Layout() {
   const [appTheme, setAppTheme] = useState<'dark' | 'light'>(() => {
     try { return localStorage.getItem('app-theme') === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
   });
+  const toggleTheme = () => {
+    const theme = appTheme === 'dark' ? 'light' : 'dark';
+    try {
+      localStorage.setItem('app-theme', theme);
+      localStorage.setItem('theme', theme);
+    } catch {
+      // noop
+    }
+    applyTheme(theme);
+    window.dispatchEvent(new CustomEvent('app-theme-change', { detail: { theme } }));
+    window.dispatchEvent(new CustomEvent('dashboard-theme-change', { detail: { theme } }));
+  };
   const applyTheme = (value: string | null) => {
     const theme = value === 'light' ? 'light' : 'dark';
     document.documentElement.dataset.appTheme = theme;
@@ -239,7 +254,7 @@ export function Layout() {
       icon: MessageSquare,
       label: 'Alertas WhatsApp',
       path: '/alertas-whatsapp',
-      show: user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)
+      show: user?.role === 'admin' || (user?.permissions?.manage_whatsapp_alerts ?? false)
     },
     { 
       icon: Users, 
@@ -265,6 +280,12 @@ export function Layout() {
       path: '/relatorios',
       // Garante que só aparece se a permissão for explicitamente true
       show: user?.role === 'admin' || (user?.permissions?.view_reports ?? false)
+    },
+    { 
+      icon: KeyRound,
+      label: 'Minha Conta',
+      path: '/minha-conta',
+      show: !!user
     },
     { 
       icon: Settings, 
@@ -310,7 +331,7 @@ export function Layout() {
             }}
             aria-label="Ocultar menu"
             title="Ocultar menu"
-            className="h-9 w-9 rounded-lg border border-gray-200 dark:border-gray-800 text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-900 hover:text-gray-950 dark:hover:text-white transition-colors flex items-center justify-center"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-lg text-gray-500 transition-colors hover:bg-white/5 hover:text-white dark:text-gray-400 dark:hover:bg-white/5 dark:hover:text-white"
           >
             <PanelLeftClose size={18} />
           </button>
@@ -353,7 +374,20 @@ export function Layout() {
                 <p className="text-xs text-gray-500 truncate">{user?.email || ''}</p>
               </div>
             </div>
-
+            <button
+              type="button"
+              onClick={toggleTheme}
+              aria-label={appTheme === 'light' ? 'Ativar modo escuro' : 'Ativar modo claro'}
+              title={appTheme === 'light' ? 'Ativar modo escuro' : 'Ativar modo claro'}
+              className={cn(
+                "flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border transition-colors",
+                appTheme === 'light'
+                  ? "border-yellow-400/50 bg-yellow-400/10 text-yellow-600 hover:bg-yellow-400/20 dark:text-yellow-300"
+                  : "border-gray-200 bg-gray-100 text-gray-600 hover:bg-gray-200 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-300 dark:hover:bg-gray-800"
+              )}
+            >
+              {appTheme === 'light' ? <Moon size={16} /> : <Sun size={16} />}
+            </button>
           </div>
           <button 
             onClick={() => {
@@ -379,7 +413,7 @@ export function Layout() {
             }}
             aria-label="Abrir menu"
             title="Abrir menu"
-            className="fixed left-4 top-4 z-30 h-10 w-10 rounded-xl border border-gray-200 dark:border-gray-800 bg-white/95 dark:bg-gray-950/95 text-gray-700 dark:text-gray-300 shadow-lg shadow-gray-900/5 hover:bg-gray-100 dark:hover:bg-gray-900 hover:text-gray-950 dark:hover:text-white transition-colors flex items-center justify-center"
+            className="fixed left-4 top-4 z-30 inline-flex h-10 w-10 items-center justify-center rounded-lg text-gray-600 transition-colors hover:bg-gray-100 hover:text-gray-950 dark:text-gray-300 dark:hover:bg-white/5 dark:hover:text-white"
           >
             <PanelLeftOpen size={19} />
           </button>

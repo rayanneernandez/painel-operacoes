@@ -95,6 +95,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const defaultPermissions = {
       view_dashboard: true,
       view_devices_online: false,
+      manage_whatsapp_alerts: false,
       view_reports: false,
       view_analytics: false,
       export_data: false,
@@ -163,6 +164,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             ? {
                 view_dashboard: true,
                 view_devices_online: true,
+                manage_whatsapp_alerts: true,
                 view_reports: true,
                 view_analytics: true,
                 export_data: true,
@@ -267,6 +269,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const defaultPermissions = {
         view_dashboard: true,
         view_devices_online: false,
+        manage_whatsapp_alerts: false,
         view_reports: false,
         view_analytics: false,
         export_data: false,
@@ -278,6 +281,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         ? {
             view_dashboard: true,
             view_devices_online: true,
+            manage_whatsapp_alerts: true,
             view_reports: true,
             view_analytics: true,
             export_data: true,

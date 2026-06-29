@@ -8,7 +8,7 @@ Payload enviado:
 
 ```json
 {
-  "operadores": 2,
+  "operadores": 3,
   "source": "THE_LED",
   "ts": 1778781625.8
 }
@@ -49,6 +49,6 @@ python operadores_detector.py --no-window
 ## Otimizacao
 
 - Use ROI pequena e camera em 640x360.
-- `stable_window` evita oscilacao entre 0/1/2.
-- `cap_count` vem como 2 por padrao, porque o dashboard usa 2+ operadores.
+- `stable_window` evita oscilacao entre 0/1/2/3.
+- `cap_count` vem como 3 por padrao (detector aceita ate 3 operadores simultaneos).
 - Em i5 4200/N100 use `process_every_n_frames` entre 3 e 5.

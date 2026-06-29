@@ -85,6 +85,7 @@ export type AuthUser = {
   permissions?: {
     view_dashboard: boolean;
     view_devices_online: boolean;
+    manage_whatsapp_alerts: boolean;
     view_reports: boolean;
     view_analytics: boolean;
     export_data: boolean;

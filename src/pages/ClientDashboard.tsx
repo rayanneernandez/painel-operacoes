@@ -354,7 +354,7 @@ function normalizeFacialExpressionHourCounts(counts: any) {
 
 function buildFacialExpressionSeriesFromRows(rows: any[]) {
   const series = buildEmptyFacialExpressionSeries(24);
-  const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
+  const valuesByKey = new Map<string, number[]>(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
 
   for (const row of rows || []) {
     const timestamp = typeof row?.timestamp === 'string' ? row.timestamp : null;
@@ -383,7 +383,7 @@ function buildFacialExpressionSeriesFromRollups(rollups: any[], rangeStart: stri
   const startMs = Date.parse(rangeStart);
   const endMs = Date.parse(rangeEnd);
   const series = buildEmptyFacialExpressionSeries(24);
-  const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
+  const valuesByKey = new Map<string, number[]>(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
   const bestHourTotals = new Map<string, number>();
   const bestHourCounts = new Map<string, Record<'neutral' | 'happiness' | 'surprise' | 'anger', number>>();
   let hasAnyData = false;
@@ -486,7 +486,7 @@ function buildLatestFacialExpressionSeriesFromRollups(rollups: any[]) {
   if (!bestCandidate) return null;
 
   const series = buildEmptyFacialExpressionSeries(24);
-  const valuesByKey = new Map(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
+  const valuesByKey = new Map<string, number[]>(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
 
   for (const [hourKey, normalizedCounts] of bestCandidate.hours) {
     const index = new Date(`${hourKey}:00:00.000Z`).getHours();
@@ -3312,8 +3312,8 @@ export function ClientDashboard() {
           {selectedCamera && (<><ChevronRight size={14} /><button onClick={() => goToCamera(selectedCamera, selectedStore)} className="hover:text-emerald-400 transition-colors text-white font-medium">{selectedCamera.name}</button></>)}
         </div>
 
-        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
-          <div className="flex items-center gap-4 sm:gap-6">
+        <div className="flex flex-col lg:flex-row items-start lg:items-center justify-between gap-3 lg:gap-4">
+          <div className="flex min-w-0 items-center gap-4 sm:gap-6">
             <div className="h-16 w-16 sm:h-24 sm:min-w-[100px] flex items-center justify-center overflow-hidden group relative cursor-pointer">
               {clientLogo ? (
                 <img src={clientLogo} alt="Logo Cliente" className="h-full w-auto object-contain" />
@@ -3327,7 +3327,7 @@ export function ClientDashboard() {
                 </div>
               )}
             </div>
-            <div>
+            <div className="min-w-0">
               <h1 className="text-xl sm:text-2xl font-bold text-white flex items-center gap-2"><Globe className="text-emerald-500" />Dashboard Geral</h1>
               <p className="text-sm sm:text-base text-gray-400 mt-1">{dashboardSubtitle}</p>
               {isBrf && (
@@ -3351,23 +3351,23 @@ export function ClientDashboard() {
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-start gap-3 w-full lg:w-auto">
-            <div className="relative w-full sm:w-auto">
+          <div className="flex w-full min-w-0 items-start gap-1.5 lg:flex-nowrap lg:justify-end">
+            <div className="relative min-w-0 shrink lg:w-[120px] xl:w-[150px]">
               <select
-                className="bg-gray-900 border border-gray-800 text-white pl-10 pr-8 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-sm w-full sm:min-w-[180px]"
+                className="w-full min-w-0 bg-gray-900 border border-gray-800 text-white pl-8 pr-7 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-[11px] sm:text-sm"
                 onChange={(e) => { const sid = e.target.value; if (sid === 'all') goToNetwork(); else { const s = stores.find((s) => s.id === sid); if (s) goToStore(s); } }}
                 value={selectedStore?.id || 'all'}
               >
                 <option value="all" style={selectOptionStyle}>Rede Global</option>
                 {stores.map((store) => <option key={store.id} value={store.id} style={selectOptionStyle}>{store.name}</option>)}
               </select>
-              <Building2 className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
+              <Building2 className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={13} />
             </div>
 
-            <div className="relative w-full sm:w-auto">
+            <div className="relative min-w-0 shrink lg:w-[185px] xl:w-[230px]">
               <select
-                className="bg-gray-900 border border-gray-800 text-white pl-10 pr-8 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-sm w-full sm:min-w-[260px] disabled:opacity-60"
+                className="w-full min-w-0 bg-gray-900 border border-gray-800 text-white pl-8 pr-7 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-[11px] sm:text-sm disabled:opacity-60"
                 onChange={(e) => {
                   const cameraId = e.target.value;
                   if (cameraId === 'all') {
@@ -3390,8 +3390,8 @@ export function ClientDashboard() {
                   </option>
                 ))}
               </select>
-              <Camera className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={16} />
-              <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
+              <Camera className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
+              <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={13} />
             </div>
 
             {/* Botão para forçar atualização das lojas do DisplayForce */}
@@ -3399,7 +3399,7 @@ export function ClientDashboard() {
               onClick={() => syncStoresFromServer(true)}
               disabled={isSyncingStores}
               title="Atualizar lista de lojas do DisplayForce"
-              className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[38px] w-[38px] disabled:opacity-50"
+              className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[36px] w-[36px] disabled:opacity-50"
             >
               {isSyncingStores
                 ? <span className="inline-block w-3.5 h-3.5 border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
@@ -3407,12 +3407,12 @@ export function ClientDashboard() {
               }
             </button>
 
-            <div className="flex flex-row items-start gap-2 w-full sm:w-auto">
+            <div className="flex min-w-0 items-start justify-end gap-1.5 lg:flex-nowrap">
               {/* Fullscreen */}
               <button
                 onClick={toggleFullscreen}
                 title={isFullscreen ? 'Sair da tela cheia' : 'Modo apresentação'}
-                className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-gray-700 transition-colors flex-shrink-0 h-[38px] w-[38px]"
+                className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-gray-700 transition-colors flex-shrink-0 h-[36px] w-[36px]"
               >
                 {isFullscreen ? <Minimize2 size={16} className="text-emerald-400" /> : <Maximize2 size={16} className="text-gray-400" />}
               </button>
@@ -3422,7 +3422,7 @@ export function ClientDashboard() {
                 <button
                   onClick={enterEditMode}
                   title="Reorganizar widgets - arraste para juntar os cards"
-                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[38px] w-[38px]"
+                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[36px] w-[36px]"
                 >
                   <Move size={16} className="text-gray-400" />
                 </button>
@@ -3432,7 +3432,7 @@ export function ClientDashboard() {
                     onClick={autoArrangeWidgets}
                     disabled={savingLayout}
                     title="Auto-organizar: poe os KPIs (cards pequenos) primeiro, depois os graficos. Elimina os espacos vazios."
-                    className="flex items-center justify-center bg-gray-900 border border-purple-500/60 text-purple-300 hover:text-white hover:bg-purple-600 rounded-lg transition-colors flex-shrink-0 h-[38px] px-3 gap-1.5 text-xs font-medium disabled:opacity-60"
+                    className="flex items-center justify-center bg-gray-900 border border-purple-500/60 text-purple-300 hover:text-white hover:bg-purple-600 rounded-lg transition-colors flex-shrink-0 h-[36px] px-2.5 gap-1 text-[11px] font-medium disabled:opacity-60"
                   >
                     <Wand2 size={14} />
                     Auto-organizar
@@ -3441,7 +3441,7 @@ export function ClientDashboard() {
                     onClick={saveLayoutOrder}
                     disabled={savingLayout}
                     title="Salvar nova organizacao"
-                    className="flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors flex-shrink-0 h-[38px] px-3 gap-1.5 text-xs font-medium disabled:opacity-60"
+                    className="flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors flex-shrink-0 h-[36px] px-2.5 gap-1 text-[11px] font-medium disabled:opacity-60"
                   >
                     {savingLayout
                       ? <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
@@ -3452,7 +3452,7 @@ export function ClientDashboard() {
                     onClick={cancelEditMode}
                     disabled={savingLayout}
                     title="Cancelar alteracoes"
-                    className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-red-500 hover:text-red-400 transition-colors flex-shrink-0 h-[38px] w-[38px] disabled:opacity-60"
+                    className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-red-500 hover:text-red-400 transition-colors flex-shrink-0 h-[36px] w-[36px] disabled:opacity-60"
                   >
                     <X size={16} className="text-gray-400" />
                   </button>
@@ -3464,7 +3464,7 @@ export function ClientDashboard() {
                 <button
                   onClick={() => navigate(`/clientes/${id}/campanhas`)}
                   title="Importar relatório de campanhas do e-mail"
-                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-blue-500 hover:text-blue-400 transition-colors flex-shrink-0 h-[38px] w-[38px]"
+                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-blue-500 hover:text-blue-400 transition-colors flex-shrink-0 h-[36px] w-[36px]"
                 >
                   <Upload size={16} className="text-gray-400" />
                 </button>
@@ -3475,7 +3475,7 @@ export function ClientDashboard() {
                 onClick={() => triggerBackgroundSync(true)}
                 disabled={syncingRef.current}
                 title="Forçar sincronização agora"
-                className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[38px] w-[38px] disabled:opacity-50"
+                className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[36px] w-[36px] disabled:opacity-50"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
                   <path d="M23 4v6h-6" /><path d="M1 20v-6h6" />
@@ -3497,8 +3497,8 @@ export function ClientDashboard() {
               />
 
               {/* Date Picker */}
-              <div className="flex flex-col items-end flex-1 sm:flex-none">
-                <div className="relative w-full sm:w-auto">
+              <div className="flex min-w-0 shrink flex-col items-end lg:w-[156px] xl:w-[188px]">
+                <div className="relative w-full sm:w-auto sm:max-w-full">
                   <button
                     onClick={() => {
                       const next = !showDatePicker;
@@ -3508,16 +3508,16 @@ export function ClientDashboard() {
                       }
                       setShowDatePicker(next);
                     }}
-                    className="w-full sm:w-auto flex items-center justify-between sm:justify-start gap-2 bg-gray-900 border border-gray-800 text-white px-4 py-2 rounded-lg hover:border-gray-700 transition-colors"
+                    className="flex w-full min-w-0 items-center justify-between gap-1.5 bg-gray-900 border border-gray-800 text-white px-2.5 py-2 rounded-lg hover:border-gray-700 transition-colors"
                   >
-                    <div className="flex items-center gap-2 flex-nowrap">
-                      <Calendar size={16} className="text-gray-500" />
-                      <span className="text-sm whitespace-nowrap">{selectedStartDate.toLocaleDateString('pt-BR')} → {selectedEndDate.toLocaleDateString('pt-BR')}</span>
+                    <div className="flex min-w-0 items-center gap-2">
+                      <Calendar size={14} className="shrink-0 text-gray-500" />
+                      <span className="min-w-0 truncate text-[10px] lg:text-[10px] xl:text-xs sm:whitespace-nowrap">{selectedStartDate.toLocaleDateString('pt-BR')} → {selectedEndDate.toLocaleDateString('pt-BR')}</span>
                     </div>
-                    <ChevronDown size={14} className="text-gray-500" />
+                    <ChevronDown size={13} className="shrink-0 text-gray-500" />
                   </button>
                   {showDatePicker && (
-                    <div className="absolute z-10 mt-2 p-3 bg-gray-900 border border-gray-800 rounded-lg shadow-xl right-0 w-full sm:w-auto">
+                    <div className="absolute left-0 right-0 z-10 mt-2 w-full max-w-[calc(100vw-2rem)] rounded-lg border border-gray-800 bg-gray-900 p-3 shadow-xl sm:left-auto sm:right-0 sm:w-auto">
                       <div className="flex flex-col sm:flex-row items-end gap-3">
                         <div className="w-full sm:w-auto">
                           <label className="block text-xs text-gray-400">Início</label>

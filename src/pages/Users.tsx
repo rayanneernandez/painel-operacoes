@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import supabase from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Unlock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText, Wifi, Calendar, Clock, AlertTriangle } from 'lucide-react';
+import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Unlock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText, Wifi, Calendar, Clock, AlertTriangle, MessageSquare } from 'lucide-react';
 
 // Componente Toggle
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
@@ -36,6 +36,7 @@ type UserType = {
   permissions: {
     view_dashboard: boolean;
     view_devices_online: boolean;
+    manage_whatsapp_alerts: boolean;
     view_reports: boolean;
     view_analytics: boolean;
     export_data: boolean;
@@ -112,6 +113,7 @@ export function Users() {
   const [perms, setPerms] = useState({
     view_dashboard: true,
     view_devices_online: false,
+    manage_whatsapp_alerts: false,
     view_reports: false,
     view_analytics: false,
     export_data: false,
@@ -208,6 +210,7 @@ export function Users() {
       const p = user.permissions || {
         view_dashboard: true,
         view_devices_online: false,
+        manage_whatsapp_alerts: false,
         view_reports: false,
         view_analytics: false,
         export_data: false,
@@ -216,6 +219,7 @@ export function Users() {
       setPerms({
         view_dashboard: p.view_dashboard ?? true,
         view_devices_online: p.view_devices_online ?? false,
+        manage_whatsapp_alerts: p.manage_whatsapp_alerts ?? false,
         view_reports: p.view_reports ?? false,
         view_analytics: p.view_analytics ?? false,
         export_data: p.export_data ?? false,
@@ -234,6 +238,7 @@ export function Users() {
       setPerms({
         view_dashboard: true,
         view_devices_online: false,
+        manage_whatsapp_alerts: false,
         view_reports: false,
         view_analytics: false,
         export_data: false,
@@ -803,6 +808,19 @@ export function Users() {
                         </div>
                       </div>
                       <Toggle checked={perms.view_devices_online} onChange={() => togglePerm('view_devices_online')} />
+                    </div>
+
+                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
+                          <MessageSquare size={20} />
+                        </div>
+                        <div>
+                          <p className="font-medium text-white text-sm">Alertas WhatsApp</p>
+                          <p className="text-xs text-gray-500">Permite acessar e configurar os alertas do WhatsApp</p>
+                        </div>
+                      </div>
+                      <Toggle checked={perms.manage_whatsapp_alerts} onChange={() => togglePerm('manage_whatsapp_alerts')} />
                     </div>
 
                     <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">

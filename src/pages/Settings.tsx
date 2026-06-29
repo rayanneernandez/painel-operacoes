@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2, Bot, Clock, RefreshCw, AlertCircle, RotateCcw, Moon, Sun } from 'lucide-react';
+import { Settings as SettingsIcon, Save, LayoutDashboard, Plus, X, ArrowUp, ArrowDown, GripVertical, Building2, Eye, Edit3, Monitor, CheckCircle2, Bot, Clock, RefreshCw, AlertCircle, RotateCcw } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { AVAILABLE_WIDGETS, WIDGET_MAP } from '../components/DashboardWidgets';
 import type { WidgetType } from '../components/DashboardWidgets';
@@ -149,6 +149,14 @@ export function Settings() {
     window.dispatchEvent(new CustomEvent('app-theme-change', { detail: { theme: dashboardTheme } }));
     window.dispatchEvent(new CustomEvent('dashboard-theme-change', { detail: { theme: dashboardTheme } }));
   }, [dashboardTheme]);
+  useEffect(() => {
+    const syncTheme = (event: Event) => {
+      const theme = (event as CustomEvent<{ theme?: string }>).detail?.theme;
+      if (theme === 'light' || theme === 'dark') setDashboardTheme(theme);
+    };
+    window.addEventListener('app-theme-change', syncTheme);
+    return () => window.removeEventListener('app-theme-change', syncTheme);
+  }, []);
   // Dashboard Config State
   const [activeWidgets, setActiveWidgets] = useState<WidgetType[]>([]);
   const [availableWidgets, setAvailableWidgets] = useState<WidgetType[]>([]);
@@ -708,40 +716,40 @@ export function Settings() {
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
 
       {/* Top Header */}
-      <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 shadow-xl backdrop-blur-sm">
-        <div>
-          <h1 className="text-2xl font-bold text-white flex items-center gap-3">
-            <SettingsIcon className="text-indigo-500" size={28} />
+      <div className="bg-gray-900/50 border border-gray-800 rounded-2xl p-5 lg:p-6 flex flex-col lg:flex-row lg:items-center justify-between gap-4 lg:gap-5 shadow-xl backdrop-blur-sm">
+        <div className="min-w-0">
+          <h1 className="text-xl lg:text-2xl font-bold text-white flex items-center gap-2.5">
+            <SettingsIcon className="text-indigo-500" size={24} />
             Configurações do Dashboard
           </h1>
-          <p className="text-gray-400 mt-1 text-sm">Gerencie preferências globais e personalizações por rede</p>
+          <p className="text-gray-400 mt-1 text-xs sm:text-sm">Gerencie preferências globais e personalizações por rede</p>
         </div>
 
         {/* Section Tab Switcher */}
-        <div className="flex gap-2 bg-gray-950 p-1 rounded-xl border border-gray-800">
+        <div className="flex w-full flex-wrap gap-1.5 bg-gray-950 p-1 rounded-xl border border-gray-800 lg:w-auto lg:flex-nowrap">
           <button
             onClick={() => setActiveSection('dashboard')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${activeSection === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+            className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-1.5 transition-all ${activeSection === 'dashboard' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
           >
-            <LayoutDashboard size={15} /> Dashboard
+            <LayoutDashboard size={14} /> Dashboard
           </button>
           <button
             onClick={() => setActiveSection('bot')}
-            className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-all ${activeSection === 'bot' ? 'bg-emerald-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+            className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-medium flex items-center gap-1.5 transition-all ${activeSection === 'bot' ? 'bg-emerald-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
           >
-            <Bot size={15} /> Bot DisplayForce
+            <Bot size={14} /> Bot DisplayForce
           </button>
         </div>
         
         {activeSection === 'dashboard' && (
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2 bg-gray-950 px-4 py-2 rounded-xl border border-gray-800">
-              <Building2 size={16} className="text-emerald-500" />
-              <span className="text-sm text-gray-400">Editando:</span>
+          <div className="flex w-full items-center gap-2 lg:w-auto lg:justify-end lg:flex-nowrap">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 bg-gray-950 px-2.5 py-1.5 rounded-xl border border-gray-800 lg:w-auto lg:min-w-[220px]">
+              <Building2 size={14} className="text-emerald-500" />
+              <span className="text-xs text-gray-400 whitespace-nowrap">Editando:</span>
               <select
                 value={selectedScope}
                 onChange={(e) => setSelectedScope(e.target.value)}
-                className="bg-gray-950 text-white font-medium focus:outline-none min-w-[150px] rounded-md px-2 py-1 border border-gray-800"
+                className="min-w-0 flex-1 bg-gray-950 text-white text-xs sm:text-sm font-medium focus:outline-none rounded-md px-2 py-1 border border-gray-800 lg:min-w-[130px]"
               >
                 <option value="global" style={{ backgroundColor: '#0b1220', color: 'white' }}>Padrão Global</option>
                 {clients.map(client => (
@@ -755,29 +763,16 @@ export function Settings() {
                 type="button"
                 aria-label="Voltar ao padrão global"
                 title="Voltar ao padrão global"
-                className="group inline-flex h-10 w-10 items-center justify-center rounded-full border border-gray-700/70 bg-gray-950/50 text-gray-400 transition-all hover:border-indigo-500/40 hover:bg-indigo-500/10 hover:text-indigo-200 active:scale-95"
+                className="group inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-gray-700/70 bg-gray-950/50 text-gray-400 transition-all hover:border-indigo-500/40 hover:bg-indigo-500/10 hover:text-indigo-200 active:scale-95"
               >
                 <RotateCcw size={15} className="transition-transform duration-200 group-hover:-rotate-45" />
               </button>
             )}
             <button
-              type="button"
-              onClick={() => { setDashboardTheme((value) => value === 'dark' ? 'light' : 'dark'); setSaveStatus('idle'); }}
-              className={`inline-flex h-10 items-center gap-2 rounded-xl border px-3 text-sm font-medium transition-all ${
-                dashboardTheme === 'light'
-                  ? 'border-yellow-400/50 bg-yellow-400/10 text-yellow-200 hover:bg-yellow-400/15'
-                  : 'border-gray-700 bg-gray-950/50 text-gray-300 hover:border-indigo-500/40 hover:text-white'
-              }`}
-              title="Alternar modo claro/escuro do dashboard geral"
-            >
-              {dashboardTheme === 'light' ? <Sun size={15} /> : <Moon size={15} />}
-              {dashboardTheme === 'light' ? 'Modo claro' : 'Modo escuro'}
-            </button>
-            <button
               onClick={handleSave}
-              className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-6 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
+              className="shrink-0 whitespace-nowrap bg-indigo-600 hover:bg-indigo-500 text-white text-xs sm:text-sm font-medium px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-lg shadow-indigo-900/20 disabled:opacity-50 disabled:cursor-not-allowed active:scale-95"
             >
-              {saveStatus === 'saved' ? <CheckCircle2 size={18} /> : <Save size={18} />}
+              {saveStatus === 'saved' ? <CheckCircle2 size={16} /> : <Save size={16} />}
               {saveStatus === 'saving' ? 'Salvando...' : saveStatus === 'saved' ? 'Salvo!' : 'Salvar'}
             </button>
           </div>
@@ -786,9 +781,9 @@ export function Settings() {
           <button
             onClick={handleBotSave}
             disabled={botSaveStatus === 'saving'}
-            className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-medium px-6 py-2.5 rounded-xl flex items-center gap-2 transition-all shadow-lg active:scale-95"
+            className="shrink-0 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-xl flex items-center justify-center gap-1.5 transition-all shadow-lg active:scale-95"
           >
-            {botSaveStatus === 'saving' ? <RefreshCw size={16} className="animate-spin" /> : botSaveStatus === 'saved' ? <CheckCircle2 size={16} /> : botSaveStatus === 'error' ? <AlertCircle size={16} /> : <Save size={16} />}
+            {botSaveStatus === 'saving' ? <RefreshCw size={15} className="animate-spin" /> : botSaveStatus === 'saved' ? <CheckCircle2 size={15} /> : botSaveStatus === 'error' ? <AlertCircle size={15} /> : <Save size={15} />}
             {botSaveStatus === 'saving' ? 'Salvando...' : botSaveStatus === 'saved' ? 'Salvo!' : botSaveStatus === 'error' ? 'Erro ao salvar' : 'Salvar Configurações'}
           </button>
         )}
@@ -802,18 +797,18 @@ export function Settings() {
         <div className="space-y-6 animate-in slide-in-from-right-4 duration-300">
             
             {/* Dashboard Sub-Tabs */}
-            <div className="flex gap-2 bg-gray-900/50 p-1 rounded-lg w-fit border border-gray-800">
+            <div className="flex gap-1.5 bg-gray-900/50 p-1 rounded-lg w-fit border border-gray-800">
                <button 
                  onClick={() => setDashboardView('edit')}
-                 className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${dashboardView === 'edit' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+                 className={`px-3 py-1.5 rounded-md text-xs sm:text-sm font-medium flex items-center gap-1.5 transition-all ${dashboardView === 'edit' ? 'bg-indigo-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
                >
-                 <Edit3 size={16} /> Configuração / Editor
+                 <Edit3 size={14} /> Configuração / Editor
                </button>
                <button 
                  onClick={() => setDashboardView('preview')}
-                 className={`px-4 py-2 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${dashboardView === 'preview' ? 'bg-emerald-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+                 className={`px-3 py-1.5 rounded-md text-xs sm:text-sm font-medium flex items-center gap-1.5 transition-all ${dashboardView === 'preview' ? 'bg-emerald-600 text-white shadow-lg' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
                >
-                 <Eye size={16} /> Pré-visualização Real
+                 <Eye size={14} /> Pré-visualização Real
                </button>
             </div>
 
