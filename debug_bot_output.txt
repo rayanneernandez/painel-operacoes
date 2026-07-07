@@ -1,0 +1,130 @@
+============================================ 
+ DIAGNOSTICO BOT DISPLAYFORCE 
+ 29/06/2026 16:25:56,05 
+============================================ 
+Python 3.10.11
+ 
+--- Verificando playwright --- 
+playwright OK
+playwright OK 
+ 
+--- Verificando chromium --- 
+chromium OK
+ 
+--- RODANDO BOT --- 
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\logging\__init__.py", line 1103, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode character '\u2705' in position 33: character maps to <undefined>
+Call stack:
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 1548, in <module>
+    main()
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 1521, in main
+    carregar_config_supabase()
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 194, in carregar_config_supabase
+    log.info(f"  \u2705 Agendamento carregado do Supabase: {HORARIO_EXECUCAO} | timeout={TIMEOUT_EMAIL_SEG}s")
+Message: '  \u2705 Agendamento carregado do Supabase: 07:00 | timeout=1200s'
+Arguments: ()
+2026-06-29 16:26:24,674 [INFO] Modo --agora: executando imediatamente
+2026-06-29 16:26:24,674 [INFO] 
+============================================================
+2026-06-29 16:26:24,674 [INFO]   BOT DISPLAYFORCE — 29/06/2026 16:26:24
+2026-06-29 16:26:24,674 [INFO] ============================================================
+2026-06-29 16:26:24,993 [INFO]   Clientes encontrados no Supabase (status=active): ['Panvel', 'Bacio', 'Kibon', 'The LED', 'MBRF', 'Atadiesel', 'Assai ']
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 1416, in executar_bot
+    with sync_playwright() as pw:
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\sync_api\_context_manager.py", line 77, in __enter__
+    dispatcher_fiber.switch()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\sync_api\_context_manager.py", line 56, in greenlet_main
+    self._loop.run_until_complete(self._connection.run_as_sync())
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_connection.py", line 303, in run_as_sync
+    await self.run()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_connection.py", line 312, in run
+    await self._transport.connect()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_transport.py", line 133, in connect
+    raise exc
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_transport.py", line 120, in connect
+    self._proc = await asyncio.create_subprocess_exec(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\subprocess.py", line 218, in create_subprocess_exec
+    transport, protocol = await loop.subprocess_exec(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 1681, in subprocess_exec
+    transport = await self._make_subprocess_transport(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 498, in _make_subprocess_transport
+    raise NotImplementedError
+NotImplementedError
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\logging\__init__.py", line 1103, in emit
+    stream.write(msg + self.terminator)
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\encodings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(input,self.errors,encoding_table)[0]
+UnicodeEncodeError: 'charmap' codec can't encode character '\u274c' in position 34: character maps to <undefined>
+Call stack:
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 1548, in <module>
+    main()
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 1525, in main
+    executar_bot(headless=headless)
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 1499, in executar_bot
+    log.error(f"  \u274c Erro inesperado na rodada: {e}")
+Message: '  \u274c Erro inesperado na rodada: '
+Arguments: ()
+2026-06-29 16:26:25,426 [ERROR] Traceback (most recent call last):
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 1416, in executar_bot
+    with sync_playwright() as pw:
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\sync_api\_context_manager.py", line 77, in __enter__
+    dispatcher_fiber.switch()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\sync_api\_context_manager.py", line 56, in greenlet_main
+    self._loop.run_until_complete(self._connection.run_as_sync())
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_connection.py", line 303, in run_as_sync
+    await self.run()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_connection.py", line 312, in run
+    await self._transport.connect()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_transport.py", line 133, in connect
+    raise exc
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_transport.py", line 120, in connect
+    self._proc = await asyncio.create_subprocess_exec(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\subprocess.py", line 218, in create_subprocess_exec
+    transport, protocol = await loop.subprocess_exec(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 1681, in subprocess_exec
+    transport = await self._make_subprocess_transport(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 498, in _make_subprocess_transport
+    raise NotImplementedError
+NotImplementedError
+
+2026-06-29 16:26:25,449 [ERROR] Future exception was never retrieved
+future: <Future finished exception=NotImplementedError()>
+Traceback (most recent call last):
+  File "C:\Users\GTIA003\Desktop\Acesso Rapido\Meus\painel-operacoes-main\painel-operacoes-main\bot_displayforce.py", line 1416, in executar_bot
+    with sync_playwright() as pw:
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\sync_api\_context_manager.py", line 77, in __enter__
+    dispatcher_fiber.switch()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\sync_api\_context_manager.py", line 56, in greenlet_main
+    self._loop.run_until_complete(self._connection.run_as_sync())
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 649, in run_until_complete
+    return future.result()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_connection.py", line 303, in run_as_sync
+    await self.run()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_connection.py", line 312, in run
+    await self._transport.connect()
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_transport.py", line 133, in connect
+    raise exc
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\site-packages\playwright\_impl\_transport.py", line 120, in connect
+    self._proc = await asyncio.create_subprocess_exec(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\subprocess.py", line 218, in create_subprocess_exec
+    transport, protocol = await loop.subprocess_exec(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 1681, in subprocess_exec
+    transport = await self._make_subprocess_transport(
+  File "C:\Users\GTIA003\AppData\Local\Programs\Python\Python310\lib\asyncio\base_events.py", line 498, in _make_subprocess_transport
+    raise NotImplementedError
+NotImplementedError

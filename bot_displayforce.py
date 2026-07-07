@@ -36,11 +36,15 @@ import requests
 import schedule
 
 # ── Suprime erros de pipe do asyncio no Windows (harmless, mas poluem o terminal) ─
+# IMPORTANTE: NÃO usar WindowsSelectorEventLoopPolicy — ela quebra subprocess no Windows
+# O ProactorEventLoop (padrão no Python 3.8+ Windows) é necessário para o Playwright funcionar
 if sys.platform == "win32":
-    import asyncio
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-    # Filtra o ValueError de pipe fechado que o Playwright gera no Windows
     warnings.filterwarnings("ignore", message=".*I/O operation on closed.*")
+    warnings.filterwarnings("ignore", message=".*Exception ignored.*")
+    # Força o encoding UTF-8 no stdout/stderr para evitar erros com emojis no Windows
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # ── Carrega .env ───────────────────────────────────────────────────────────────
 
@@ -501,6 +505,10 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
     log.info(f"  Processando Views CSV: {caminho}")
     try:
         with open(caminho, encoding="utf-8-sig", errors="replace") as f:
+            # Pula linha "sep=," que o Excel exporta antes do cabeçalho real
+            primeira = f.readline()
+            if primeira.strip().strip('"').lower() != "sep=,":
+                f.seek(0)  # não era sep=, — volta ao início
             reader = csv.DictReader(f)
             linhas = list(reader)
     except Exception as e:
@@ -1102,28 +1110,33 @@ def fazer_login_displayforce_retry(page, tentativas: int = 3) -> bool:
     return False
 
 
-def exportar_relatorio_cliente(page, nome_cliente: str) -> bool:
-    """Navega até o cliente na DisplayForce e exporta o relatório Visitors Insights.
-    Retorna True se exportou com sucesso."""
+def exportar_relatorio_cliente(page, nome_cliente: str, meses_offset: int = 0, escala_alvo: str = "Mês") -> bool:
+    """Fluxo exato DisplayForce Panvel:
+    meses_offset: 0=mês atual, 1=mês anterior, 2=dois meses atrás, -1=próximo mês
+    escala_alvo: "Dia", "Semana", "Mês", "Trimestre", "Ano"
+    1. Abre plataforma do cliente
+    2. Clica em "Insights & dados" no menu lateral
+    3. Clica no card "Visitors Insights"
+    4. Seleciona escala "Mês" no dropdown de data
+    5. Clica em "ENVIAR RELATÓRIO"
+    6. Modal: marca "Inserir email manualmente" → preenche e-mail → clica ENVIAR
+    """
     log.info(f"  Exportando relatório para: {nome_cliente}")
+    nome_lower = nome_cliente.lower().strip()
 
-    # ── Navega para a plataforma do cliente ────────────────────────────────
+    # ── Passo 1: Navega para a plataforma do cliente ───────────────────────
     page.goto(DISPLAYFORCE_PLATFORMS_URL, timeout=20_000)
     _aguardar_sem_networkidle(page, 2000)
 
-    # Pega todo o HTML para inspecionar hrefs
     html = page.content()
     hrefs = re.findall(r'href=["\']([^"\']+)["\']', html)
-    nome_lower = nome_cliente.lower().strip()
 
-    # Tenta link direto pelo nome do cliente
     link_cliente = None
     for href in hrefs:
         if nome_lower in href.lower():
             link_cliente = href
             break
     if not link_cliente:
-        # Busca parcial — nome pode estar incompleto
         for href in hrefs:
             partes = re.split(r"[/\-_]", href.lower())
             if any(nome_lower[:5] in p for p in partes if len(p) > 3):
@@ -1134,52 +1147,178 @@ def exportar_relatorio_cliente(page, nome_cliente: str) -> bool:
         url_full = link_cliente if link_cliente.startswith("http") else f"https://id.displayforce.ai{link_cliente}"
         log.info(f"  href encontrado para '{nome_cliente}': {url_full}")
         page.goto(url_full, timeout=20_000)
-        _aguardar_sem_networkidle(page, 2000)
+        _aguardar_sem_networkidle(page, 3000)
     else:
-        # Fallback: clicar no texto
-        log.info(f"  href não encontrado, tentando clicar no texto '{nome_cliente}'")
         try:
             page.locator(f"a:has-text('{nome_cliente}'), a:has-text('{nome_lower}')").first.click(timeout=8_000)
-            _aguardar_sem_networkidle(page, 2000)
+            _aguardar_sem_networkidle(page, 3000)
         except Exception:
             log.error(f"  ❌ '{nome_cliente}' não encontrado — pulando")
             return False
 
     log.info(f"  URL após abrir cliente: {page.url}")
-    _screenshot(page, f"03_cliente_aberto_{nome_cliente}")
+    url_cliente_base = re.sub(r"/n/#.*|/#.*", "", page.url).rstrip("/")
+    if not url_cliente_base.startswith("http"):
+        url_cliente_base = f"https://{nome_lower}.displayforce.ai"
+    log.info(f"  Base do cliente: {url_cliente_base}")
+    _screenshot(page, f"01_cliente_{nome_cliente}")
 
-    # ── Navega para Insights de Visitantes ────────────────────────────────
-    log.info("  Navegando para Insights de Visitantes (stats/visitors)...")
+    # ── Passo 2: Clica em "Insights & dados" no menu lateral ──────────────
+    log.info("  Clicando em 'Insights & dados' no menu lateral...")
+    # Tenta primeiro via URL direta (mais rápido e confiável)
+    url_visitors = f"{url_cliente_base}/n/#/stats/visitors"
+    try:
+        page.goto(url_visitors, timeout=15_000)
+        _aguardar_sem_networkidle(page, 3000)
+        log.info(f"  URL visitors: {page.url}")
+    except Exception:
+        log.warning(f"  Falha ao navegar direto para {url_visitors} — tentando via menu")
 
-    # Tenta achar href de "Insights & dados" ou "visitors" no menu
-    nav_links = page.locator("nav a, nav button, aside a, aside button, [role='navigation'] a")
-    textos_nav = [nav_links.nth(i).text_content() or "" for i in range(min(nav_links.count(), 20))]
-    log.info(f"  📋 Textos do menu/nav ({len(textos_nav)}): {textos_nav[:10]}")
+    # Verifica se já está na página de visitors
+    page_txt = (page.locator("body").text_content() or "").lower()
+    tem_visitors = "visitors" in page_txt or "visitantes" in page_txt or "audiência" in page_txt or "atenção" in page_txt
 
-    # Constrói URL de Insights de Visitantes baseado na URL atual
-    url_base = re.sub(r"/#/.*", "", page.url)
-    match_plat = re.search(r"platform[s]?/([^/#?]+)", page.url)
-    plat_slug = match_plat.group(1) if match_plat else nome_lower
+    if not tem_visitors:
+        # Tenta clicar no menu lateral "Insights & dados"
+        for sel in [
+            "a:has-text('Insights & dados')", "a:has-text('Insights')",
+            "[class*='sidebar'] a:has-text('Insight')",
+            "[class*='menu'] a:has-text('Insight')",
+            "nav a:has-text('Insight')",
+        ]:
+            try:
+                el = page.locator(sel).first
+                if el.count() > 0:
+                    el.click(timeout=5000)
+                    log.info(f"  ✔ Clicado 'Insights & dados': {sel}")
+                    _aguardar_sem_networkidle(page, 2000)
+                    break
+            except Exception:
+                continue
 
-    # Tenta href de Insights & dados
-    insights_href = None
-    for i in range(nav_links.count()):
-        txt = (nav_links.nth(i).text_content() or "").lower()
-        href = nav_links.nth(i).get_attribute("href") or ""
-        if "insight" in txt or "visitor" in txt or "insight" in href or "visitor" in href:
-            insights_href = href
-            break
-    log.info(f"  href 'Insights & dados': {insights_href}")
+        _screenshot(page, f"02_insights_menu_{nome_cliente}")
 
-    if insights_href:
-        url_insights = insights_href if insights_href.startswith("http") else f"https://id.displayforce.ai{insights_href}"
-    else:
-        url_insights = f"https://id.displayforce.ai/#/platforms/{plat_slug}/visitors/insights"
-    log.info(f"  URL Visitors Insights calculada: {url_insights}")
+        # ── Passo 3: Clica no card "Visitors Insights" ─────────────────────
+        log.info("  Clicando no card 'Visitors Insights'...")
+        for sel in [
+            "text='Visitors Insights'", "a:has-text('Visitors Insights')",
+            "[class*='card']:has-text('Visitors')", "div:has-text('Visitors Insights'):visible",
+            "a:has-text('Insights de Visitantes')", "text='Insights de Visitantes'",
+        ]:
+            try:
+                el = page.locator(sel).first
+                if el.count() > 0:
+                    el.click(timeout=5000)
+                    log.info(f"  ✔ Card Visitors Insights clicado: {sel}")
+                    _aguardar_sem_networkidle(page, 3000)
+                    break
+            except Exception:
+                continue
 
-    page.goto(url_insights, timeout=20_000)
-    _aguardar_sem_networkidle(page, 2500)
-    _screenshot(page, f"06_visitors_aberto_{nome_cliente}")
+    _screenshot(page, f"03_visitors_{nome_cliente}")
+    log.info(f"  URL Visitors Insights: {page.url}")
+
+    # ── Passo 4: Seleciona escala no dropdown de data ─────────────────────
+    # escala_alvo: "Dia", "Semana", "Mês", "Trimestre", "Ano"
+    log.info(f"  Selecionando escala '{escala_alvo}'...")
+    escala_alvo_lower = escala_alvo.lower()
+
+    # Mapeamento pt/en para detectar se já está na escala certa
+    escalas_map = {
+        "dia": ("dia", "day"),
+        "semana": ("semana", "week"),
+        "mês": ("mês", "month", "mes"),
+        "mes": ("mês", "month", "mes"),
+        "trimestre": ("trimestre", "quarter"),
+        "ano": ("ano", "year"),
+    }
+    escala_opcoes = escalas_map.get(escala_alvo_lower, (escala_alvo_lower,))
+
+    escala_selecionada = False
+    # Abre o dropdown (ele pode mostrar o valor atual: Dia, Semana, Mês etc.)
+    for sel_dropdown in [
+        "button:has-text('Mês')", "button:has-text('Month')",
+        "button:has-text('Semana')", "button:has-text('Week')",
+        "button:has-text('Dia')", "button:has-text('Day')",
+        "button:has-text('Trimestre')", "button:has-text('Ano')",
+        "[class*='select']:visible", "[class*='dropdown']:visible",
+    ]:
+        try:
+            el = page.locator(sel_dropdown).first
+            if el.count() == 0 or not el.is_visible():
+                continue
+            txt_atual = (el.text_content() or "").strip().lower()
+            # Já está na escala certa?
+            if txt_atual in escala_opcoes:
+                log.info(f"  ✔ Escala já está em '{escala_alvo}'")
+                escala_selecionada = True
+                break
+            # Abre o dropdown
+            el.click(timeout=4000)
+            log.info(f"  ✔ Dropdown de escala aberto (era '{txt_atual}')")
+            time.sleep(1)
+            # Seleciona a opção desejada
+            for op_txt in [escala_alvo, escala_alvo.capitalize()]:
+                for op_sel in [
+                    f"li:has-text('{op_txt}')", f"option:has-text('{op_txt}')",
+                    f"a:has-text('{op_txt}')", f"div:has-text('{op_txt}'):visible",
+                    f"span:has-text('{op_txt}'):visible",
+                ]:
+                    try:
+                        op_el = page.locator(op_sel).first
+                        if op_el.count() > 0:
+                            op_el.click(timeout=3000)
+                            log.info(f"  ✔ Escala '{escala_alvo}' selecionada via: {op_sel}")
+                            escala_selecionada = True
+                            time.sleep(1)
+                            break
+                    except Exception:
+                        continue
+                if escala_selecionada:
+                    break
+            if escala_selecionada:
+                break
+        except Exception:
+            continue
+
+    if not escala_selecionada:
+        log.info(f"  ℹ️  Dropdown de escala não encontrado — continuando com período padrão")
+
+    # ── Navega para mês anterior/posterior usando as setas < > ────────────
+    if meses_offset != 0:
+        seta = "<" if meses_offset > 0 else ">"
+        clicks = abs(meses_offset)
+        log.info(f"  Navegando {clicks}x para {'mês(es) anterior(es)' if meses_offset > 0 else 'mês(es) posterior(es)'} (seta {seta})...")
+        seletores_seta = {
+            "<": ["button[aria-label*='previous'], button[aria-label*='anterior'], button[aria-label*='prev']",
+                  "button:has-text('<')", "[class*='prev']:visible", "[class*='back']:visible",
+                  "button.prev:visible", "button:visible >> nth=-2"],
+            ">": ["button[aria-label*='next'], button[aria-label*='próximo'], button[aria-label*='posterior']",
+                  "button:has-text('>')", "[class*='next']:visible",
+                  "button.next:visible"],
+        }
+        for _ in range(clicks):
+            clicou = False
+            for sel in seletores_seta[seta]:
+                try:
+                    el = page.locator(sel).first
+                    if el.count() > 0 and el.is_visible():
+                        el.click(timeout=3000)
+                        log.info(f"  ✔ Seta '{seta}' clicada")
+                        time.sleep(1.5)
+                        clicou = True
+                        break
+                except Exception:
+                    continue
+            if not clicou:
+                log.warning(f"  ⚠️  Seta '{seta}' não encontrada — tentando via teclado")
+                try:
+                    page.keyboard.press("ArrowLeft" if seta == "<" else "ArrowRight")
+                    time.sleep(1)
+                except Exception:
+                    pass
+
+    _screenshot(page, f"04_periodo_{nome_cliente}")
 
     # ── Clica em "ENVIAR RELATÓRIO" ───────────────────────────────────────
     botoes = page.locator("a:visible, button:visible")
@@ -1352,29 +1491,66 @@ def exportar_relatorio_cliente(page, nome_cliente: str) -> bool:
 
     _screenshot(page, f"11_pre_confirmar_{nome_cliente}")
 
-    # Clica em ENVIAR
-    botoes_vis = page.locator("button:visible, a:visible")
-    textos_vis = [botoes_vis.nth(i).text_content() or "" for i in range(min(botoes_vis.count(), 20))]
-    log.info(f"  📋 Botões visíveis antes de confirmar: {textos_vis}")
+    # Clica em ENVIAR — escopo restrito ao modal-portal para não pegar botões atrás do overlay
+    log.info("  Procurando botão ENVIAR dentro do modal...")
+    clicou_confirmar = False
 
-    botao_confirmar = None
-    for i in range(botoes_vis.count()):
-        txt = (botoes_vis.nth(i).text_content() or "").strip().lower()
-        if re.search(r"\benviar\b|\bsend\b|\bconfirmar\b|\bconfirm\b|\bok\b", txt):
-            botao_confirmar = botoes_vis.nth(i)
-            break
-
-    if botao_confirmar:
-        botao_confirmar.click()
-        log.info("  ✔ Botão de confirmação clicado")
-    else:
-        # Fallback: submit
+    # Estratégia 1: botão dentro do modal-portal (div que renderiza o modal acima de tudo)
+    seletores_modal = [
+        "#modal-portal button:has-text('ENVIAR')",
+        "#modal-portal button:has-text('Enviar')",
+        "#modal-portal button:has-text('SEND')",
+        ".modal-portal button:has-text('ENVIAR')",
+        ".modal-portal button:has-text('Enviar')",
+        "[class*='modal'] button:has-text('ENVIAR')",
+        "[class*='modal'] button:has-text('Enviar')",
+        "[class*='dialog'] button:has-text('ENVIAR')",
+    ]
+    for sel in seletores_modal:
         try:
-            page.locator("button[type='submit']:visible, input[type='submit']:visible").first.click(timeout=4000)
-            log.info("  ✔ Botão submit clicado (fallback)")
+            el = page.locator(sel).first
+            if el.count() > 0:
+                el.click(timeout=5000)
+                log.info(f"  ✔ Botão ENVIAR do modal clicado: {sel}")
+                clicou_confirmar = True
+                break
         except Exception:
-            page.keyboard.press("Enter")
-            log.info("  ✔ Enter pressionado como confirmação")
+            continue
+
+    # Estratégia 2: JS direto no botão do modal (bypassa overlay)
+    if not clicou_confirmar:
+        try:
+            clicou = page.evaluate("""() => {
+                const portal = document.getElementById('modal-portal') ||
+                               document.querySelector('.modal-portal') ||
+                               document.querySelector('[class*="modal"]');
+                if (!portal) return false;
+                const btns = Array.from(portal.querySelectorAll('button'));
+                const btn = btns.find(b => /enviar|send|confirm/i.test(b.textContent));
+                if (btn) { btn.click(); return true; }
+                return false;
+            }""")
+            if clicou:
+                log.info("  ✔ Botão ENVIAR clicado via JS no modal-portal")
+                clicou_confirmar = True
+        except Exception as e:
+            log.warning(f"  JS click falhou: {e}")
+
+    # Estratégia 3: force=True no botão que o Playwright já encontrou
+    if not clicou_confirmar:
+        try:
+            page.locator("button:has-text('ENVIAR'), button:has-text('Enviar')").last.click(
+                timeout=5000, force=True
+            )
+            log.info("  ✔ Botão ENVIAR clicado com force=True")
+            clicou_confirmar = True
+        except Exception:
+            pass
+
+    # Estratégia 4: Enter como último recurso
+    if not clicou_confirmar:
+        page.keyboard.press("Enter")
+        log.info("  ✔ Enter pressionado como confirmação final")
 
     time.sleep(2)
     _screenshot(page, f"12_pos_envio_{nome_cliente}")
@@ -1391,7 +1567,7 @@ def obter_periodo_atual() -> tuple[str, str]:
     return inicio.isoformat(), agora.isoformat()
 
 
-def executar_bot(headless: bool = True):
+def executar_bot(headless: bool = True, filtro_clientes: list = None, meses_offset: int = 0, escala_alvo: str = "Mês"):
     """Executa um ciclo completo do bot."""
     if not _bot_lock.acquire(blocking=False):
         log.info("⏭️  Bot já em execução, aguardando próxima rodada...")
@@ -1410,6 +1586,16 @@ def executar_bot(headless: bool = True):
         if not clientes:
             log.error("  Nenhum cliente ativo encontrado. Configure CLIENTES_FALLBACK no .env")
             return
+
+        # Aplica filtro de clientes se especificado
+        if filtro_clientes:
+            filtro_lower = [f.lower().strip() for f in filtro_clientes]
+            clientes_filtrados = [c for c in clientes if c["name"].lower().strip() in filtro_lower]
+            if clientes_filtrados:
+                log.info(f"  Filtro aplicado: processando apenas {[c['name'] for c in clientes_filtrados]}")
+                clientes = clientes_filtrados
+            else:
+                log.warning(f"  Filtro '{filtro_clientes}' não bateu com nenhum cliente. Processando todos.")
 
         from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
@@ -1446,7 +1632,7 @@ def executar_bot(headless: bool = True):
                 log.info(f"\n  ── Processando: {client_name} ──")
 
                 # Exporta relatório
-                ok_export = exportar_relatorio_cliente(page, client_name)
+                ok_export = exportar_relatorio_cliente(page, client_name, meses_offset=meses_offset, escala_alvo=escala_alvo)
                 if not ok_export:
                     continue
 
@@ -1511,18 +1697,37 @@ def main():
                         help="Executa imediatamente em vez de aguardar o horário")
     parser.add_argument("--headless", type=str, default=None,
                         help="true/false — abre ou não o navegador visível (padrão: true)")
+    parser.add_argument("--clientes", type=str, default=None,
+                        help="Filtra clientes específicos separados por vírgula. Ex: --clientes Panvel,Assai")
+    parser.add_argument("--mes-anterior", type=int, default=0,
+                        help="Quantos meses atrás puxar (0=atual, 1=mês passado, 2=dois meses atrás)")
+    parser.add_argument("--escala", type=str, default="Mês",
+                        help="Escala do relatório: Dia, Semana, Mês, Trimestre, Ano (padrão: Mês)")
     args = parser.parse_args()
 
     headless = HEADLESS_DEFAULT
     if args.headless is not None:
         headless = args.headless.lower() not in ("false", "0", "no")
 
+    # Filtro de clientes via linha de comando
+    if args.clientes:
+        filtro = [c.strip() for c in args.clientes.split(",") if c.strip()]
+        log.info(f"  Filtro de clientes ativo: {filtro}")
+    else:
+        filtro = None
+
+    meses_offset = getattr(args, "mes_anterior", 0) or 0
+    if meses_offset:
+        log.info(f"  Offset de meses: -{meses_offset} (clicará {meses_offset}x na seta <)")
+    escala_alvo = getattr(args, "escala", "Mês") or "Mês"
+    log.info(f"  Escala do relatório: {escala_alvo}")
+
     # Carrega configuração do Supabase (pode sobrescrever HORARIO_EXECUCAO)
     carregar_config_supabase()
 
     if args.agora:
         log.info("Modo --agora: executando imediatamente")
-        executar_bot(headless=headless)
+        executar_bot(headless=headless, filtro_clientes=filtro, meses_offset=meses_offset, escala_alvo=escala_alvo)
         return
 
     log.info("=" * 60)
