@@ -811,22 +811,34 @@ const summarizeGender = (breakdown: any) => {
   const male = Number(breakdown?.male) || 0;
   const female = Number(breakdown?.female) || 0;
   const unknown = Number(breakdown?.unknown) || 0;
-  const parts = [
-    male > 0 ? `M ${male.toLocaleString('pt-BR')}` : '',
-    female > 0 ? `F ${female.toLocaleString('pt-BR')}` : '',
-    unknown > 0 ? `N/I ${unknown.toLocaleString('pt-BR')}` : '',
-  ].filter(Boolean);
-  return parts.length ? parts.join(' / ') : '-';
+  const total = male + female + unknown;
+  if (total === 0) return '-';
+  const pM = Math.round((male / total) * 100);
+  const pF = Math.round((female / total) * 100);
+  const parts: string[] = [];
+  if (male > 0) parts.push(`♂ ${pM}%`);
+  if (female > 0) parts.push(`♀ ${pF}%`);
+  if (unknown > 0 && (unknown / total) >= 0.05) parts.push(`N/I ${Math.round((unknown/total)*100)}%`);
+  return parts.length ? parts.join(' · ') : '-';
 };
 
 const summarizeAge = (breakdown: any) => {
   if (!breakdown || typeof breakdown !== 'object') return '-';
-  const entries = Object.entries(breakdown)
-    .map(([label, value]) => [label, Number(value) || 0] as const)
-    .filter(([, value]) => value > 0)
-    .sort((a, b) => b[1] - a[1]);
+  const order = ['0-17','18-24','25-34','35-44','45-54','55+'];
+  const entries = order
+    .map(k => [k, Number((breakdown as any)[k]) || 0] as [string, number])
+    .filter(([, v]) => v > 0);
   if (entries.length === 0) return '-';
-  return entries.slice(0, 2).map(([label, value]) => `${label} ${value.toLocaleString('pt-BR')}`).join(' / ');
+  const total = entries.reduce((s, [, v]) => s + v, 0);
+  return entries.slice(0, 2).map(([label, value]) => `${label}a (${Math.round((value/total)*100)}%)`).join(' · ');
+};
+
+const fmtImpressoesHora = (displayCount: number, startDate?: string | null, endDate?: string | null) => {
+  if (!startDate || !endDate || !displayCount) return '-';
+  const horas = (new Date(endDate).getTime() - new Date(startDate).getTime()) / 3_600_000;
+  if (horas <= 0) return '-';
+  const taxa = displayCount / horas;
+  return taxa >= 10 ? `${Math.round(taxa)}/h` : `${taxa.toFixed(1)}/h`;
 };
 
 function getCampaignStatusMeta(start?: string | null, end?: string | null, uploadedAt?: string | null, explicitStatus?: string | null) {
@@ -842,26 +854,29 @@ function getCampaignStatusMeta(start?: string | null, end?: string | null, uploa
   }
 
   const now = Date.now();
-  const freshWindowMs = 36 * 60 * 60 * 1000;
+  const oneDayMs = 24 * 60 * 60 * 1000;
   const startMs = start ? Date.parse(start) : Number.NaN;
   const endMs = end ? Date.parse(end) : Number.NaN;
   const uploadedMs = uploadedAt ? Date.parse(uploadedAt) : Number.NaN;
 
+  // Futuro → Agendada
   if (Number.isFinite(startMs) && startMs > now + 60 * 60 * 1000) {
     return { label: 'Agendada', color: 'text-yellow-400', order: 1 };
   }
 
-  // Relatorios "Views of visitors" nao trazem a data real de encerramento da campanha,
-  // apenas o ultimo evento visto ate o momento. Se o upload e recente, a campanha segue ativa.
-  if (Number.isFinite(uploadedMs) && now - uploadedMs <= freshWindowMs) {
-    return { label: 'Ativa', color: 'text-emerald-400', order: 0 };
-  }
-
-  if (Number.isFinite(endMs) && endMs < now - freshWindowMs) {
+  // end_date no passado (mais de 24h) → Encerrada
+  // end_date do CSV = último evento visto naquele mês, então meses anteriores ficam corretos
+  if (Number.isFinite(endMs) && endMs < now - oneDayMs) {
     return { label: 'Encerrada', color: 'text-red-400', order: 2 };
   }
 
+  // start no passado e end recente/nulo → Ativa
   if (Number.isFinite(startMs) && startMs <= now) {
+    return { label: 'Ativa', color: 'text-emerald-400', order: 0 };
+  }
+
+  // Sem datas: uploaded recentemente → Ativa (fallback)
+  if (Number.isFinite(uploadedMs) && now - uploadedMs <= 36 * 60 * 60 * 1000) {
     return { label: 'Ativa', color: 'text-emerald-400', order: 0 };
   }
 
@@ -1114,6 +1129,61 @@ export const WidgetCampaigns = ({
         </h3>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => {
+              const summarizeGenderCsv = (b: any) => {
+                const m = Number(b?.male)||0, f = Number(b?.female)||0, u = Number(b?.unknown)||0;
+                const t = m+f+u; if (!t) return '';
+                const parts: string[] = [];
+                if (m > 0) parts.push(`M ${Math.round((m/t)*100)}%`);
+                if (f > 0) parts.push(`F ${Math.round((f/t)*100)}%`);
+                if (u > 0 && u/t >= 0.05) parts.push(`N/I ${Math.round((u/t)*100)}%`);
+                return parts.join(' / ');
+              };
+              const summarizeAgeCsv = (b: any) => {
+                if (!b) return '';
+                const order = ['0-17','18-24','25-34','35-44','45-54','55+'];
+                const entries = order.map(k => [k, Number(b[k])||0] as [string,number]).filter(([,v])=>v>0);
+                if (!entries.length) return '';
+                const total = entries.reduce((s,[,v])=>s+v,0);
+                return entries.slice(0,3).map(([l,v])=>`${l}a (${Math.round((v/total)*100)}%)`).join(' / ');
+              };
+              const fmtImpHoraCsv = (dc: number, s?: string|null, e?: string|null) => {
+                if (!s||!e||!dc) return '';
+                const h = (new Date(e).getTime()-new Date(s).getTime())/3_600_000;
+                if (h<=0) return '';
+                const r = dc/h; return r>=10?`${Math.round(r)}/h`:`${r.toFixed(1)}/h`;
+              };
+              const fmtSecCsv = (t: number) => { const s=Math.max(0,Math.floor(t||0));const m=Math.floor(s/60);const r=s%60;return s>3600?`${Math.floor(s/3600)}:${String(m%60).padStart(2,'0')}:${String(r).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`; };
+              const headers = ['Conteudo','Loja','Tempo Total','Vezes no Periodo','Impr./Hora','Total Visualizado','Genero','Idade','Status'];
+              const csvRows = filteredRows.map((r: any) => [
+                r._campaignLabel || r.content_name || r.name || '',
+                r.loja || '',
+                fmtSecCsv(Number(r.total_play_seconds||0)),
+                Number(r.display_count||0),
+                fmtImpHoraCsv(Number(r.display_count||0), r.start_date, r.end_date),
+                Number(r.visitors||0),
+                summarizeGenderCsv(r.gender_breakdown),
+                summarizeAgeCsv(r.age_breakdown),
+                r._status?.label || '',
+              ]);
+              const escape = (v: any) => { const s=String(v??''); return s.includes(',')||s.includes('"')||s.includes('\n')?`"${s.replace(/"/g,'""')}"`:s; };
+              const csv = [headers, ...csvRows].map(row => row.map(escape).join(',')).join('\r\n');
+              const blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8;' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url; a.download = `campanhas_${new Date().toISOString().slice(0,10)}.csv`;
+              document.body.appendChild(a); a.click();
+              document.body.removeChild(a); URL.revokeObjectURL(url);
+            }}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-[10px] text-gray-500 hover:text-emerald-300 hover:border-emerald-500/40 transition-colors"
+            title="Exportar tabela para Excel (CSV)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Exportar
+          </button>
+          <button
             onClick={() => setShowFilters((prev) => !prev)}
             className={`inline-flex items-center gap-1 rounded-md border px-2 py-1 text-[10px] transition-colors ${
               showFilters || activeFilterCount > 0
@@ -1190,8 +1260,10 @@ export const WidgetCampaigns = ({
             <thead>
               <tr className="sticky top-0 z-10">
                 <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Conteudo</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Loja</th>
                 <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Tempo Total</th>
                 <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Vezes no Período</th>
+                <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Impr./Hora</th>
                 <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap text-right border-b border-gray-700">Total Visualizado</th>
                 <th className="bg-gray-900 pb-2 pt-1 pr-4 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Genero</th>
                 <th className="bg-gray-900 pb-2 pt-1 font-semibold text-gray-400 uppercase tracking-wider whitespace-nowrap border-b border-gray-700">Idade</th>
@@ -1207,8 +1279,10 @@ export const WidgetCampaigns = ({
                   className={`transition-colors hover:bg-gray-800/50 ${i % 2 === 0 ? 'bg-transparent' : 'bg-gray-800/20'}`}
                 >
                   <td className="py-2 pr-4 text-purple-400 font-medium whitespace-nowrap max-w-[280px] truncate" title={campaignTitle}>{campaignLabel}</td>
+                  <td className="py-2 pr-4 text-gray-300 whitespace-nowrap max-w-[200px] truncate" title={String(r.loja || '')}>{r.loja || '-'}</td>
                   <td className="py-2 pr-4 text-yellow-400 text-right font-mono">{fmtCampaignDuration(Number(r.total_play_seconds || 0))}</td>
                   <td className="py-2 pr-4 text-orange-400 text-right font-mono">{Number(r.display_count || 0).toLocaleString('pt-BR')}</td>
+                  <td className="py-2 pr-4 text-amber-400 text-right font-mono">{fmtImpressoesHora(Number(r.display_count || 0), r.start_date, r.end_date)}</td>
                   <td className="py-2 pr-4 text-emerald-400 text-right font-bold">{Number(r.visitors || 0).toLocaleString('pt-BR')}</td>
                   <td className="py-2 pr-4 text-cyan-300 whitespace-nowrap">{summarizeGender(r.gender_breakdown)}</td>
                   <td className="py-2 text-blue-300 whitespace-nowrap">{summarizeAge(r.age_breakdown)}</td>
@@ -1220,8 +1294,10 @@ export const WidgetCampaigns = ({
               <tfoot>
                 <tr className="border-t border-gray-700">
                   <td className="pt-2 pr-4 text-gray-500 text-xs font-medium uppercase tracking-wider">Total</td>
+                  <td className="pt-2 pr-4 text-gray-600 text-xs">-</td>
                   <td className="pt-2 pr-4 text-yellow-300 text-right font-bold text-xs">{fmtCampaignDuration(totalTempoExibido)}</td>
                   <td className="pt-2 pr-4 text-orange-300 text-right font-bold text-xs">{totalExibicoes.toLocaleString('pt-BR')}</td>
+                  <td className="pt-2 pr-4 text-gray-600 text-xs text-right">-</td>
                   <td className="pt-2 pr-4 text-emerald-300 text-right font-bold text-xs">{totalVisitantes.toLocaleString('pt-BR')}</td>
                   <td className="pt-2 pr-4 text-gray-600 text-xs">-</td>
                   <td className="pt-2 text-gray-600 text-xs">-</td>

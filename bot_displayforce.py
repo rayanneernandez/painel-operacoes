@@ -29,7 +29,7 @@ import time
 import warnings
 import zipfile
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 
 import requests
@@ -153,8 +153,16 @@ def _sb_post(tabela: str, payload, on_conflict: str = None):
     else:
         data = json.dumps(payload)
     r = requests.post(url, headers=headers, params=params, data=data, timeout=30)
+    if not r.ok:
+        raise requests.HTTPError(
+            f"{r.status_code} Client Error: {r.text[:300]}",
+            response=r
+        )
     r.raise_for_status()
-    return r.json()
+    try:
+        return r.json()
+    except Exception:
+        return []
 
 
 def _sb_patch(tabela: str, filtros: dict, payload: dict):
@@ -271,35 +279,26 @@ def upsert_campanhas(client_id: str, client_name: str, registros: list[dict]):
         return
 
     try:
-        # Flush: remove registros antigos do cliente
-        _sb_delete("campaigns", {"client_id": f"eq.{client_id}"})
-        log.info(f"  🗑️  Flush campagas client_id={client_id}")
-
-        # Upsert em lotes de 200
+        # SEM flush — dados de meses anteriores são preservados.
+        # UPSERT: insere campanha nova, substitui se a mesma chave já existe
+        # Chave única: (client_id, name, content_name, tipo_midia, loja)
         total = 0
+        erros = 0
         for i in range(0, len(registros), 200):
             chunk = registros[i:i+200]
-            tentativas = [
-                "client_id,name,content_name,tipo_midia,loja",
-                "client_id,name,tipo_midia,loja",
-                "client_id,name",
-            ]
-            salvou = False
-            for on_conflict in tentativas:
-                try:
-                    res = _sb_post("campaigns", chunk, on_conflict=on_conflict)
-                    total += len(res) if isinstance(res, list) else len(chunk)
-                    salvou = True
-                    break
-                except Exception as e:
-                    log.warning(f"  Upsert on_conflict={on_conflict} falhou: {e}")
-            if not salvou:
-                # Insert sem on_conflict
+            try:
+                res = _sb_post("campaigns", chunk, on_conflict="client_id,name,content_name,tipo_midia,loja")
+                total += len(res) if isinstance(res, list) else len(chunk)
+            except Exception as e_upsert:
+                log.warning(f"  Upsert falhou ({e_upsert}) — tentando INSERT direto...")
                 try:
                     _sb_post("campaigns", chunk)
                     total += len(chunk)
-                except Exception as e2:
-                    log.error(f"  Insert direto falhou: {e2}")
+                except Exception as e_insert:
+                    log.error(f"  Insert lote {i//200+1} falhou: {e_insert}")
+                    erros += len(chunk)
+        if erros:
+            log.warning(f"  ⚠️  {erros} registros não inseridos por erro")
         log.info(f"  ✅ {total} campanhas salvas/atualizadas no Supabase")
 
     except Exception as e:
@@ -470,9 +469,9 @@ def processar_excel(caminho: str, client_id: str) -> list[dict]:
         registros.append({
             "client_id": client_id,
             "name": name,
-            "content_name": content_name or None,
-            "tipo_midia": tipo_midia or None,
-            "loja": loja or None,
+            "content_name": content_name or "",   # NOT NULL na DB
+            "tipo_midia": tipo_midia or "",        # NOT NULL na DB
+            "loja": loja or "",                    # NOT NULL na DB
             "start_date": rec["start"],
             "end_date": rec["end"],
             "duration_days": None,
@@ -523,43 +522,69 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
     log.info(f"  Total de linhas brutas: {len(linhas)}")
 
     def _find_col(*candidatos) -> str | None:
-        hl = {h.lower().strip(): h for h in headers}
+        hl = {h.lower().strip(): h for h in headers if h is not None}
+        # Prioridade 1: match exato
         for c in candidatos:
+            if c.lower().strip() in hl:
+                return hl[c.lower().strip()]
+        # Prioridade 2: match parcial (candidato contido no header)
+        for c in candidatos:
+            c_lower = c.lower().strip()
             for h_lower, h_orig in hl.items():
-                if c.lower() in h_lower:
+                if c_lower in h_lower:
                     return h_orig
         return None
 
+    # Nomes exatos primeiro para evitar "Campaign ID" no lugar de "Campaign"
     col_campaign = _find_col("campaign", "campanha")
-    col_content  = _find_col("content name", "content", "conteudo", "video")
+    col_content  = _find_col("content", "content name", "conteudo", "video")
     col_device   = _find_col("device", "dispositivo")
-    col_duration = _find_col("duration", "atencao", "attention", "dwell")
-    col_visitor  = _find_col("visitor", "visitante")
-    col_start    = _find_col("start", "inicio", "played_at", "timestamp")
-    col_end      = _find_col("end", "fim")
+    col_duration = _find_col("content view duration", "duration", "atencao", "attention", "dwell")
+    col_visitor  = _find_col("visitor id", "visitor", "visitante")
+    col_start    = _find_col("content view start", "start", "inicio", "played_at", "timestamp")
+    col_end      = _find_col("content view end", "end", "fim")
+    col_gender   = _find_col("gender", "genero", "sexo")
+    col_age      = _find_col("age", "idade")
 
-    log.info(f"  Mapeamento: campaign={col_campaign}, content={col_content}, device={col_device}, duration={col_duration}")
+    log.info(f"  Mapeamento: campaign={col_campaign}, content={col_content}, device={col_device}, duration={col_duration}, gender={col_gender}, age={col_age}")
 
     if not col_campaign and not col_content:
         log.error("  Colunas 'Campaign' ou 'Content' não encontradas — abortando Views CSV")
         return []
 
+    def _age_label(age_val: str) -> str | None:
+        try:
+            a = int(float(age_val))
+            if a <= 0: return None
+            if a < 18:  return "0-17"
+            if a < 25:  return "18-24"
+            if a < 35:  return "25-34"
+            if a < 45:  return "35-44"
+            if a < 55:  return "45-54"
+            return "55+"
+        except (ValueError, TypeError):
+            return None
+
     agr: dict = defaultdict(lambda: {
         "visitors": set(), "display_count": 0,
         "attn_sum": 0.0, "attn_count": 0,
         "start": None, "end": None,
+        "gender": {"male": 0, "female": 0, "unknown": 0},
+        "age": {},
     })
     agora = datetime.now(timezone.utc).isoformat()
 
     linhas_uteis = 0
     for row in linhas:
-        campaign = str(row.get(col_campaign) or "").strip() if col_campaign else ""
-        content  = str(row.get(col_content)  or "").strip() if col_content  else ""
-        device   = str(row.get(col_device)   or "").strip() if col_device   else ""
-        visitor  = str(row.get(col_visitor)  or "").strip() if col_visitor  else ""
-        dur_raw  = str(row.get(col_duration) or "").strip() if col_duration else ""
-        start_s  = str(row.get(col_start)    or "").strip() if col_start    else ""
-        end_s    = str(row.get(col_end)      or "").strip() if col_end      else ""
+        campaign   = str(row.get(col_campaign) or "").strip() if col_campaign else ""
+        content    = str(row.get(col_content)  or "").strip() if col_content  else ""
+        device     = str(row.get(col_device)   or "").strip() if col_device   else ""
+        visitor    = str(row.get(col_visitor)  or "").strip() if col_visitor  else ""
+        dur_raw    = str(row.get(col_duration) or "").strip() if col_duration else ""
+        start_s    = str(row.get(col_start)    or "").strip() if col_start    else ""
+        end_s      = str(row.get(col_end)      or "").strip() if col_end      else ""
+        gender_raw = str(row.get(col_gender)   or "").strip().lower() if col_gender else ""
+        age_raw    = str(row.get(col_age)      or "").strip() if col_age      else ""
 
         if not campaign and not content:
             continue
@@ -580,6 +605,19 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
             rec["attn_sum"] += dur
             rec["attn_count"] += 1
 
+        # Gênero → {"male": N, "female": N, "unknown": N}
+        if "male" in gender_raw or gender_raw == "m":
+            rec["gender"]["male"] += 1
+        elif "female" in gender_raw or "fem" in gender_raw or gender_raw == "f":
+            rec["gender"]["female"] += 1
+        else:
+            rec["gender"]["unknown"] += 1
+
+        # Idade → {"18-24": N, "25-34": N, ...}
+        lbl = _age_label(age_raw)
+        if lbl:
+            rec["age"][lbl] = rec["age"].get(lbl, 0) + 1
+
         s = parse_data(start_s) if start_s else None
         e = parse_data(end_s)   if end_s   else None
         if s and (rec["start"] is None or s < rec["start"]): rec["start"] = s
@@ -596,16 +634,19 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
         registros.append({
             "client_id": client_id,
             "name": name,
-            "content_name": content_name or None,
-            "tipo_midia": tipo_midia or None,
-            "loja": loja or None,
+            "content_name": content_name or "",   # NOT NULL na DB
+            "tipo_midia": tipo_midia or "",        # NOT NULL na DB
+            "loja": loja or "",                    # NOT NULL na DB
             "start_date": rec["start"],
             "end_date": rec["end"],
             "duration_days": None,
             "duration_hms": None,
             "display_count": rec["display_count"],
+            "total_play_seconds": int(rec["attn_sum"]),
             "visitors": len(rec["visitors"]),
             "avg_attention_sec": int(rec["attn_sum"] / rec["attn_count"]) if rec["attn_count"] else 0,
+            "gender_breakdown": rec["gender"],
+            "age_breakdown": rec["age"] if rec["age"] else None,
             "uploaded_at": agora,
         })
     log.info(f"  {len(registros)} registros extraídos do Views CSV")
@@ -1163,16 +1204,30 @@ def exportar_relatorio_cliente(page, nome_cliente: str, meses_offset: int = 0, e
     log.info(f"  Base do cliente: {url_cliente_base}")
     _screenshot(page, f"01_cliente_{nome_cliente}")
 
-    # ── Passo 2: Clica em "Insights & dados" no menu lateral ──────────────
-    log.info("  Clicando em 'Insights & dados' no menu lateral...")
-    # Tenta primeiro via URL direta (mais rápido e confiável)
-    url_visitors = f"{url_cliente_base}/n/#/stats/visitors"
+    # ── Passo 2: Navega direto para visitors do mês correto via URL ──────────
+    # Calcula o timestamp do mês alvo (meio do mês, fuso UTC)
+    hoje = date.today()
+    ano_alvo  = hoje.year
+    mes_alvo  = hoje.month - meses_offset
+    while mes_alvo <= 0:
+        mes_alvo += 12
+        ano_alvo -= 1
+    ts_mes_ms = int(datetime(ano_alvo, mes_alvo, 15, 12, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+    url_visitors = f"{url_cliente_base}/n/#/stats/visitors?scale=month&date={ts_mes_ms}"
+    log.info(f"  Navegando direto para {ano_alvo}-{mes_alvo:02d} via URL: {url_visitors}")
     try:
         page.goto(url_visitors, timeout=15_000)
         _aguardar_sem_networkidle(page, 3000)
         log.info(f"  URL visitors: {page.url}")
     except Exception:
-        log.warning(f"  Falha ao navegar direto para {url_visitors} — tentando via menu")
+        # Fallback sem parâmetro de data
+        url_visitors = f"{url_cliente_base}/n/#/stats/visitors"
+        log.warning(f"  Falha — tentando sem parâmetro de data: {url_visitors}")
+        try:
+            page.goto(url_visitors, timeout=15_000)
+            _aguardar_sem_networkidle(page, 3000)
+        except Exception:
+            pass
 
     # Verifica se já está na página de visitors
     page_txt = (page.locator("body").text_content() or "").lower()
@@ -1284,39 +1339,17 @@ def exportar_relatorio_cliente(page, nome_cliente: str, meses_offset: int = 0, e
     if not escala_selecionada:
         log.info(f"  ℹ️  Dropdown de escala não encontrado — continuando com período padrão")
 
-    # ── Navega para mês anterior/posterior usando as setas < > ────────────
-    if meses_offset != 0:
-        seta = "<" if meses_offset > 0 else ">"
-        clicks = abs(meses_offset)
-        log.info(f"  Navegando {clicks}x para {'mês(es) anterior(es)' if meses_offset > 0 else 'mês(es) posterior(es)'} (seta {seta})...")
-        seletores_seta = {
-            "<": ["button[aria-label*='previous'], button[aria-label*='anterior'], button[aria-label*='prev']",
-                  "button:has-text('<')", "[class*='prev']:visible", "[class*='back']:visible",
-                  "button.prev:visible", "button:visible >> nth=-2"],
-            ">": ["button[aria-label*='next'], button[aria-label*='próximo'], button[aria-label*='posterior']",
-                  "button:has-text('>')", "[class*='next']:visible",
-                  "button.next:visible"],
-        }
-        for _ in range(clicks):
-            clicou = False
-            for sel in seletores_seta[seta]:
-                try:
-                    el = page.locator(sel).first
-                    if el.count() > 0 and el.is_visible():
-                        el.click(timeout=3000)
-                        log.info(f"  ✔ Seta '{seta}' clicada")
-                        time.sleep(1.5)
-                        clicou = True
-                        break
-                except Exception:
-                    continue
-            if not clicou:
-                log.warning(f"  ⚠️  Seta '{seta}' não encontrada — tentando via teclado")
-                try:
-                    page.keyboard.press("ArrowLeft" if seta == "<" else "ArrowRight")
-                    time.sleep(1)
-                except Exception:
-                    pass
+    # ── Confirma que o período correto está visível ────────────────────────
+    # A navegação já foi feita via URL com timestamp — só verifica e loga
+    time.sleep(1)
+    page_txt_periodo = (page.locator("body").text_content() or "")
+    # Procura texto do mês esperado na página
+    meses_pt = ["", "Jan", "Fev", "Mar", "Abr", "Mai", "Jun", "Jul", "Ago", "Set", "Out", "Nov", "Dez"]
+    mes_esperado = meses_pt[mes_alvo] if 1 <= mes_alvo <= 12 else ""
+    if mes_esperado and mes_esperado in page_txt_periodo:
+        log.info(f"  ✔ Período confirmado na página: {mes_esperado} {ano_alvo}")
+    else:
+        log.warning(f"  ⚠️  Não foi possível confirmar o mês '{mes_esperado}' na página — continuando mesmo assim")
 
     _screenshot(page, f"04_periodo_{nome_cliente}")
 
