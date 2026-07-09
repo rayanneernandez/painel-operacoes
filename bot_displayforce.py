@@ -590,6 +590,8 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
             continue
 
         content_clean = _clean_content_name(content) if content else None
+        # Device = "Filial 309 - Totem 1" → loja="Filial 309", tipo_midia="Totem 1"
+        # name continua vindo da Campaign (nome do conteúdo/campanha)
         loja, tipo_midia = _parse_device(device) if device else ("", "")
         name = campaign or content_clean or content
 
@@ -606,10 +608,11 @@ def processar_views_csv(caminho: str, client_id: str) -> list[dict]:
             rec["attn_count"] += 1
 
         # Gênero → {"male": N, "female": N, "unknown": N}
-        if "male" in gender_raw or gender_raw == "m":
-            rec["gender"]["male"] += 1
-        elif "female" in gender_raw or "fem" in gender_raw or gender_raw == "f":
+        # IMPORTANTE: checar "female" ANTES de "male" pois "female" contém "male"
+        if "female" in gender_raw or "fem" in gender_raw or gender_raw == "f":
             rec["gender"]["female"] += 1
+        elif "male" in gender_raw or gender_raw == "m":
+            rec["gender"]["male"] += 1
         else:
             rec["gender"]["unknown"] += 1
 
@@ -1600,7 +1603,7 @@ def obter_periodo_atual() -> tuple[str, str]:
     return inicio.isoformat(), agora.isoformat()
 
 
-def executar_bot(headless: bool = True, filtro_clientes: list = None, meses_offset: int = 0, escala_alvo: str = "Mês"):
+def executar_bot(headless: bool = True, filtro_clientes: list = None, meses_offset: int = 0, escala_alvo: str = "Mês", force_reprocess: bool = False):
     """Executa um ciclo completo do bot."""
     if not _bot_lock.acquire(blocking=False):
         log.info("⏭️  Bot já em execução, aguardando próxima rodada...")
@@ -1650,13 +1653,16 @@ def executar_bot(headless: bool = True, filtro_clientes: list = None, meses_offs
             # Obtém o último UID do IMAP ANTES de solicitar relatórios
             # (para ignorar e-mails antigos)
             uid_inicio = 0
-            try:
-                imap = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
-                imap.login(IMAP_EMAIL, IMAP_PASSWORD)
-                uid_inicio = _obter_ultimo_uid(imap)
-                imap.logout()
-            except Exception as e:
-                log.warning(f"  Não foi possível obter UID inicial: {e}")
+            if not force_reprocess:
+                try:
+                    imap = imaplib.IMAP4_SSL(IMAP_SERVER, IMAP_PORT)
+                    imap.login(IMAP_EMAIL, IMAP_PASSWORD)
+                    uid_inicio = _obter_ultimo_uid(imap)
+                    imap.logout()
+                except Exception as e:
+                    log.warning(f"  Não foi possível obter UID inicial: {e}")
+            else:
+                log.info("  ⚠️  force_reprocess=True — uid_inicio=0 (reprocessa todos os e-mails do dia)")
 
             # Para cada cliente: exporta relatório e processa
             for cliente in clientes:
@@ -1736,6 +1742,8 @@ def main():
                         help="Quantos meses atrás puxar (0=atual, 1=mês passado, 2=dois meses atrás)")
     parser.add_argument("--escala", type=str, default="Mês",
                         help="Escala do relatório: Dia, Semana, Mês, Trimestre, Ano (padrão: Mês)")
+    parser.add_argument("--force-reprocess", action="store_true",
+                        help="Ignora UID de controle — reprocessa e-mails já vistos do dia (útil em re-tentativas)")
     args = parser.parse_args()
 
     headless = HEADLESS_DEFAULT
@@ -1758,9 +1766,14 @@ def main():
     # Carrega configuração do Supabase (pode sobrescrever HORARIO_EXECUCAO)
     carregar_config_supabase()
 
+    force_reprocess = getattr(args, "force_reprocess", False)
+    if force_reprocess:
+        log.info("  ⚠️  --force-reprocess: uid_inicio será zerado — reprocessará e-mails do dia")
+
     if args.agora:
         log.info("Modo --agora: executando imediatamente")
-        executar_bot(headless=headless, filtro_clientes=filtro, meses_offset=meses_offset, escala_alvo=escala_alvo)
+        executar_bot(headless=headless, filtro_clientes=filtro, meses_offset=meses_offset,
+                     escala_alvo=escala_alvo, force_reprocess=force_reprocess)
         return
 
     log.info("=" * 60)

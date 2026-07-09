@@ -137,6 +137,8 @@ def processar(csv_path, client_id):
         if not campaign and not content: continue
 
         content_clean = clean_name(content) if content else ""
+        # Device = "Filial 309 - Totem 1" → loja="Filial 309", tipo_midia="Totem 1"
+        # name continua vindo da Campaign (nome do conteúdo/campanha)
         loja, tipo_midia = parse_device(device) if device else ("", "")
         name = campaign or content_clean or content
 
@@ -153,11 +155,11 @@ def processar(csv_path, client_id):
                 rec["attn_count"] += 1
         except: pass
 
-        # Gênero
-        if "male" in gender_raw or gender_raw == "m":
-            rec["gender"]["male"] += 1
-        elif "female" in gender_raw or "fem" in gender_raw or gender_raw == "f":
+        # Gênero — checar "female" ANTES de "male" pois "female" contém "male"
+        if "female" in gender_raw or "fem" in gender_raw or gender_raw == "f":
             rec["gender"]["female"] += 1
+        elif "male" in gender_raw or gender_raw == "m":
+            rec["gender"]["male"] += 1
         else:
             rec["gender"]["unknown"] += 1
 
