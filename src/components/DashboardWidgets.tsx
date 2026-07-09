@@ -1351,17 +1351,7 @@ export const WidgetCampaigns = ({
             Filtros
             {activeFilterCount > 0 && <span className="font-semibold">{activeFilterCount}</span>}
           </button>
-          {lastSync && <span className="text-[10px] text-gray-600 hidden sm:block">Sync: {lastSync}</span>}
-          <button
-            onClick={fetchData}
-            className="text-gray-500 hover:text-emerald-400 transition-colors p-1 rounded"
-            title="Atualizar dados"
-          >
-            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/>
-              <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/>
-            </svg>
-          </button>
+          {lastSync && <span className="text-[10px] text-gray-600 hidden sm:block">Última atualização: {lastSync}</span>}
         </div>
       </div>
 
