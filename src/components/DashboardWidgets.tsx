@@ -816,10 +816,10 @@ const summarizeGender = (breakdown: any) => {
   const pM = Math.round((male / total) * 100);
   const pF = Math.round((female / total) * 100);
   const parts: string[] = [];
-  if (male > 0) parts.push(`♂ ${pM}%`);
-  if (female > 0) parts.push(`♀ ${pF}%`);
-  if (unknown > 0 && (unknown / total) >= 0.05) parts.push(`N/I ${Math.round((unknown/total)*100)}%`);
-  return parts.length ? parts.join(' · ') : '-';
+  if (male > 0) parts.push(`M ${pM}%`);
+  if (female > 0) parts.push(`F ${pF}%`);
+  if (unknown > 0) parts.push(`N/I ${Math.round((unknown/total)*100)}%`);
+  return parts.length ? parts.join(' / ') : '-';
 };
 
 const summarizeAge = (breakdown: any) => {
@@ -1154,20 +1154,38 @@ export const WidgetCampaigns = ({
                 const r = dc/h; return r>=10?`${Math.round(r)}/h`:`${r.toFixed(1)}/h`;
               };
               const fmtSecCsv = (t: number) => { const s=Math.max(0,Math.floor(t||0));const m=Math.floor(s/60);const r=s%60;return s>3600?`${Math.floor(s/3600)}:${String(m%60).padStart(2,'0')}:${String(r).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`; };
-              const headers = ['Conteudo','Loja','Tempo Total','Vezes no Periodo','Impr./Hora','Total Visualizado','Genero','Idade','Status'];
-              const csvRows = filteredRows.map((r: any) => [
-                r._campaignLabel || r.content_name || r.name || '',
-                r.loja || '',
-                fmtSecCsv(Number(r.total_play_seconds||0)),
-                Number(r.display_count||0),
-                fmtImpHoraCsv(Number(r.display_count||0), r.start_date, r.end_date),
-                Number(r.visitors||0),
-                summarizeGenderCsv(r.gender_breakdown),
-                summarizeAgeCsv(r.age_breakdown),
-                r._status?.label || '',
-              ]);
-              const escape = (v: any) => { const s=String(v??''); return s.includes(',')||s.includes('"')||s.includes('\n')?`"${s.replace(/"/g,'""')}"`:s; };
-              const csv = [headers, ...csvRows].map(row => row.map(escape).join(',')).join('\r\n');
+              const headers = ['Conteudo','Loja','Tempo Total','Vezes no Periodo','Impr./Hora','Total Visualizado','Genero (M%)','Genero (F%)','Genero (N/I%)','Idade 1','Idade 2','Idade 3','Status'];
+              const parseGender = (b: any) => {
+                const m=Number(b?.male)||0, f=Number(b?.female)||0, u=Number(b?.unknown)||0;
+                const t=m+f+u; if(!t) return ['','',''];
+                return [`${Math.round((m/t)*100)}%`, `${Math.round((f/t)*100)}%`, `${Math.round((u/t)*100)}%`];
+              };
+              const parseAge = (b: any) => {
+                if(!b) return ['','',''];
+                const order=['0-17','18-24','25-34','35-44','45-54','55+'];
+                const entries=order.map(k=>[k,Number(b[k])||0] as [string,number]).filter(([,v])=>v>0);
+                const total=entries.reduce((s,[,v])=>s+v,0);
+                const top=entries.slice(0,3).map(([l,v])=>`${l}a (${Math.round((v/total)*100)}%)`);
+                while(top.length<3) top.push('');
+                return top;
+              };
+              const csvRows = filteredRows.map((r: any) => {
+                const [gm,gf,gu]=parseGender(r.gender_breakdown);
+                const [a1,a2,a3]=parseAge(r.age_breakdown);
+                return [
+                  r._campaignLabel || r.content_name || r.name || '',
+                  r.loja || '',
+                  fmtSecCsv(Number(r.total_play_seconds||0)),
+                  Number(r.display_count||0),
+                  fmtImpHoraCsv(Number(r.display_count||0), r.start_date, r.end_date),
+                  Number(r.visitors||0),
+                  gm, gf, gu, a1, a2, a3,
+                  r._status?.label || '',
+                ];
+              });
+              const SEP = ';';
+              const escape = (v: any) => { const s=String(v??''); return s.includes(SEP)||s.includes('"')||s.includes('\n')?`"${s.replace(/"/g,'""')}"`:s; };
+              const csv = [headers, ...csvRows].map(row => row.map(escape).join(SEP)).join('\r\n');
               const blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8;' });
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');
