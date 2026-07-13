@@ -1002,15 +1002,12 @@ export const WidgetCampaigns = ({
       if (!result) throw lastError || new Error('Nao foi possivel carregar campanhas');
 
       const rawData = result?.data || [];
-      const rangeData = rawData.filter((row) => overlapsCampaignRange(row, rangeStartIso, rangeEndIso));
-      const data = rangeData.filter(matchesLoja);
+      // Sem pré-filtro por data — o seletor de mês no widget cuida da filtragem
+      const data = rawData.filter(matchesLoja);
       console.log('[Campaigns] carregadas:', {
         clientId,
         lojaFilter,
-        rangeStartIso,
-        rangeEndIso,
         total: rawData.length,
-        aposData: rangeData.length,
         aposLoja: data.length,
       });
       setRows(data);
