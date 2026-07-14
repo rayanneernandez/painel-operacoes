@@ -328,9 +328,9 @@ function normalizeDeviceStatus(value: unknown): DeviceStatus {
 }
 
 function getDeviceStatusPriority(status: DeviceStatus) {
-  if (status === 'online') return 3;
-  if (status === 'offline') return 2;
-  if (status === 'not_connected') return 1;
+  if (status === 'offline') return 3;
+  if (status === 'not_connected') return 2;
+  if (status === 'online') return 1;
   return 0;
 }
 
