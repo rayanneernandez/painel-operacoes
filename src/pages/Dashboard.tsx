@@ -9,7 +9,6 @@ type DeviceStat = {
   clientName: string;
   online: number;
   offline: number;
-  notConnected: number;
   total: number;
   pctOnline: number;
 };
@@ -19,9 +18,9 @@ export function Dashboard() {
   const navigate = useNavigate();
   const [stats, setStats] = useState([
     { label: 'Total de Clientes',     value: '0',   trend: '0',       trendUp: true,  icon: Users,       color: 'text-blue-400',    bg: 'bg-blue-500/10' },
-    { label: 'Status das APIs',        value: '0',   trend: '0 on • 0 off', trendUp: true,  icon: Globe,       color: 'text-purple-400',  bg: 'bg-purple-500/10' },
+    { label: 'APIs Conectadas',        value: '0',   trend: '0%',      trendUp: true,  icon: Globe,       color: 'text-purple-400',  bg: 'bg-purple-500/10' },
     { label: 'Usuários Cadastrados',   value: '0',   trend: '0',       trendUp: true,  icon: ShieldCheck, color: 'text-indigo-400',  bg: 'bg-indigo-500/10' },
-    { label: 'Maior Total Visitantes', value: 'N/A', trend: 'Em breve',trendUp: true,  icon: BarChart2,   color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+    { label: 'Maior Média Visitantes', value: 'N/A', trend: 'Em breve',trendUp: true,  icon: BarChart2,   color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
   ]);
   const [deviceStats, setDeviceStats] = useState<DeviceStat[]>([]);
   const [recentClients, setRecentClients] = useState<any[]>([]);
@@ -45,23 +44,23 @@ export function Dashboard() {
           .from('users')
           .select('id', { count: 'exact', head: true });
 
-        // 3. Status das APIs
-        const { data: apiConfigsData } = await supabase
+        // 3. APIs conectadas
+        const { count: apisCount } = await supabase
           .from('client_api_configs')
-          .select('client_id, api_key');
+          .select('client_id', { count: 'exact', head: true })
+          .not('api_key', 'is', null)
+          .neq('api_key', '');
 
-        const totalApis = clientsData?.length || 0;
-        const apisConectadas = new Set(
-          (apiConfigsData || [])
-            .filter((row) => row.client_id && row.api_key != null && String(row.api_key).trim() !== '')
-            .map((row) => String(row.client_id))
-        ).size;
-        const apisNaoConectadas = Math.max(0, totalApis - apisConectadas);
+        // 4. Maior Média de Visitantes do mês atual
+        const now = new Date();
+        const mesInicioISO = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+        const mesFimISO    = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59).toISOString();
 
-        // 4. Cliente com maior total acumulado de visitantes
         const { data: campaignRows } = await supabase
           .from('campaigns')
           .select('client_id, visitors')
+          .gte('uploaded_at', mesInicioISO)
+          .lte('uploaded_at', mesFimISO)
           .not('visitors', 'is', null);
 
         let maiorClienteNome  = '-';
@@ -100,26 +99,24 @@ export function Dashboard() {
             if (s.id && s.client_id) storeToClient[s.id] = s.client_id;
           }
 
-          // Conta online/offline/nao conectado por client_id
-          const counts: Record<string, { online: number; offline: number; notConnected: number }> = {};
+          // Conta online/offline por client_id
+          const counts: Record<string, { online: number; offline: number }> = {};
           for (const d of devicesData) {
             const cid = storeToClient[d.store_id];
             if (!cid) continue;
-            if (!counts[cid]) counts[cid] = { online: 0, offline: 0, notConnected: 0 };
+            if (!counts[cid]) counts[cid] = { online: 0, offline: 0 };
             if (d.status === 'online') counts[cid].online++;
-            else if (d.status === 'offline') counts[cid].offline++;
-            else counts[cid].notConnected++;
+            else counts[cid].offline++;
           }
 
           const built: DeviceStat[] = clientsData.map(c => {
-            const cnt = counts[c.id] || { online: 0, offline: 0, notConnected: 0 };
-            const total = cnt.online + cnt.offline + cnt.notConnected;
+            const cnt = counts[c.id] || { online: 0, offline: 0 };
+            const total = cnt.online + cnt.offline;
             return {
               clientId:   c.id,
               clientName: c.name,
               online:     cnt.online,
               offline:    cnt.offline,
-              notConnected: cnt.notConnected,
               total,
               pctOnline:  total > 0 ? Math.round((cnt.online / total) * 100) : 0,
             };
@@ -132,9 +129,9 @@ export function Dashboard() {
 
         setStats([
           { label: 'Total de Clientes',     value: clientsCount?.toString() || '0', trend: '+12%',           trendUp: true, icon: Users,       color: 'text-blue-400',    bg: 'bg-blue-500/10' },
-          { label: 'Status das APIs',        value: totalApis.toString(),            trend: `${apisConectadas} on • ${apisNaoConectadas} off`, trendUp: apisNaoConectadas === 0, icon: Globe, color: 'text-purple-400', bg: 'bg-purple-500/10' },
+          { label: 'APIs Conectadas',        value: apisCount?.toString()    || '0', trend: '100%',           trendUp: true, icon: Globe,       color: 'text-purple-400',  bg: 'bg-purple-500/10' },
           { label: 'Usuários Cadastrados',   value: usersCount?.toString()   || '0', trend: '+5%',            trendUp: true, icon: ShieldCheck, color: 'text-indigo-400',  bg: 'bg-indigo-500/10' },
-          { label: 'Maior Total Visitantes', value: maiorClienteNome,                trend: maiorClienteTrend, trendUp: true, icon: BarChart2,   color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
+          { label: 'Maior Média Visitantes', value: maiorClienteNome,                trend: maiorClienteTrend, trendUp: true, icon: BarChart2,   color: 'text-emerald-400', bg: 'bg-emerald-500/10' },
         ]);
 
       } catch (error) {
@@ -147,8 +144,7 @@ export function Dashboard() {
 
   const totalOnline  = deviceStats.reduce((s, d) => s + d.online,  0);
   const totalOffline = deviceStats.reduce((s, d) => s + d.offline, 0);
-  const totalNotConnected = deviceStats.reduce((s, d) => s + d.notConnected, 0);
-  const totalDevices = totalOnline + totalOffline + totalNotConnected;
+  const totalDevices = totalOnline + totalOffline;
   const maxTotal     = Math.max(...deviceStats.map(d => d.total), 1);
 
   return (
@@ -206,10 +202,6 @@ export function Dashboard() {
                 <WifiOff size={13} />
                 {totalOffline} offline
               </span>
-              <span className="flex items-center gap-1.5 text-amber-400 font-medium">
-                <span className="inline-block h-2 w-2 rounded-full bg-amber-400"></span>
-                {totalNotConnected} nao conect.
-              </span>
               <span className="text-gray-500">{totalDevices} total</span>
             </div>
           </div>
@@ -241,15 +233,11 @@ export function Dashboard() {
                         <span className="w-2 h-2 rounded-full bg-red-500 inline-block"></span>
                         {d.offline}
                       </span>
-                      <span className="flex items-center gap-1 text-amber-400">
-                        <span className="w-2 h-2 rounded-full bg-amber-400 inline-block"></span>
-                        {d.notConnected}
-                      </span>
-                      <span className="text-gray-500 w-20 text-right">{d.pctOnline}% online</span>
+                      <span className="text-gray-500 w-16 text-right">{d.pctOnline}% online</span>
                     </div>
                   </div>
 
-                  {/* Barra empilhada online + offline + nao conectado */}
+                  {/* Barra empilhada online + offline */}
                   <div className="relative h-7 w-full bg-gray-800 rounded-lg overflow-hidden">
                     {/* Barra proporcional ao máximo entre todos os clientes */}
                     <div
@@ -268,13 +256,6 @@ export function Dashboard() {
                         <div
                           className="h-full bg-red-500/70 group-hover:bg-red-400/80 transition-colors"
                           style={{ width: d.total > 0 ? `${(d.offline / d.total) * 100}%` : '0%' }}
-                        />
-                      )}
-                      {/* Segmento nao conectado */}
-                      {d.notConnected > 0 && (
-                        <div
-                          className="h-full bg-amber-400/80 group-hover:bg-amber-300 transition-colors"
-                          style={{ width: d.total > 0 ? `${(d.notConnected / d.total) * 100}%` : '0%' }}
                         />
                       )}
                     </div>

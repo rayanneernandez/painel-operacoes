@@ -177,6 +177,29 @@ function diffMinutesFromNow(value: string | null | undefined) {
   return Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
 }
 
+function formatDuration(start: string | null | undefined, end?: string | null): string {
+  if (!start) return '-';
+  const s = Date.parse(start);
+  const e = end ? Date.parse(end) : Date.now();
+  if (!Number.isFinite(s)) return '-';
+  const diff = Math.max(0, (Number.isFinite(e) ? e : Date.now()) - s);
+  const totalMin = Math.floor(diff / 60000);
+  const h = Math.floor(totalMin / 60);
+  const m = totalMin % 60;
+  if (h > 0) return `${h}h ${m.toString().padStart(2, '0')}m`;
+  return `${m}m`;
+}
+
+function isoDateToday(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function isoDateDaysAgo(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
+}
+
 function isMissingTableError(message: string) {
   const normalized = String(message || '').toLowerCase();
   return (
@@ -360,6 +383,210 @@ function writeDisplaySyncMeta(clientId: string, meta: DisplaySyncMeta) {
   }
 }
 
+// Retorna apenas a última parte do nome após o último " - "
+function shortDeviceName(fullName: string): string {
+  if (!fullName) return '';
+  const idx = fullName.lastIndexOf(' - ');
+  return idx >= 0 ? fullName.slice(idx + 3).trim() : fullName;
+}
+
+// ── Helpers de período do gráfico ────────────────────────────────────────────
+function chartDateRange(period: 'week' | 'month', offset: number): { from: string; to: string } {
+  const today = new Date();
+  const todayStr = today.toISOString().slice(0, 10);
+  if (period === 'week') {
+    const dow = today.getDay(); // 0=Dom
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((dow + 6) % 7) + offset * 7);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    const from = monday.toISOString().slice(0, 10);
+    const to   = sunday.toISOString().slice(0, 10) > todayStr ? todayStr : sunday.toISOString().slice(0, 10);
+    return { from, to };
+  } else {
+    const d = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    const from = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`;
+    const to   = lastDay.toISOString().slice(0, 10) > todayStr ? todayStr : lastDay.toISOString().slice(0, 10);
+    return { from, to };
+  }
+}
+
+function chartPeriodLabel(period: 'week' | 'month', offset: number): string {
+  const today = new Date();
+  if (period === 'week') {
+    const dow = today.getDay();
+    const monday = new Date(today);
+    monday.setDate(today.getDate() - ((dow + 6) % 7) + offset * 7);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    const fmt = (d: Date) => d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' });
+    return `${fmt(monday)} – ${fmt(sunday)}`;
+  } else {
+    const d = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+    return d.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  }
+}
+
+// ── Gráfico de quedas por dia ─────────────────────────────────────────────────
+function StoreOfflineChart({ data, loading, period, offset, onNavigate }: {
+  data: { date: string; count: number; label: string }[] | undefined;
+  loading?: boolean;
+  period: 'week' | 'month';
+  offset: number;
+  onNavigate: (period: 'week' | 'month', newOffset: number) => void;
+}) {
+  const [tooltipIdx, setTooltipIdx] = useState<number | null>(null);
+
+  // ── Header (navegação) — sempre visível ──
+  const header = (
+    <div className="flex items-center justify-between mb-1 gap-2">
+      <p className="text-[9px] text-gray-500 uppercase tracking-wider flex-shrink-0">Quedas por dia</p>
+      <div className="flex items-center gap-1.5 flex-shrink-0">
+        {/* Seletor de período */}
+        <div className="flex rounded overflow-hidden border border-gray-700">
+          {(['week', 'month'] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => onNavigate(p, 0)}
+              className={`px-2 py-0.5 text-[9px] font-medium transition-colors ${
+                period === p ? 'bg-gray-700 text-gray-100' : 'text-gray-500 hover:text-gray-300'
+              }`}
+            >
+              {p === 'week' ? 'Sem' : 'Mês'}
+            </button>
+          ))}
+        </div>
+        {/* Navegação prev/next */}
+        <button
+          onClick={() => onNavigate(period, offset - 1)}
+          className="w-5 h-5 flex items-center justify-center rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors text-xs"
+        >‹</button>
+        <span className="text-[10px] text-gray-400 min-w-[80px] text-center">
+          {chartPeriodLabel(period, offset)}
+        </span>
+        <button
+          onClick={() => onNavigate(period, Math.min(offset + 1, 0))}
+          disabled={offset >= 0}
+          className="w-5 h-5 flex items-center justify-center rounded text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors text-xs disabled:opacity-30 disabled:cursor-not-allowed"
+        >›</button>
+      </div>
+    </div>
+  );
+
+  if (loading) {
+    return (
+      <div className="mb-3 bg-gray-950/60 rounded-lg px-3 pt-2 pb-3 border border-gray-800/50">
+        {header}
+        <div className="flex items-center justify-center h-14">
+          <span className="text-[11px] text-gray-600">Carregando...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!data) return null;
+
+  const hasData = data.some((d) => d.count > 0);
+  if (!hasData) {
+    return (
+      <div className="mb-3 bg-gray-950/60 rounded-lg px-3 pt-2 pb-2.5 border border-gray-800/50">
+        {header}
+        <p className="text-[11px] text-gray-600 italic">Sem quedas registradas no período.</p>
+      </div>
+    );
+  }
+
+  const maxCount = Math.max(...data.map((d) => d.count), 1);
+  const n = data.length;
+
+  const W = 600, H = 55;
+  const PAD_L = 22, PAD_R = 6, PAD_T = 12, PAD_B = 4;
+  const chartW = W - PAD_L - PAD_R;
+  const chartH = H - PAD_T - PAD_B;
+
+  const gx = (i: number) => PAD_L + (n <= 1 ? chartW / 2 : (i / (n - 1)) * chartW);
+  const gy = (c: number) => PAD_T + chartH - (c / maxCount) * chartH;
+
+  const linePts = data.map((d, i) => `${gx(i)},${gy(d.count)}`).join(' ');
+  const areaPts = [
+    `${gx(0)},${H - PAD_B}`,
+    ...data.map((d, i) => `${gx(i)},${gy(d.count)}`),
+    `${gx(n - 1)},${H - PAD_B}`,
+  ].join(' ');
+
+  const yTicks = maxCount <= 2 ? [0, maxCount] : [0, Math.round(maxCount / 2), maxCount];
+  const labelStep = n <= 7 ? 1 : Math.ceil(n / 7);
+  const showLabel = (i: number) => i % labelStep === 0 || i === n - 1;
+  const tooltipPoint = tooltipIdx !== null ? data[tooltipIdx] : null;
+
+  return (
+    <div className="mb-3 bg-gray-950/60 rounded-lg px-3 pt-2 pb-1 border border-gray-800/50">
+      {header}
+      <div className="relative" onMouseLeave={() => setTooltipIdx(null)}>
+        <svg viewBox={`0 0 ${W} ${H + 14}`} className="w-full" style={{ height: 72 }}>
+          {/* Y axis grid + labels */}
+          {yTicks.map((val, i) => (
+            <g key={i}>
+              <line x1={PAD_L} y1={gy(val)} x2={W - PAD_R} y2={gy(val)}
+                stroke="#374151" strokeWidth="0.5" strokeDasharray="3,3" />
+              <text x={PAD_L - 3} y={gy(val) + 2.5} textAnchor="end" fontSize="7" fill="#4B5563">{val}</text>
+            </g>
+          ))}
+          {/* Area */}
+          <polygon points={areaPts} fill="rgba(239,68,68,0.08)" />
+          {/* Line */}
+          <polyline points={linePts} fill="none" stroke="#ef4444" strokeWidth="1.5"
+            strokeLinejoin="round" strokeLinecap="round" />
+          {/* Dots */}
+          {data.map((d, i) => d.count > 0 && (
+            <circle key={i} cx={gx(i)} cy={gy(d.count)}
+              r={tooltipIdx === i ? 3.5 : 2.5}
+              fill={tooltipIdx === i ? '#fca5a5' : '#ef4444'} />
+          ))}
+          {/* Count labels above dots */}
+          {data.map((d, i) => d.count > 0 && tooltipIdx !== i && (
+            <text key={`lbl-${i}`} x={gx(i)} y={gy(d.count) - 4}
+              textAnchor="middle" fontSize="7" fill="#fca5a5">{d.count}</text>
+          ))}
+          {/* X axis labels */}
+          {data.map((d, i) => showLabel(i) && (
+            <text key={`x-${i}`} x={gx(i)} y={H + 13}
+              textAnchor="middle" fontSize="7" fill="#4B5563">{d.label}</text>
+          ))}
+          {/* Invisible hit areas */}
+          {data.map((_d, i) => {
+            const x = gx(i);
+            const hitW = n <= 1 ? chartW : chartW / (n - 1);
+            return (
+              <rect key={`hit-${i}`}
+                x={Math.max(PAD_L, x - hitW / 2)} y={PAD_T}
+                width={hitW} height={chartH + 2}
+                fill="transparent" style={{ cursor: 'crosshair' }}
+                onMouseEnter={() => setTooltipIdx(i)} />
+            );
+          })}
+        </svg>
+        {/* Tooltip */}
+        {tooltipPoint !== null && tooltipIdx !== null && (
+          <div
+            className="absolute bottom-7 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-white pointer-events-none z-20 whitespace-nowrap shadow-lg"
+            style={{
+              left: `${n <= 1 ? 50 : (tooltipIdx / (n - 1)) * 100}%`,
+              transform: 'translateX(-50%)',
+            }}
+          >
+            <div className="text-gray-400 text-[10px]">{tooltipPoint.label}</div>
+            <div className="text-red-400 font-semibold">
+              {tooltipPoint.count} {tooltipPoint.count === 1 ? 'offline' : 'offline'}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 type DevicesOnlineProps = {
   pageMode?: DevicesOnlinePageMode;
 };
@@ -410,11 +637,38 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   const [manualAlertContactIds, setManualAlertContactIds] = useState<Record<string, string>>({});
   const [manualAlertPhones, setManualAlertPhones] = useState<Record<string, string>>({});
   const [isGuideExpanded, setIsGuideExpanded] = useState(false);
+
+  // ── Histórico de quedas por loja ────────────────────────────────────────────
+  const [historyOpen, setHistoryOpen] = useState<Record<string, boolean>>({});
+  const [historyDateFrom, setHistoryDateFrom] = useState<Record<string, string>>({});
+  const [historyDateTo, setHistoryDateTo] = useState<Record<string, string>>({});
+  const [historyData, setHistoryData] = useState<Record<string, OfflineAlertRow[]>>({});
+  const [historyLoading, setHistoryLoading] = useState<Record<string, boolean>>({});
+  const [expandedHistoryDevice, setExpandedHistoryDevice] = useState<Record<string, boolean>>({});
+  // ── Gráfico independente por loja ────────────────────────────────────────────
+  const [chartData, setChartData] = useState<Record<string, { date: string; count: number; label: string }[]>>({});
+  const [chartLoading, setChartLoading] = useState<Record<string, boolean>>({});
+  const [chartPeriod, setChartPeriod] = useState<'week' | 'month'>('month');
+  const [chartOffset, setChartOffset] = useState<number>(0);
+
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [isSyncingDisplay, setIsSyncingDisplay] = useState(false);
   const syncInFlightRef = useRef(false);
   const pendingDispatchInFlightRef = useRef(false);
   const lastPendingDispatchAtRef = useRef<Record<string, number>>({});
+  // Rastreia status anterior por device_id para detectar transições
+  const prevDevicesRef = useRef<Map<string, { status: DeviceStatus; storeName: string | null }>>(new Map());
+  // Throttle do catch-up de resolução retroativa (1x por minuto)
+  const lastRetroResolutionRef = useRef<number>(0);
+
+  // ── Export global ────────────────────────────────────────────────────────────
+  const [showExportPanel, setShowExportPanel] = useState(false);
+  const [exportMode, setExportMode] = useState<'now' | 'history'>('now');
+  const [exportFrom, setExportFrom] = useState(isoDateDaysAgo(7));
+  const [exportTo, setExportTo] = useState(isoDateToday);
+  const [exportStoreName, setExportStoreName] = useState<string>('');  // '' = todas
+  const [exportDeviceName, setExportDeviceName] = useState<string>(''); // '' = todos
+  const [exportLoading, setExportLoading] = useState(false);
   const [contactForm, setContactForm] = useState({
     responsibleName: '',
     phoneNumber: '',
@@ -714,6 +968,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
       const storeIds = [...new Set(storeRows.map((store) => store.id))];
       const devicesByStore: Record<string, DeviceRow[]> = {};
+      let allRawDevices: DeviceRow[] = [];
 
       if (storeIds.length > 0) {
         const { data: devicesData, error: devicesError } = await supabase
@@ -734,9 +989,143 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
             store_id: String(device?.store_id ?? ''),
           };
 
+          allRawDevices.push(row);
           if (!devicesByStore[row.store_id]) devicesByStore[row.store_id] = [];
           devicesByStore[row.store_id].push(row);
         });
+      }
+
+      // ── Detecta transições e registra no histórico ────────────────────────────
+      if (prevDevicesRef.current.size > 0 && allRawDevices.length > 0) {
+        const now = new Date().toISOString();
+        const storeNameById: Record<string, string> = {};
+        storeRows.forEach((s) => { storeNameById[s.id] = String(s.name ?? ''); });
+
+        const offlineTransitions: DeviceRow[] = [];
+        const onlineTransitions: DeviceRow[] = [];
+
+        for (const device of allRawDevices) {
+          const prev = prevDevicesRef.current.get(device.id);
+          if (!prev) continue;
+          if (prev.status !== 'offline' && device.status === 'offline') offlineTransitions.push(device);
+          if (prev.status === 'offline' && device.status !== 'offline') onlineTransitions.push(device);
+        }
+
+        if (offlineTransitions.length > 0 || onlineTransitions.length > 0) {
+          void (async () => {
+            // Registra novas quedas
+            for (const device of offlineTransitions) {
+              const { data: existing } = await supabase
+                .from('device_offline_alerts')
+                .select('id')
+                .eq('device_id', device.id)
+                .is('resolved_at', null)
+                .maybeSingle();
+              if (!existing) {
+                await supabase.from('device_offline_alerts').insert({
+                  client_id: activeClientId,
+                  store_id: device.store_id,
+                  device_id: device.id,
+                  alert_type: 'offline',
+                  status: 'pending',
+                  client_name: activeClientName || null,
+                  store_name: storeNameById[device.store_id] || null,
+                  device_name: device.name,
+                  mac_address: device.mac_address,
+                  first_detected_at: now,
+                  last_seen_offline_at: now,
+                  notification_attempts: 0,
+                });
+              }
+            }
+            // Resolve retornos online (atualiza também nome atual do dispositivo/loja)
+            for (const device of onlineTransitions) {
+              await supabase
+                .from('device_offline_alerts')
+                .update({
+                  last_seen_online_at: now,
+                  resolved_at: now,
+                  status: 'resolved',
+                  device_name: device.name,
+                  store_name: storeNameById[device.store_id] || null,
+                })
+                .eq('device_id', device.id)
+                .is('resolved_at', null);
+            }
+          })();
+        }
+      }
+
+      // Atualiza ref com status atual
+      const storeNameById2: Record<string, string> = {};
+      storeRows.forEach((s) => { storeNameById2[s.id] = String(s.name ?? ''); });
+      prevDevicesRef.current = new Map(
+        allRawDevices.map((d) => [d.id, { status: d.status, storeName: storeNameById2[d.store_id] || null }])
+      );
+
+      // ── Resolução retroativa ─────────────────────────────────────────────────
+      // Se o browser foi fechado/recarregado durante uma queda, a transição
+      // offline→online nunca é detectada via prevDevicesRef. Este bloco cobre
+      // esse caso: qualquer dispositivo atualmente ONLINE com alerta aberto
+      // (resolved_at IS NULL) é resolvido automaticamente.
+      // Roda 1x por minuto para não sobrecarregar o banco.
+      const nowMs2 = Date.now();
+      if (activeClientId && nowMs2 - lastRetroResolutionRef.current > 60_000) {
+        lastRetroResolutionRef.current = nowMs2;
+
+        // Mapa nome atual: device_id → { device_name, store_name }
+        const currentNameById: Record<string, { device_name: string; store_name: string | null }> = {};
+        for (const d of allRawDevices) {
+          currentNameById[d.id] = {
+            device_name: d.name,
+            store_name: storeNameById2[d.store_id] || null,
+          };
+        }
+
+        const onlineIds = allRawDevices
+          .filter((d) => d.status === 'online')
+          .map((d) => d.id);
+        const offlineIds = allRawDevices
+          .filter((d) => d.status === 'offline')
+          .map((d) => d.id);
+
+        // Resolução retroativa para dispositivos online com alerta aberto
+        if (onlineIds.length > 0) {
+          void (async () => {
+            const { data: openAlerts } = await supabase
+              .from('device_offline_alerts')
+              .select('id')
+              .eq('client_id', activeClientId)
+              .in('device_id', onlineIds)
+              .is('resolved_at', null);
+            if (openAlerts && openAlerts.length > 0) {
+              const ts = new Date().toISOString();
+              await supabase
+                .from('device_offline_alerts')
+                .update({ last_seen_online_at: ts, resolved_at: ts, status: 'resolved' })
+                .eq('client_id', activeClientId)
+                .in('device_id', onlineIds)
+                .is('resolved_at', null);
+            }
+          })();
+        }
+
+        // Sync de nomenclatura: atualiza device_name e store_name nos alertas abertos
+        // para refletir renomeações feitas na plataforma DisplayForce
+        if (offlineIds.length > 0) {
+          void (async () => {
+            for (const deviceId of offlineIds) {
+              const names = currentNameById[deviceId];
+              if (!names) continue;
+              await supabase
+                .from('device_offline_alerts')
+                .update({ device_name: names.device_name, store_name: names.store_name })
+                .eq('device_id', deviceId)
+                .eq('client_id', activeClientId)
+                .is('resolved_at', null);
+            }
+          })();
+        }
       }
 
       const dedupeDevices = (rows: DeviceRow[]): UiDevice[] => {
@@ -763,7 +1152,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       const formatted: UiStore[] = [...storeGroups.values()].map((group) => {
         const mergedRows = group.ids.flatMap((storeId) => devicesByStore[storeId] || []);
         return {
-          id: group.ids.join('|'),
+          id: [...group.ids].sort().join('|'),
           name: group.name,
           city: group.city,
           devices: dedupeDevices(mergedRows),
@@ -786,6 +1175,14 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   };
 
   useEffect(() => {
+    // Limpa imediatamente o estado da rede anterior para evitar flash de dados antigos
+    setStores([]);
+    setExpandedStore(null);
+    setHistoryOpen({});
+    setHistoryData({});
+    setChartData({});
+    prevDevicesRef.current = new Map();
+
     let cancelled = false;
 
     const run = async () => {
@@ -1284,9 +1681,312 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     }
   };
 
+  // ── Busca histórico de quedas de uma loja ──────────────────────────────────
+  // Usa a mesma lógica de sobreposição do gráfico: retorna alertas que estavam
+  // ATIVOS durante o período, mesmo que tenham começado antes do filtro "De".
+  const fetchHistory = async (storeId: string) => {
+    if (!activeClientId) return;
+    const from = historyDateFrom[storeId] || isoDateDaysAgo(7);
+    const to   = historyDateTo[storeId]   || isoDateToday();
+    setHistoryLoading((p) => ({ ...p, [storeId]: true }));
+    try {
+      const realIds = storeId.split('|').filter(Boolean);
+      // Mesmo filtro do gráfico: first_detected_at <= to E (resolved_at IS NULL OU resolved_at >= from)
+      let query = supabase
+        .from('device_offline_alerts')
+        .select('*')
+        .eq('client_id', activeClientId)
+        .lte('first_detected_at', `${to}T23:59:59`)
+        .or(`resolved_at.is.null,resolved_at.gte.${from}T00:00:00`)
+        .order('first_detected_at', { ascending: false })
+        .limit(500);
+      if (realIds.length === 1) query = query.eq('store_id', realIds[0]);
+      else query = query.in('store_id', realIds);
+      const { data, error } = await query;
+      if (error) throw error;
+      setHistoryData((p) => ({ ...p, [storeId]: data || [] }));
+    } catch {
+      setHistoryData((p) => ({ ...p, [storeId]: [] }));
+    } finally {
+      setHistoryLoading((p) => ({ ...p, [storeId]: false }));
+    }
+  };
+
+  // ── Busca dados do gráfico de quedas ────────────────────────────────────────
+  // Conta por dia quantos dispositivos estavam offline (não só quando caiu, mas enquanto permanece offline)
+  const fetchChartData = async (storeId: string, period: 'week' | 'month' = 'month', offset: number = 0) => {
+    if (!activeClientId) return;
+    const { from, to } = chartDateRange(period, offset);
+    setChartLoading((p) => ({ ...p, [storeId]: true }));
+    try {
+      const realIds = storeId.split('|').filter(Boolean);
+      // Busca registros que SOBREPÕEM o período: first_detected_at <= to E (resolved_at IS NULL OU resolved_at >= from)
+      let query = supabase
+        .from('device_offline_alerts')
+        .select('first_detected_at, resolved_at')
+        .eq('client_id', activeClientId)
+        .lte('first_detected_at', `${to}T23:59:59`)
+        .or(`resolved_at.is.null,resolved_at.gte.${from}T00:00:00`);
+      if (realIds.length === 1) query = query.eq('store_id', realIds[0]);
+      else query = query.in('store_id', realIds);
+      const { data, error } = await query;
+      if (error) throw error;
+
+      type AlertRow = { first_detected_at: string; resolved_at: string | null };
+      const records = (data || []) as AlertRow[];
+      const todayStr = isoDateToday();
+
+      // Para cada dia do período, conta quantos incidentes estavam ativos naquele dia
+      const result: { date: string; count: number; label: string }[] = [];
+      const start = new Date(`${from}T00:00:00`);
+      const end   = new Date(`${to}T00:00:00`);
+      for (let d = new Date(start); d <= end; d = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1)) {
+        const day = d.toISOString().slice(0, 10);
+        const count = records.filter((r) => {
+          const startDay = r.first_detected_at.slice(0, 10);
+          // Se resolved_at for null, dispositivo ainda está offline → conta até hoje
+          const endDay = r.resolved_at ? r.resolved_at.slice(0, 10) : todayStr;
+          return startDay <= day && endDay >= day;
+        }).length;
+        result.push({
+          date: day,
+          count,
+          label: d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit' }),
+        });
+      }
+      setChartData((p) => ({ ...p, [storeId]: result }));
+    } catch {
+      setChartData((p) => ({ ...p, [storeId]: [] }));
+    } finally {
+      setChartLoading((p) => ({ ...p, [storeId]: false }));
+    }
+  };
+
+  // ── Exporta histórico de uma loja como CSV ──────────────────────────────────
+  const exportHistoryCSV = (storeId: string, storeName: string) => {
+    const rows = historyData[storeId] || [];
+    if (rows.length === 0) return;
+    const SEP = ';';
+    const headers = ['Dispositivo', 'MAC', 'Queda Detectada', 'Retorno Online', 'Tempo Off', 'Tempo Online', 'Status', 'Motivo'];
+    const csvRows = rows.map((r) => {
+      const retorno = r.last_seen_online_at || r.resolved_at || null;
+      return [
+        r.device_name,
+        r.mac_address || '',
+        formatDateTime(r.first_detected_at),
+        retorno ? formatDateTime(retorno) : 'Ainda offline',
+        formatDuration(r.first_detected_at, retorno || undefined),
+        retorno ? formatDuration(retorno) : '-',
+        r.status,
+        r.offline_reason || '',
+      ];
+    });
+    const esc = (v: string) => (v.includes(SEP) || v.includes('"') || v.includes('\n') ? `"${v.replace(/"/g, '""')}"` : v);
+    const csv = [headers, ...csvRows].map((row) => row.map(esc).join(SEP)).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `historico_quedas_${storeName.replace(/\s+/g, '_')}_${isoDateToday()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Opções de dispositivos para o dropdown de export (filtra pela loja selecionada)
+  const exportDeviceOptions = useMemo(() => {
+    const names = new Set<string>();
+    stores.forEach((store) => {
+      if (!exportStoreName || store.name === exportStoreName) {
+        store.devices.forEach((d) => names.add(d.name));
+      }
+    });
+    return [...names].sort((a, b) => a.localeCompare(b, 'pt-BR'));
+  }, [stores, exportStoreName]);
+
+  // ── Exporta status atual de todos os dispositivos ────────────────────────────
+  const exportNowCSV = () => {
+    const SEP = ';';
+    const headers = ['Loja', 'Cidade', 'Dispositivo', 'Tipo', 'MAC', 'Status'];
+    const rows: string[][] = [];
+    stores.forEach((store) => {
+      store.devices.forEach((device) => {
+        rows.push([store.name, store.city, device.name, device.type, device.macAddress || '', getDeviceStatusLabel(device.status)]);
+      });
+    });
+    const esc = (v: string) => (v.includes(SEP) || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v);
+    const csv = [headers, ...rows].map((r) => r.map(esc).join(SEP)).join('\r\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `dispositivos_agora_${isoDateToday()}.csv`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+
+  // ── Exporta histórico global com filtros ─────────────────────────────────────
+  const exportHistoryGlobal = async () => {
+    if (!activeClientId) return;
+    setExportLoading(true);
+    try {
+      let query = supabase
+        .from('device_offline_alerts')
+        .select('*')
+        .eq('client_id', activeClientId)
+        .gte('first_detected_at', `${exportFrom}T00:00:00`)
+        .lte('first_detected_at', `${exportTo}T23:59:59`)
+        .order('first_detected_at', { ascending: false })
+        .limit(2000);
+
+      if (exportStoreName) {
+        const matchingIds = storeOptions.filter((s) => s.name === exportStoreName).map((s) => s.id);
+        if (matchingIds.length > 0) query = query.in('store_id', matchingIds);
+      }
+
+      const { data } = await query;
+      let rows = (data || []) as OfflineAlertRow[];
+
+      if (exportDeviceName) {
+        rows = rows.filter((r) => r.device_name === exportDeviceName);
+      }
+
+      if (rows.length === 0) { alert('Nenhum registro encontrado para os filtros selecionados.'); return; }
+
+      const SEP = ';';
+      const headers = ['Loja', 'Dispositivo', 'MAC', 'Queda Detectada', 'Retorno Online', 'Tempo Off', 'Tempo Online', 'Status', 'Motivo'];
+      const csvRows = rows.map((r) => {
+        const retorno = r.last_seen_online_at || r.resolved_at || null;
+        return [
+          r.store_name || '',
+          r.device_name,
+          r.mac_address || '',
+          formatDateTime(r.first_detected_at),
+          retorno ? formatDateTime(retorno) : 'Ainda offline',
+          formatDuration(r.first_detected_at, retorno || undefined),
+          retorno ? formatDuration(retorno) : '-',
+          r.status,
+          r.offline_reason || '',
+        ];
+      });
+      const esc = (v: string) => (v.includes(SEP) || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v);
+      const csv = [headers, ...csvRows].map((r) => r.map(esc).join(SEP)).join('\r\n');
+      const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `historico_quedas_${exportFrom}_${exportTo}.csv`;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    } finally {
+      setExportLoading(false);
+    }
+  };
+
   const renderOverview = () => (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4">
+      {/* ── Painel de Exportação ── */}
       <div className="space-y-3">
+        <div className="bg-gray-950 border border-gray-800 rounded-xl overflow-hidden">
+          <button
+            className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-900 transition-colors"
+            onClick={() => setShowExportPanel((v) => !v)}
+          >
+            <div className="flex items-center gap-2 text-sm font-semibold text-gray-300">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Exportar Dados
+            </div>
+            {showExportPanel ? <ChevronUp size={15} className="text-gray-500" /> : <ChevronDown size={15} className="text-gray-500" />}
+          </button>
+
+          {showExportPanel && (
+            <div className="border-t border-gray-800 p-4">
+              {/* Tabs */}
+              <div className="inline-flex rounded-md border border-gray-800 overflow-hidden mb-4">
+                <button
+                  onClick={() => setExportMode('now')}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${exportMode === 'now' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+                >Dispositivos Agora</button>
+                <button
+                  onClick={() => setExportMode('history')}
+                  className={`px-3 py-1.5 text-xs font-medium transition-colors ${exportMode === 'history' ? 'bg-emerald-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-800'}`}
+                >Histórico de Quedas</button>
+              </div>
+
+              {exportMode === 'now' ? (
+                <div className="flex items-center gap-3">
+                  <p className="text-xs text-gray-400">{stores.reduce((acc, s) => acc + s.devices.length, 0)} dispositivos em {stores.length} lojas</p>
+                  <button
+                    onClick={exportNowCSV}
+                    className="rounded bg-emerald-700 hover:bg-emerald-600 text-white text-xs font-medium px-3 py-1.5 transition-colors inline-flex items-center gap-1"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                    Exportar CSV
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {/* Linha 1: Período */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[10px] text-gray-500 uppercase tracking-wider w-full">Período</span>
+                    <span className="text-xs text-gray-400">De</span>
+                    <input type="date" value={exportFrom} onChange={(e) => setExportFrom(e.target.value)}
+                      className="rounded border border-gray-700 bg-gray-900 text-xs text-gray-200 px-2 py-1 focus:outline-none focus:border-emerald-500" />
+                    <span className="text-xs text-gray-400">Até</span>
+                    <input type="date" value={exportTo} onChange={(e) => setExportTo(e.target.value)}
+                      className="rounded border border-gray-700 bg-gray-900 text-xs text-gray-200 px-2 py-1 focus:outline-none focus:border-emerald-500" />
+                  </div>
+                  {/* Linha 2: Loja + Dispositivo + Exportar */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {/* Dropdown de Loja */}
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-[10px] text-gray-500 uppercase tracking-wider">Loja</span>
+                      <select
+                        value={exportStoreName}
+                        onChange={(e) => { setExportStoreName(e.target.value); setExportDeviceName(''); }}
+                        className="rounded border border-gray-700 bg-gray-900 text-xs text-gray-200 px-2 py-1.5 focus:outline-none focus:border-emerald-500 min-w-[200px]"
+                      >
+                        <option value="">Todas as lojas</option>
+                        {storeOptions
+                          .filter((s, i, arr) => arr.findIndex((x) => x.name === s.name) === i)
+                          .map((s) => (
+                            <option key={s.id} value={s.name}>{s.name}</option>
+                          ))}
+                      </select>
+                    </div>
+                    {/* Dropdown de Dispositivo */}
+                    <div className="flex flex-col gap-0.5">
+                      <span className="text-[10px] text-gray-500 uppercase tracking-wider">Dispositivo</span>
+                      <select
+                        value={exportDeviceName}
+                        onChange={(e) => setExportDeviceName(e.target.value)}
+                        className="rounded border border-gray-700 bg-gray-900 text-xs text-gray-200 px-2 py-1.5 focus:outline-none focus:border-emerald-500 min-w-[200px]"
+                      >
+                        <option value="">Todos os dispositivos</option>
+                        {exportDeviceOptions.map((name) => (
+                          <option key={name} value={name}>{name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    {/* Botão exportar alinhado na base */}
+                    <div className="flex flex-col justify-end gap-0.5 self-end">
+                      <button
+                        onClick={exportHistoryGlobal}
+                        disabled={exportLoading}
+                        className="rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-xs font-medium px-3 py-1.5 transition-colors inline-flex items-center gap-1 whitespace-nowrap"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        {exportLoading ? 'Gerando...' : 'Exportar CSV'}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
         {stores.length === 0 ? (
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center text-gray-500">
             Nenhuma loja encontrada para esta rede.
@@ -1301,7 +2001,16 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
               <div key={store.id} className="bg-gray-950 rounded-xl border border-gray-800 overflow-hidden">
                 <div
                   className="flex items-center justify-between p-4 cursor-pointer hover:bg-gray-900 transition-colors"
-                  onClick={() => setExpandedStore(expandedStore === store.id ? null : store.id)}
+                  onClick={() => {
+                    const newId = expandedStore === store.id ? null : store.id;
+                    setExpandedStore(newId);
+                    if (newId) {
+                      // Reseta período ao mês atual e busca dados
+                      setChartPeriod('month');
+                      setChartOffset(0);
+                      fetchChartData(newId, 'month', 0);
+                    }
+                  }}
                 >
                   <div className="flex items-center gap-4">
                     <div className="w-10 h-10 rounded-lg bg-gray-900 flex items-center justify-center text-gray-500">
@@ -1340,38 +2049,223 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
 
                 {expandedStore === store.id && (
                   <div className="bg-gray-900/50 border-t border-gray-800 p-4 animate-in slide-in-from-top-2 duration-200">
-                    <h5 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                      <Camera size={12} /> Dispositivos
+
+                    {/* ── Dispositivos Online agora (compactos) ── */}
+                    <h5 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                      <Camera size={12} /> Dispositivos Online agora
                     </h5>
 
                     {store.devices.length > 0 ? (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <div className="flex flex-wrap gap-1.5">
                         {store.devices.map((device) => (
                           <div
                             key={device.id}
-                            className="flex items-center justify-between bg-gray-950 p-3 rounded border border-gray-800"
+                            className="flex items-start gap-1.5 bg-gray-950 px-2.5 py-1.5 rounded border border-gray-800 max-w-[160px]"
+                            title={device.name}
                           >
-                            <div className="flex items-center gap-2 min-w-0">
-                              <div
-                                className={`w-2 h-2 rounded-full ${getDeviceStatusDotClass(device.status)}`}
-                              />
-                              <div className="min-w-0">
-                                <p className="text-xs font-medium text-gray-200 truncate">{device.name}</p>
-                                <p className="text-[10px] text-gray-600 font-mono truncate">
-                                  {device.macAddress || '-'}
-                                </p>
-                              </div>
-                            </div>
-
-                            <span className={`text-[10px] px-2 py-0.5 rounded border uppercase ${getDeviceStatusBadgeClass(device.status)}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-0.5 ${getDeviceStatusDotClass(device.status)}`} />
+                            <div className="min-w-0 flex flex-col gap-0.5">
+                            <span className="text-[11px] font-medium text-gray-200 leading-tight break-words">{shortDeviceName(device.name)}</span>
+                            <span className={`text-[9px] px-1.5 py-0.5 rounded border uppercase font-semibold self-start ${getDeviceStatusBadgeClass(device.status)}`}>
                               {getDeviceStatusLabel(device.status)}
                             </span>
+                            </div>
                           </div>
                         ))}
                       </div>
                     ) : (
                       <p className="text-xs text-gray-500 italic">Nenhum dispositivo vinculado a esta loja.</p>
                     )}
+
+                    {/* ── Gráfico de quedas ── */}
+                    <div className="mt-4">
+                      <StoreOfflineChart
+                        data={chartData[store.id]}
+                        loading={chartLoading[store.id]}
+                        period={chartPeriod}
+                        offset={chartOffset}
+                        onNavigate={(p, o) => {
+                          setChartPeriod(p);
+                          setChartOffset(o);
+                          fetchChartData(store.id, p, o);
+                        }}
+                      />
+                    </div>
+
+                    {/* ── Histórico de Quedas ── */}
+                    <div className="mt-2 border-t border-gray-800/60 pt-3">
+                      <button
+                        className="flex items-center gap-1.5 text-xs font-semibold text-gray-400 uppercase tracking-wider hover:text-gray-200 transition-colors"
+                        onClick={() => {
+                          const open = !historyOpen[store.id];
+                          setHistoryOpen((p) => ({ ...p, [store.id]: open }));
+                          if (open && !historyData[store.id]) {
+                            fetchHistory(store.id);
+                          }
+                        }}
+                      >
+                        {historyOpen[store.id] ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                        Histórico de Quedas
+                      </button>
+
+                      {historyOpen[store.id] && (
+                        <div className="mt-3">
+                          {/* Seletor de período */}
+                          <div className="flex flex-wrap items-center gap-2 mb-3">
+                            <span className="text-[10px] text-gray-500">De</span>
+                            <input
+                              type="date"
+                              value={historyDateFrom[store.id] || isoDateDaysAgo(7)}
+                              onChange={(e) => setHistoryDateFrom((p) => ({ ...p, [store.id]: e.target.value }))}
+                              className="rounded border border-gray-700 bg-gray-900 text-[11px] text-gray-200 px-2 py-1 focus:outline-none focus:border-emerald-500"
+                            />
+                            <span className="text-[10px] text-gray-500">Até</span>
+                            <input
+                              type="date"
+                              value={historyDateTo[store.id] || isoDateToday()}
+                              onChange={(e) => setHistoryDateTo((p) => ({ ...p, [store.id]: e.target.value }))}
+                              className="rounded border border-gray-700 bg-gray-900 text-[11px] text-gray-200 px-2 py-1 focus:outline-none focus:border-emerald-500"
+                            />
+                            <button
+                              onClick={() => fetchHistory(store.id)}
+                              disabled={historyLoading[store.id]}
+                              className="rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-[11px] font-medium px-3 py-1 transition-colors"
+                            >
+                              {historyLoading[store.id] ? 'Carregando...' : 'Aplicar'}
+                            </button>
+                            {(historyData[store.id] || []).length > 0 && (
+                              <button
+                                onClick={() => exportHistoryCSV(store.id, store.name)}
+                                className="rounded border border-gray-700 bg-gray-900 hover:bg-gray-800 text-gray-300 text-[11px] px-3 py-1 transition-colors inline-flex items-center gap-1"
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                Exportar CSV
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Resultados agrupados por dispositivo */}
+                          {historyLoading[store.id] ? (
+                            <p className="text-xs text-gray-500 py-2">Carregando histórico...</p>
+                          ) : !historyData[store.id] ? (
+                            <p className="text-xs text-gray-500 italic py-2">Selecione o período e clique em Aplicar.</p>
+                          ) : historyData[store.id].length === 0 ? (
+                            <p className="text-xs text-gray-500 italic py-2">Nenhuma queda registrada neste período.</p>
+                          ) : (() => {
+                            // Agrupa por device_name
+                            const byDevice = historyData[store.id].reduce<Record<string, OfflineAlertRow[]>>((acc, r) => {
+                              const key = r.device_name;
+                              if (!acc[key]) acc[key] = [];
+                              acc[key].push(r);
+                              return acc;
+                            }, {});
+
+                            return (
+                              <div className="space-y-2">
+                                {Object.entries(byDevice).map(([deviceName, incidents]) => {
+                                  const devKey = `${store.id}:${deviceName}`;
+                                  const isExpanded = expandedHistoryDevice[devKey];
+                                  // incidents chegam em ordem DESC (mais recente primeiro, via query ORDER BY first_detected_at DESC)
+                                  // O incidente mais recente é incidents[0]
+                                  const mostRecentId = incidents[0]?.id;
+                                  // Dispositivo "continua offline" só se o incidente MAIS RECENTE está aberto
+                                  const openIncident = (!incidents[0]?.resolved_at) ? incidents[0] : undefined;
+                                  const isStillOffline = Boolean(openIncident);
+                                  return (
+                                    <div key={devKey} className={`rounded border overflow-hidden ${isStillOffline ? 'border-red-900/60 bg-red-950/10' : 'border-gray-800 bg-gray-950'}`}>
+                                      {/* Cabeçalho do dispositivo */}
+                                      <button
+                                        className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-900/60 transition-colors"
+                                        onClick={() => setExpandedHistoryDevice((p) => ({ ...p, [devKey]: !isExpanded }))}
+                                      >
+                                        <div className="flex items-center gap-2 min-w-0">
+                                          {isExpanded ? <ChevronUp size={12} className="text-gray-500 flex-shrink-0" /> : <ChevronDown size={12} className="text-gray-500 flex-shrink-0" />}
+                                          <span className="text-xs font-medium text-gray-200 truncate">{deviceName}</span>
+                                          {isStillOffline && (
+                                            <span className="flex items-center gap-1 text-[9px] font-semibold text-red-400 bg-red-950/60 border border-red-800/60 rounded px-1.5 py-0.5 flex-shrink-0">
+                                              <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                                              OFFLINE
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="flex items-center gap-2 flex-shrink-0 ml-2">
+                                          {isStillOffline && openIncident && (
+                                            <span className="text-[9px] text-red-400/70">
+                                              desde {new Date(openIncident.first_detected_at).toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit' })}
+                                            </span>
+                                          )}
+                                          <span className="text-[10px] text-gray-500">{incidents.length} {incidents.length === 1 ? 'queda' : 'quedas'}</span>
+                                        </div>
+                                      </button>
+
+                                      {/* Tabela de incidentes */}
+                                      {isExpanded && (
+                                        <div className="border-t border-gray-800/60 overflow-x-auto">
+                                          <table className="w-full text-[11px]">
+                                            <thead>
+                                              <tr className="bg-gray-900/80 text-gray-500 uppercase text-[9px] tracking-wider">
+                                                <th className="px-3 py-2 text-left">Queda Detectada</th>
+                                                <th className="px-3 py-2 text-left">Retorno Online</th>
+                                                <th className="px-3 py-2 text-left">Tempo Off</th>
+                                                <th className="px-3 py-2 text-left">Tempo Online</th>
+                                              </tr>
+                                            </thead>
+                                            <tbody>
+                                              {incidents.map((inc, incIdx) => {
+                                                const retorno = inc.last_seen_online_at || inc.resolved_at;
+                                                // "Stale open": resolved_at IS NULL mas NÃO é o incidente mais recente.
+                                                // Isso significa que o device voltou em algum momento antes do próximo evento.
+                                                const isStaleOpen = !retorno && inc.id !== mostRecentId;
+                                                // Tempo de retorno aproximado para registros stale: first_detected_at do incidente anterior (mais recente)
+                                                const nextIncident = incIdx > 0 ? incidents[incIdx - 1] : null;
+                                                const approxReturn = isStaleOpen && nextIncident ? nextIncident.first_detected_at : null;
+
+                                                const stillOff = !retorno && !isStaleOpen; // verdadeiramente offline agora
+                                                const displayRetorno = retorno || approxReturn;
+                                                const tempoOff = formatDuration(inc.first_detected_at, displayRetorno || undefined);
+                                                const tempoOnline = displayRetorno ? formatDuration(displayRetorno) : '-';
+                                                return (
+                                                  <tr key={inc.id} className={`border-t border-gray-800/40 ${stillOff ? 'bg-red-950/20 hover:bg-red-950/30' : 'hover:bg-gray-900/40'}`}>
+                                                    <td className="px-3 py-2 text-gray-300 whitespace-nowrap">{formatDateTime(inc.first_detected_at)}</td>
+                                                    <td className="px-3 py-2 whitespace-nowrap">
+                                                      {retorno ? (
+                                                        <span className="text-emerald-400">{formatDateTime(retorno)}</span>
+                                                      ) : isStaleOpen ? (
+                                                        // Dado antigo sem resolved_at mas sabe-se que voltou pois há queda posterior
+                                                        <div className="flex flex-col gap-0.5">
+                                                          <span className="text-gray-400 text-[10px]">Voltou (sem registro)</span>
+                                                          {approxReturn && (
+                                                            <span className="text-gray-600 text-[9px]">antes de {formatDateTime(approxReturn)}</span>
+                                                          )}
+                                                        </div>
+                                                      ) : (
+                                                        <div className="flex items-center gap-1.5">
+                                                          <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse flex-shrink-0" />
+                                                          <span className="text-red-400 font-medium">Continua offline</span>
+                                                        </div>
+                                                      )}
+                                                    </td>
+                                                    <td className={`px-3 py-2 whitespace-nowrap font-medium ${stillOff ? 'text-red-400' : isStaleOpen ? 'text-gray-500' : 'text-amber-400'}`}>
+                                                      {isStaleOpen ? <span title="Duração aproximada — sem data exata de retorno">{tempoOff}*</span> : tempoOff}
+                                                    </td>
+                                                    <td className="px-3 py-2 text-gray-400 whitespace-nowrap">{tempoOnline}</td>
+                                                  </tr>
+                                                );
+                                              })}
+                                            </tbody>
+                                          </table>
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+
                   </div>
                 )}
               </div>
