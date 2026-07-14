@@ -2118,6 +2118,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           return "online";
         }
 
+        // O campo status/state da DisplayForce (ex: "online") tem prioridade sobre
+        // o estado do player. Dispositivo conectado com player parado ainda é online.
+        if (fallbackConnectivity === "online") {
+          return "online";
+        }
+
         if (fallbackConnectivity === "not_connected" && playerState !== "playback") {
           return "not_connected";
         }
@@ -2128,10 +2134,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
         if (playerState === "issue") {
           return wasEverConnected ? "offline" : "not_connected";
-        }
-
-        if (fallbackConnectivity === "online") {
-          return "online";
         }
 
         if (fallbackConnectivity === "not_connected") {
