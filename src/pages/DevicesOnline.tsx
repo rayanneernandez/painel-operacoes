@@ -1768,7 +1768,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     const rows = historyData[storeId] || [];
     if (rows.length === 0) return;
     const SEP = ';';
-    const headers = ['Dispositivo', 'MAC', 'Queda Detectada', 'Retorno Online', 'Tempo Off', 'Tempo Online', 'Status', 'Motivo'];
+    const headers = ['Dispositivo', 'MAC', 'Queda Detectada', 'Retorno Online', 'Tempo Off', 'Tempo Online'];
     const csvRows = rows.map((r) => {
       const retorno = r.last_seen_online_at || r.resolved_at || null;
       return [
@@ -1778,8 +1778,6 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         retorno ? formatDateTime(retorno) : 'Ainda offline',
         formatDuration(r.first_detected_at, retorno || undefined),
         retorno ? formatDuration(retorno) : '-',
-        r.status,
-        r.offline_reason || '',
       ];
     });
     const esc = (v: string) => (v.includes(SEP) || v.includes('"') || v.includes('\n') ? `"${v.replace(/"/g, '""')}"` : v);
@@ -1856,7 +1854,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
       if (rows.length === 0) { alert('Nenhum registro encontrado para os filtros selecionados.'); return; }
 
       const SEP = ';';
-      const headers = ['Loja', 'Dispositivo', 'MAC', 'Queda Detectada', 'Retorno Online', 'Tempo Off', 'Tempo Online', 'Status', 'Motivo'];
+      const headers = ['Loja', 'Dispositivo', 'MAC', 'Queda Detectada', 'Retorno Online', 'Tempo Off', 'Tempo Online'];
       const csvRows = rows.map((r) => {
         const retorno = r.last_seen_online_at || r.resolved_at || null;
         return [
@@ -1867,8 +1865,6 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
           retorno ? formatDateTime(retorno) : 'Ainda offline',
           formatDuration(r.first_detected_at, retorno || undefined),
           retorno ? formatDuration(retorno) : '-',
-          r.status,
-          r.offline_reason || '',
         ];
       });
       const esc = (v: string) => (v.includes(SEP) || v.includes('"') ? `"${v.replace(/"/g, '""')}"` : v);
