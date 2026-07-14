@@ -2169,7 +2169,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                                   const openIncident = (!incidents[0]?.resolved_at) ? incidents[0] : undefined;
                                   const isStillOffline = Boolean(openIncident);
                                   return (
-                                    <div key={devKey} className={`rounded border overflow-hidden ${isStillOffline ? 'border-red-900/60 bg-red-950/10' : 'border-gray-800 bg-gray-950'}`}>
+                                    <div key={devKey} className="rounded border border-gray-800 bg-gray-950 overflow-hidden">
                                       {/* Cabeçalho do dispositivo */}
                                       <button
                                         className="w-full flex items-center justify-between px-3 py-2 hover:bg-gray-900/60 transition-colors"
