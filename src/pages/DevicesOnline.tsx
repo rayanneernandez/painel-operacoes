@@ -646,6 +646,8 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   const [historyData, setHistoryData] = useState<Record<string, OfflineAlertRow[]>>({});
   const [historyLoading, setHistoryLoading] = useState<Record<string, boolean>>({});
   const [expandedHistoryDevice, setExpandedHistoryDevice] = useState<Record<string, boolean>>({});
+  const [historyPage, setHistoryPage] = useState<Record<string, number>>({});
+  const HISTORY_PAGE_SIZE = 20;
   // ── Gráfico independente por loja ────────────────────────────────────────────
   const [chartData, setChartData] = useState<Record<string, { date: string; count: number; label: string }[]>>({});
   const [chartLoading, setChartLoading] = useState<Record<string, boolean>>({});
@@ -2124,7 +2126,7 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                               className="rounded border border-gray-700 bg-gray-900 text-[11px] text-gray-200 px-2 py-1 focus:outline-none focus:border-emerald-500"
                             />
                             <button
-                              onClick={() => fetchHistory(store.id)}
+                              onClick={() => { setHistoryPage((p) => ({ ...p, [store.id]: 0 })); fetchHistory(store.id); }}
                               disabled={historyLoading[store.id]}
                               className="rounded bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50 text-white text-[11px] font-medium px-3 py-1 transition-colors"
                             >
@@ -2157,9 +2159,14 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                               return acc;
                             }, {});
 
+                            const allEntries = Object.entries(byDevice);
+                            const totalPages = Math.ceil(allEntries.length / HISTORY_PAGE_SIZE);
+                            const currentPage = historyPage[store.id] ?? 0;
+                            const pageEntries = allEntries.slice(currentPage * HISTORY_PAGE_SIZE, (currentPage + 1) * HISTORY_PAGE_SIZE);
+
                             return (
                               <div className="space-y-2">
-                                {Object.entries(byDevice).map(([deviceName, incidents]) => {
+                                {pageEntries.map(([deviceName, incidents]) => {
                                   const devKey = `${store.id}:${deviceName}`;
                                   const isExpanded = expandedHistoryDevice[devKey];
                                   // incidents chegam em ordem DESC (mais recente primeiro, via query ORDER BY first_detected_at DESC)
@@ -2256,6 +2263,40 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
                                     </div>
                                   );
                                 })}
+
+                                {/* Paginação */}
+                                {totalPages > 1 && (
+                                  <div className="flex items-center justify-between pt-2 border-t border-gray-800/50 mt-1">
+                                    <span className="text-[10px] text-gray-500">
+                                      {currentPage * HISTORY_PAGE_SIZE + 1}–{Math.min((currentPage + 1) * HISTORY_PAGE_SIZE, allEntries.length)} de {allEntries.length} dispositivos
+                                    </span>
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        disabled={currentPage === 0}
+                                        onClick={() => setHistoryPage((p) => ({ ...p, [store.id]: currentPage - 1 }))}
+                                        className="px-2 py-1 rounded text-[11px] border border-gray-700 bg-gray-900 text-gray-300 hover:bg-gray-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                      >
+                                        ‹ Anterior
+                                      </button>
+                                      {Array.from({ length: totalPages }, (_, i) => (
+                                        <button
+                                          key={i}
+                                          onClick={() => setHistoryPage((p) => ({ ...p, [store.id]: i }))}
+                                          className={`w-6 h-6 rounded text-[11px] border transition-colors ${i === currentPage ? 'border-emerald-600 bg-emerald-950/60 text-emerald-300' : 'border-gray-700 bg-gray-900 text-gray-400 hover:bg-gray-800'}`}
+                                        >
+                                          {i + 1}
+                                        </button>
+                                      ))}
+                                      <button
+                                        disabled={currentPage === totalPages - 1}
+                                        onClick={() => setHistoryPage((p) => ({ ...p, [store.id]: currentPage + 1 }))}
+                                        className="px-2 py-1 rounded text-[11px] border border-gray-700 bg-gray-900 text-gray-300 hover:bg-gray-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                                      >
+                                        Próxima ›
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
                               </div>
                             );
                           })()}
