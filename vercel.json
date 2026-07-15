@@ -18,6 +18,9 @@
     },
     "api/lia-chat.ts": {
       "maxDuration": 60
+    },
+    "api/overview.ts": {
+      "maxDuration": 30
     }
   },
   "rewrites": [
