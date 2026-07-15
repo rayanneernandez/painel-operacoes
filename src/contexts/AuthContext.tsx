@@ -99,7 +99,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       view_reports: false,
       view_analytics: false,
       export_data: false,
-      manage_settings: false
+      manage_settings: false,
+      view_monitoring: false
     };
 
     const run = async () => {
@@ -168,7 +169,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 view_reports: true,
                 view_analytics: true,
                 export_data: true,
-                manage_settings: true
+                manage_settings: true,
+                view_monitoring: true
               }
             : { ...defaultPermissions, ...(data.permissions || {}) };
 
@@ -273,11 +275,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         view_reports: false,
         view_analytics: false,
         export_data: false,
-        manage_settings: false
+        manage_settings: false,
+        view_monitoring: false
       };
 
       // Se for admin, tem tudo. Se for cliente, usa o que tá no banco ou default.
-      const userPermissions = data.role === 'admin' 
+      const userPermissions = data.role === 'admin'
         ? {
             view_dashboard: true,
             view_devices_online: true,
@@ -285,7 +288,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             view_reports: true,
             view_analytics: true,
             export_data: true,
-            manage_settings: true
+            manage_settings: true,
+            view_monitoring: true
           }
         : { ...defaultPermissions, ...(data.permissions || {}) };
 

@@ -90,5 +90,6 @@ export type AuthUser = {
     view_analytics: boolean;
     export_data: boolean;
     manage_settings: boolean;
+    view_monitoring: boolean;
   };
 };

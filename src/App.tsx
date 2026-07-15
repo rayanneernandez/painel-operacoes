@@ -12,6 +12,7 @@ import { Settings } from './pages/Settings';
 import { Reports } from './pages/Reports';
 import { Logs } from './pages/Logs';
 import { DevicesOnline } from './pages/DevicesOnline';
+import { Monitoramento } from './pages/monitoramento/Monitoramento';
 import { Login } from './pages/Login';
 import { MyAccount } from './pages/MyAccount';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -109,6 +110,25 @@ const DevicesOnlineRoute = () => {
   return <Navigate to="/" replace />;
 };
 
+const MonitoramentoRoute = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">Carregando...</div>;
+  }
+
+  if (user?.role === 'admin' || (user?.permissions?.view_monitoring ?? false)) {
+    return <Monitoramento />;
+  }
+
+  if (user?.role === 'client') {
+    if (!user.clientId) return <MissingClientLink />;
+    return <Navigate to={`/clientes/${user.clientId}/dashboard`} replace />;
+  }
+
+  return <Navigate to="/" replace />;
+};
+
 const WhatsappAlertsRoute = () => {
   const { user, isLoading } = useAuth();
 
@@ -149,6 +169,7 @@ function App() {
               <Route path="minha-conta" element={<MyAccount />} />
               <Route path="relatorios" element={<ReportsRoute />} />
               <Route path="dispositivos-online" element={<DevicesOnlineRoute />} />
+              <Route path="monitoramento" element={<MonitoramentoRoute />} />
               <Route path="alertas-whatsapp" element={<WhatsappAlertsRoute />} />
 
               {/* Rotas administrativas */}

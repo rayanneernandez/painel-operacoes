@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Wifi,
+  Monitor,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import globaliaLogo from '../assets/globalia.png';
@@ -230,11 +231,17 @@ export function Layout() {
         : '/dashboard',
       show: user?.role === 'admin' || (user?.permissions?.view_dashboard ?? true)
     },
-    { 
-      icon: Wifi, 
-      label: 'Dispositivos Online', 
+    {
+      icon: Wifi,
+      label: 'Dispositivos Online',
       path: '/dispositivos-online',
       show: user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)
+    },
+    {
+      icon: Monitor,
+      label: 'Monitoramento',
+      path: '/monitoramento',
+      show: user?.role === 'admin' || (user?.permissions?.view_monitoring ?? false)
     },
     {
       icon: MessageSquare,
@@ -324,7 +331,7 @@ export function Layout() {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 px-4 py-4 space-y-1">
+        <nav className="flex-1 overflow-y-auto px-4 py-4 space-y-1">
           {visibleMenuItems.map((item) => {
             const Icon = item.icon;
             const isActive = location.pathname.startsWith(item.path);

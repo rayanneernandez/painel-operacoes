@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import supabase from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
-import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Unlock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText, Wifi, Calendar, Clock, AlertTriangle, MessageSquare } from 'lucide-react';
+import { Search, Plus, User, Mail, Shield, Building, MoreVertical, ArrowDown, X, Lock, Unlock, Eye, EyeOff, CheckSquare, Square, Settings, Users as UsersIcon, FileEdit, BarChart2, Download, FileText, Wifi, Calendar, Clock, AlertTriangle, MessageSquare, Monitor } from 'lucide-react';
 
 // Componente Toggle
 const Toggle = ({ checked, onChange }: { checked: boolean; onChange: () => void }) => (
@@ -41,6 +41,7 @@ type UserType = {
     view_analytics: boolean;
     export_data: boolean;
     manage_settings: boolean;
+    view_monitoring: boolean;
   };
 };
 
@@ -117,7 +118,8 @@ export function Users() {
     view_reports: false,
     view_analytics: false,
     export_data: false,
-    manage_settings: false
+    manage_settings: false,
+    view_monitoring: false
   });
 
   const togglePerm = (key: keyof typeof perms) => {
@@ -214,7 +216,8 @@ export function Users() {
         view_reports: false,
         view_analytics: false,
         export_data: false,
-        manage_settings: false
+        manage_settings: false,
+        view_monitoring: false
       };
       setPerms({
         view_dashboard: p.view_dashboard ?? true,
@@ -223,7 +226,8 @@ export function Users() {
         view_reports: p.view_reports ?? false,
         view_analytics: p.view_analytics ?? false,
         export_data: p.export_data ?? false,
-        manage_settings: p.manage_settings ?? false
+        manage_settings: p.manage_settings ?? false,
+        view_monitoring: p.view_monitoring ?? false
       });
     } else {
       setEditingUser(null);
@@ -242,7 +246,8 @@ export function Users() {
         view_reports: false,
         view_analytics: false,
         export_data: false,
-        manage_settings: false
+        manage_settings: false,
+        view_monitoring: false
       });
     }
     setIsModalOpen(true);
@@ -821,6 +826,19 @@ export function Users() {
                         </div>
                       </div>
                       <Toggle checked={perms.manage_whatsapp_alerts} onChange={() => togglePerm('manage_whatsapp_alerts')} />
+                    </div>
+
+                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
+                          <Monitor size={20} />
+                        </div>
+                        <div>
+                          <p className="font-medium text-white text-sm">Monitoramento</p>
+                          <p className="text-xs text-gray-500">Acesso ao painel de monitoramento de telas (PrintView)</p>
+                        </div>
+                      </div>
+                      <Toggle checked={perms.view_monitoring} onChange={() => togglePerm('view_monitoring')} />
                     </div>
 
                     <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
