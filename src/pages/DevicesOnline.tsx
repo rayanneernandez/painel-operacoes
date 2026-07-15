@@ -664,6 +664,9 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
   // Throttle do catch-up de resolução retroativa (1x por minuto)
   const lastRetroResolutionRef = useRef<number>(0);
 
+  // ── Pesquisa de lojas ────────────────────────────────────────────────────────
+  const [storeSearch, setStoreSearch] = useState('');
+
   // ── Export global ────────────────────────────────────────────────────────────
   const [showExportPanel, setShowExportPanel] = useState(false);
   const [exportMode, setExportMode] = useState<'now' | 'history'>('now');
@@ -1883,10 +1886,35 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
     }
   };
 
-  const renderOverview = () => (
+  const renderOverview = () => {
+    const filteredStores = storeSearch.trim()
+      ? stores.filter((s) => s.name.toLowerCase().includes(storeSearch.trim().toLowerCase()))
+      : stores;
+
+    return (
     <div className="grid grid-cols-1 lg:grid-cols-[1fr_360px] gap-4">
       {/* ── Painel de Exportação ── */}
       <div className="space-y-3">
+        {/* Campo de pesquisa de lojas */}
+        <div className="relative">
+          <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input
+            type="text"
+            placeholder="Pesquisar loja..."
+            value={storeSearch}
+            onChange={(e) => setStoreSearch(e.target.value)}
+            className="w-full rounded-xl border border-gray-800 bg-gray-950 pl-9 pr-4 py-2.5 text-sm text-white placeholder-gray-500 outline-none focus:border-emerald-600 transition-colors"
+          />
+          {storeSearch && (
+            <button
+              onClick={() => setStoreSearch('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+
         <div className="bg-gray-950 border border-gray-800 rounded-xl overflow-hidden">
           <button
             className="w-full flex items-center justify-between px-4 py-3 hover:bg-gray-900 transition-colors"
@@ -1990,8 +2018,12 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
           <div className="bg-gray-900 border border-gray-800 rounded-xl p-10 text-center text-gray-500">
             Nenhuma loja encontrada para esta rede.
           </div>
+        ) : filteredStores.length === 0 ? (
+          <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 text-center text-gray-500 text-sm">
+            Nenhuma loja encontrada para "<span className="text-gray-300">{storeSearch}</span>".
+          </div>
         ) : (
-          stores.map((store) => {
+          filteredStores.map((store) => {
             const onlineCount = store.devices.filter((device) => device.status === 'online').length;
             const offlineCount = store.devices.filter((device) => device.status === 'offline').length;
             const notConnectedCount = store.devices.filter((device) => device.status === 'not_connected').length;
@@ -2357,7 +2389,8 @@ export function DevicesOnline({ pageMode = 'overview' }: DevicesOnlineProps) {
         </div>
       </aside>
     </div>
-  );
+    );
+  };
 
   const renderWhatsappTab = () => (
     <div className="space-y-4">
