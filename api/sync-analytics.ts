@@ -2171,10 +2171,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const assignedMacs = new Set<string>();
 
       // ── Passo 1: matching por parent_id direto (rota principal) ────────────
+      // assignedMacs garante que o mesmo MAC não seja adicionado duas vezes caso
+      // o mesmo device apareça em múltiplas pastas/folders da DisplayForce.
       folderToStoreId.forEach((storeId, folderId) => {
         const list = devicesByFolder.get(folderId)||[];
         list.forEach((d:any) => {
           const mac=String(d?.id??"").trim(); if(!mac)return;
+          if (assignedMacs.has(mac)) return; // já atribuído em pasta anterior — evita duplicatas
           const existingId=devIdByStoreMac.get(`${storeId}:${mac}`);
           const extId=Number(mac);
           devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d) });
@@ -2225,6 +2228,30 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .delete()
             .in("store_id", storeIds)
             .not("mac_address", "in", `(${allSyncedMacs.join(",")})`);
+        }
+      }
+
+      // Remove registros duplicados de MAC em outras lojas do mesmo client.
+      // Isso limpa devices que apareciam em múltiplas pastas/folders da DisplayForce.
+      if (devicesPayload.length > 0) {
+        const macToKeepId = new Map<string, string>();
+        devicesPayload.forEach(d => {
+          if (d.mac_address) macToKeepId.set(String(d.mac_address), String(d.id));
+        });
+        const macsToClean = [...macToKeepId.keys()];
+        const idsToKeep   = [...macToKeepId.values()];
+        if (macsToClean.length > 0) {
+          const { data: staleDevs } = await supabase
+            .from("devices")
+            .select("id,mac_address,store_id")
+            .in("mac_address", macsToClean)
+            .not("id", "in", `(${idsToKeep.join(",")})`);
+
+          const staleIds = (staleDevs || []).map((d: any) => String(d.id)).filter(Boolean);
+          if (staleIds.length > 0) {
+            console.log(`[sync_stores] Removendo ${staleIds.length} registro(s) duplicado(s) de MAC em outras lojas`);
+            await supabase.from("devices").delete().in("id", staleIds);
+          }
         }
       }
 
