@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Camera, Clock, Folder as FolderIcon, Maximize2, MoreVertical, ShieldOff } from 'lucide-react'
+import { Camera, Clock, Folder as FolderIcon, Maximize2, MoreVertical, Search, ShieldOff } from 'lucide-react'
 import type { Device, Folder } from './types'
 import { relativeTime } from './format'
 import { StatusPill, type DeviceStatus } from './StatusPill'
@@ -24,6 +24,8 @@ export function DeviceCard({
   onOpenDetail: (device: Device) => void
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
+  const [folderSearch, setFolderSearch] = useState('')
+  const visibleFolders = folders.filter((f) => f.name.toLowerCase().includes(folderSearch.trim().toLowerCase()))
 
   return (
     <div className="group relative rounded-2xl border border-gray-800 bg-gray-900">
@@ -65,45 +67,71 @@ export function DeviceCard({
 
         {menuOpen && (
           <div
-            className="absolute bottom-full right-3 z-20 mb-2 w-48 overflow-hidden rounded-xl border border-gray-800 bg-gray-950 py-1 shadow-xl"
-            onMouseLeave={() => setMenuOpen(false)}
+            className="absolute bottom-full right-3 z-20 mb-2 flex max-h-[70vh] w-56 max-w-[85vw] flex-col overflow-hidden rounded-xl border border-gray-800 bg-gray-950 py-1 shadow-xl"
+            onMouseLeave={() => {
+              setMenuOpen(false)
+              setFolderSearch('')
+            }}
           >
             <div className="px-3 py-1.5 text-[11px] font-semibold tracking-wide text-gray-500">
               MOVER PARA PASTA
             </div>
-            {folders.map((f) => (
-              <button
-                key={f.id}
-                onClick={() => {
-                  onMoveToFolder(device.id, f.id)
-                  setMenuOpen(false)
-                }}
-                className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-200 hover:bg-white/5"
-              >
-                <FolderIcon size={13} />
-                {f.name}
-              </button>
-            ))}
+
+            {folders.length > 5 && (
+              <div className="relative mb-1 px-2">
+                <Search size={12} className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-gray-500" />
+                <input
+                  autoFocus
+                  value={folderSearch}
+                  onChange={(e) => setFolderSearch(e.target.value)}
+                  placeholder="Buscar pasta..."
+                  className="w-full rounded-md border border-gray-800 bg-gray-900 py-1 pl-6 pr-2 text-xs text-white outline-none placeholder:text-gray-500 focus:border-emerald-500"
+                />
+              </div>
+            )}
+
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              {visibleFolders.map((f) => (
+                <button
+                  key={f.id}
+                  onClick={() => {
+                    onMoveToFolder(device.id, f.id)
+                    setMenuOpen(false)
+                    setFolderSearch('')
+                  }}
+                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-gray-200 hover:bg-white/5"
+                >
+                  <FolderIcon size={13} className="shrink-0" />
+                  <span className="truncate">{f.name}</span>
+                </button>
+              ))}
+              {folders.length > 0 && visibleFolders.length === 0 && (
+                <div className="px-3 py-2 text-xs text-gray-500">Nenhuma pasta encontrada.</div>
+              )}
+            </div>
+
             {device.folder_id && (
               <button
                 onClick={() => {
                   onMoveToFolder(device.id, null)
                   setMenuOpen(false)
+                  setFolderSearch('')
                 }}
-                className="w-full px-3 py-1.5 text-left text-sm text-gray-400 hover:bg-white/5"
+                className="w-full shrink-0 px-3 py-1.5 text-left text-sm text-gray-400 hover:bg-white/5"
               >
                 Remover da pasta
               </button>
             )}
             {device.status !== 'revoked' && (
               <>
-                <div className="my-1 border-t border-gray-800" />
+                <div className="my-1 shrink-0 border-t border-gray-800" />
                 <button
                   onClick={() => {
                     onRevoke(device.id)
                     setMenuOpen(false)
+                    setFolderSearch('')
                   }}
-                  className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm text-red-400 hover:bg-red-500/10"
+                  className="flex w-full shrink-0 items-center gap-2 px-3 py-1.5 text-left text-sm text-red-400 hover:bg-red-500/10"
                 >
                   <ShieldOff size={13} />
                   Revogar acesso
