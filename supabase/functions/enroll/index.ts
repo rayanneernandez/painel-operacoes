@@ -21,6 +21,7 @@ Deno.serve(async (req) => {
     os_user?: string;
     local_ip?: string;
     connection_type?: string;
+    install_id?: string;
   };
 
   try {
@@ -29,7 +30,7 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ error: "invalid_json" }), { status: 400 });
   }
 
-  const { enrollment_key, device_name, hostname, os_user, local_ip, connection_type } = body;
+  const { enrollment_key, device_name, hostname, os_user, local_ip, connection_type, install_id } = body;
 
   const logFailure = async (reason: string) => {
     await supabase.from("printview_enroll_events").insert({
@@ -52,20 +53,33 @@ Deno.serve(async (req) => {
     return new Response(JSON.stringify({ error: "missing_fields" }), { status: 400 });
   }
 
-  const { data: existing } = await supabase
-    .from("printview_devices")
-    .select("id")
-    .eq("hostname", hostname)
-    .eq("status", "active")
-    .maybeSingle();
+  // install_id is a random ID the client generates once and persists locally
+  // -- it's what uniqueness is actually checked against. hostname alone
+  // isn't reliable: cloned/imaged machines (common on POS terminals) can
+  // share the same Windows hostname despite being different computers.
+  // Older clients that don't send install_id yet fall back to the hostname
+  // check so they keep working until rebuilt.
+  const { data: existing } = install_id
+    ? await supabase
+        .from("printview_devices")
+        .select("id")
+        .eq("install_id", install_id)
+        .eq("status", "active")
+        .maybeSingle()
+    : await supabase
+        .from("printview_devices")
+        .select("id")
+        .eq("hostname", hostname)
+        .eq("status", "active")
+        .maybeSingle();
 
   if (existing) {
-    await logFailure("hostname_already_active");
+    await logFailure("already_active");
     return new Response(
       JSON.stringify({
         error: "already_enrolled",
         message:
-          "Este hostname ja possui um dispositivo ativo. Revogue-o no painel antes de reinstalar.",
+          "Este computador ja possui um dispositivo ativo. Revogue-o no painel antes de reinstalar.",
       }),
       { status: 409 },
     );
@@ -80,6 +94,7 @@ Deno.serve(async (req) => {
       name: device_name,
       hostname,
       os_user,
+      install_id: install_id ?? null,
       last_ip: ip,
       local_ip: local_ip ?? null,
       connection_type: connection_type ?? null,

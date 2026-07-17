@@ -40,7 +40,7 @@ export function FolderNav({
   }
 
   return (
-    <aside className="flex w-60 shrink-0 flex-col rounded-2xl border border-gray-800 bg-gray-900 p-4">
+    <aside className="flex max-h-[calc(100vh-6rem)] w-60 shrink-0 flex-col rounded-2xl border border-gray-800 bg-gray-900 p-4">
       <div className="mb-2 px-1 text-[11px] font-semibold tracking-widest text-gray-500">VISÃO GERAL</div>
       <nav className="mb-6 flex flex-col gap-0.5">
         <NavItem
