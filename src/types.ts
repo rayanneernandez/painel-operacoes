@@ -91,5 +91,9 @@ export type AuthUser = {
     export_data: boolean;
     manage_settings: boolean;
     view_monitoring: boolean;
+    // Whitelist for the Monitoramento module -- empty arrays mean the user
+    // (non-admin) sees no devices until specific folders/devices are granted.
+    monitoring_folder_ids: string[];
+    monitoring_device_ids: string[];
   };
 };

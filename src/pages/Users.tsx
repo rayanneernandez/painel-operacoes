@@ -42,8 +42,13 @@ type UserType = {
     export_data: boolean;
     manage_settings: boolean;
     view_monitoring: boolean;
+    monitoring_folder_ids: string[];
+    monitoring_device_ids: string[];
   };
 };
+
+type MonitoringFolder = { id: string; name: string };
+type MonitoringDevice = { id: string; name: string; hostname: string; folder_id: string | null };
 
 // Espelha a lógica do AuthContext.assertAccessAllowed para mostrar badge na lista.
 function isUserStatusBlocked(status: unknown): boolean {
@@ -119,11 +124,50 @@ export function Users() {
     view_analytics: false,
     export_data: false,
     manage_settings: false,
-    view_monitoring: false
+    view_monitoring: false,
+    monitoring_folder_ids: [] as string[],
+    monitoring_device_ids: [] as string[]
   });
 
-  const togglePerm = (key: keyof typeof perms) => {
+  const togglePerm = (key: 'view_dashboard' | 'view_devices_online' | 'manage_whatsapp_alerts' | 'view_reports' | 'view_analytics' | 'export_data' | 'manage_settings' | 'view_monitoring') => {
     setPerms(p => ({ ...p, [key]: !p[key] }));
+  };
+
+  const toggleMonitoringFolder = (folderId: string) => {
+    setPerms(p => ({
+      ...p,
+      monitoring_folder_ids: p.monitoring_folder_ids.includes(folderId)
+        ? p.monitoring_folder_ids.filter(id => id !== folderId)
+        : [...p.monitoring_folder_ids, folderId]
+    }));
+  };
+
+  const toggleMonitoringDevice = (deviceId: string) => {
+    setPerms(p => ({
+      ...p,
+      monitoring_device_ids: p.monitoring_device_ids.includes(deviceId)
+        ? p.monitoring_device_ids.filter(id => id !== deviceId)
+        : [...p.monitoring_device_ids, deviceId]
+    }));
+  };
+
+  // Pastas/dispositivos do Monitoramento (PrintView), pra montar as checklists
+  // de acesso granular dentro da permissão "Monitoramento".
+  const [monitoringFolders, setMonitoringFolders] = useState<MonitoringFolder[]>([]);
+  const [monitoringDevices, setMonitoringDevices] = useState<MonitoringDevice[]>([]);
+  const [monitoringDeviceSearch, setMonitoringDeviceSearch] = useState('');
+
+  const fetchMonitoringData = async () => {
+    try {
+      const [foldersRes, devicesRes] = await Promise.all([
+        supabase.from('printview_folders').select('id, name').order('name'),
+        supabase.from('printview_devices').select('id, name, hostname, folder_id').order('name'),
+      ]);
+      setMonitoringFolders(foldersRes.data || []);
+      setMonitoringDevices(devicesRes.data || []);
+    } catch (error) {
+      console.error('Erro ao buscar pastas/dispositivos do Monitoramento:', error);
+    }
   };
 
   const [formData, setFormData] = useState({
@@ -144,6 +188,7 @@ export function Users() {
       const clients = await fetchClients();
       if (cancelled) return;
       await fetchUsers(clients);
+      await fetchMonitoringData();
     };
 
     void run();
@@ -217,7 +262,9 @@ export function Users() {
         view_analytics: false,
         export_data: false,
         manage_settings: false,
-        view_monitoring: false
+        view_monitoring: false,
+        monitoring_folder_ids: [],
+        monitoring_device_ids: []
       };
       setPerms({
         view_dashboard: p.view_dashboard ?? true,
@@ -227,7 +274,9 @@ export function Users() {
         view_analytics: p.view_analytics ?? false,
         export_data: p.export_data ?? false,
         manage_settings: p.manage_settings ?? false,
-        view_monitoring: p.view_monitoring ?? false
+        view_monitoring: p.view_monitoring ?? false,
+        monitoring_folder_ids: p.monitoring_folder_ids ?? [],
+        monitoring_device_ids: p.monitoring_device_ids ?? []
       });
     } else {
       setEditingUser(null);
@@ -247,9 +296,12 @@ export function Users() {
         view_analytics: false,
         export_data: false,
         manage_settings: false,
-        view_monitoring: false
+        view_monitoring: false,
+        monitoring_folder_ids: [],
+        monitoring_device_ids: []
       });
     }
+    setMonitoringDeviceSearch('');
     setIsModalOpen(true);
     setActiveMenu(null);
   };
@@ -840,6 +892,122 @@ export function Users() {
                       </div>
                       <Toggle checked={perms.view_monitoring} onChange={() => togglePerm('view_monitoring')} />
                     </div>
+
+                    {perms.view_monitoring && (
+                      <div className="mx-4 mb-3 space-y-4 rounded-lg border border-gray-800 bg-gray-950/50 p-4">
+                        <p className="text-xs text-gray-500">
+                          Escolha quais pastas e/ou dispositivos esse usuário pode ver no Monitoramento.
+                          Sem nada marcado abaixo, ele não vê nenhum dispositivo (admins sempre veem tudo).
+                        </p>
+
+                        <div>
+                          <div className="mb-2 flex items-center justify-between">
+                            <span className="text-xs font-semibold text-gray-400">Pastas visíveis</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPerms(p => ({
+                                  ...p,
+                                  monitoring_folder_ids:
+                                    p.monitoring_folder_ids.length === monitoringFolders.length
+                                      ? []
+                                      : monitoringFolders.map(f => f.id),
+                                }))
+                              }
+                              className="text-xs text-indigo-400 hover:text-indigo-300"
+                            >
+                              {perms.monitoring_folder_ids.length === monitoringFolders.length && monitoringFolders.length > 0
+                                ? 'Limpar'
+                                : 'Selecionar todas'}
+                            </button>
+                          </div>
+                          <div className="max-h-40 overflow-y-auto rounded-lg border border-gray-800 bg-gray-900/40">
+                            {monitoringFolders.length === 0 ? (
+                              <p className="px-3 py-2 text-xs text-gray-600">Nenhuma pasta cadastrada.</p>
+                            ) : (
+                              monitoringFolders.map(folder => (
+                                <div
+                                  key={folder.id}
+                                  onClick={() => toggleMonitoringFolder(folder.id)}
+                                  className="flex cursor-pointer items-center gap-2.5 border-b border-gray-800/50 px-3 py-2 last:border-0 hover:bg-gray-800/50"
+                                >
+                                  {perms.monitoring_folder_ids.includes(folder.id) ? (
+                                    <CheckSquare size={15} className="shrink-0 text-indigo-500" />
+                                  ) : (
+                                    <Square size={15} className="shrink-0 text-gray-600" />
+                                  )}
+                                  <span
+                                    className={`truncate text-xs ${perms.monitoring_folder_ids.includes(folder.id) ? 'text-white' : 'text-gray-400'}`}
+                                  >
+                                    {folder.name}
+                                  </span>
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="mb-2 flex items-center justify-between">
+                            <span className="text-xs font-semibold text-gray-400">Dispositivos visíveis (individuais)</span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setPerms(p => ({
+                                  ...p,
+                                  monitoring_device_ids:
+                                    p.monitoring_device_ids.length === monitoringDevices.length
+                                      ? []
+                                      : monitoringDevices.map(d => d.id),
+                                }))
+                              }
+                              className="text-xs text-indigo-400 hover:text-indigo-300"
+                            >
+                              {perms.monitoring_device_ids.length === monitoringDevices.length && monitoringDevices.length > 0
+                                ? 'Limpar'
+                                : 'Selecionar todos'}
+                            </button>
+                          </div>
+                          <input
+                            value={monitoringDeviceSearch}
+                            onChange={e => setMonitoringDeviceSearch(e.target.value)}
+                            placeholder="Buscar dispositivo..."
+                            className="mb-2 w-full rounded-lg border border-gray-800 bg-gray-950 px-3 py-1.5 text-xs text-white outline-none placeholder:text-gray-600 focus:border-indigo-500"
+                          />
+                          <div className="max-h-40 overflow-y-auto rounded-lg border border-gray-800 bg-gray-900/40">
+                            {(() => {
+                              const q = monitoringDeviceSearch.trim().toLowerCase();
+                              const visible = q
+                                ? monitoringDevices.filter(
+                                    d => d.name.toLowerCase().includes(q) || d.hostname.toLowerCase().includes(q)
+                                  )
+                                : monitoringDevices;
+                              if (visible.length === 0) {
+                                return <p className="px-3 py-2 text-xs text-gray-600">Nenhum dispositivo encontrado.</p>;
+                              }
+                              return visible.map(device => (
+                                <div
+                                  key={device.id}
+                                  onClick={() => toggleMonitoringDevice(device.id)}
+                                  className="flex cursor-pointer items-center gap-2.5 border-b border-gray-800/50 px-3 py-2 last:border-0 hover:bg-gray-800/50"
+                                >
+                                  {perms.monitoring_device_ids.includes(device.id) ? (
+                                    <CheckSquare size={15} className="shrink-0 text-indigo-500" />
+                                  ) : (
+                                    <Square size={15} className="shrink-0 text-gray-600" />
+                                  )}
+                                  <span
+                                    className={`truncate text-xs ${perms.monitoring_device_ids.includes(device.id) ? 'text-white' : 'text-gray-400'}`}
+                                  >
+                                    {device.name} <span className="text-gray-600">· {device.hostname}</span>
+                                  </span>
+                                </div>
+                              ));
+                            })()}
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
                       <div className="flex items-center gap-4">

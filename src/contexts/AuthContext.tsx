@@ -100,7 +100,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       view_analytics: false,
       export_data: false,
       manage_settings: false,
-      view_monitoring: false
+      view_monitoring: false,
+      monitoring_folder_ids: [] as string[],
+      monitoring_device_ids: [] as string[]
     };
 
     const run = async () => {
@@ -170,7 +172,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
                 view_analytics: true,
                 export_data: true,
                 manage_settings: true,
-                view_monitoring: true
+                view_monitoring: true,
+                monitoring_folder_ids: [] as string[],
+                monitoring_device_ids: [] as string[]
               }
             : { ...defaultPermissions, ...(data.permissions || {}) };
 

@@ -8,11 +8,12 @@ import type { DeviceStatus } from './StatusPill'
 import { useMonitoramentoData } from './useMonitoramentoData'
 import { isOffline } from './format'
 import type { Device } from './types'
+import { useAuth } from '../../contexts/AuthContext'
 
 export function Monitoramento() {
   const {
-    folders,
-    devices,
+    folders: allFolders,
+    devices: allDevices,
     thumbnails,
     capturesToday,
     loading,
@@ -24,6 +25,25 @@ export function Monitoramento() {
     revokeDevice,
     isSyncing,
   } = useMonitoramentoData()
+
+  const { user } = useAuth()
+
+  // Admins sempre veem tudo. Para os demais, o acesso é restrito às pastas e
+  // aos dispositivos individuais liberados em Usuários -- sem nada liberado,
+  // não vê nenhum dispositivo (ver src/pages/Users.tsx, aba Permissões).
+  const isAdmin = user?.role === 'admin'
+  const allowedFolderIds = useMemo(() => new Set(user?.permissions?.monitoring_folder_ids ?? []), [user])
+  const allowedDeviceIds = useMemo(() => new Set(user?.permissions?.monitoring_device_ids ?? []), [user])
+
+  const devices = useMemo(() => {
+    if (isAdmin) return allDevices
+    return allDevices.filter((d) => (d.folder_id && allowedFolderIds.has(d.folder_id)) || allowedDeviceIds.has(d.id))
+  }, [allDevices, isAdmin, allowedFolderIds, allowedDeviceIds])
+
+  const folders = useMemo(() => {
+    if (isAdmin) return allFolders
+    return allFolders.filter((f) => allowedFolderIds.has(f.id) || devices.some((d) => d.folder_id === f.id))
+  }, [allFolders, isAdmin, allowedFolderIds, devices])
 
   const [selectedFolder, setSelectedFolder] = useState<FolderFilter>('all')
   const [statusFilter, setStatusFilter] = useState<'all' | 'online' | 'offline' | 'revoked'>('all')
