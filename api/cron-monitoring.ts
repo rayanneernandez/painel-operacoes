@@ -37,7 +37,7 @@ function rotateConfigs<T extends { client_id: string }>(configs: T[]) {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Cache-Control", "no-store");
 
-  if (req.method !== "GET" && req.method !== "POST") {
+  if (req.method !== "GET" && req.method !== "POST" && req.method !== "HEAD") {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
 
