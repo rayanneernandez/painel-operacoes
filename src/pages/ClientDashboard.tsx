@@ -1976,10 +1976,10 @@ export function ClientDashboard() {
       // ── Rede global ────────────────────────────────────────────────────
       // FONTE PRIMÁRIA: dados do período EXATO, sempre aditivos e consistentes
       // (junho + julho = junho+julho). Ordem:
-      //   1) rollup exato em cache (rápido), se existir e for consistente;
-      //   2) senão recomputa do banco no período exato via rebuild_rollup
-      //      (o backend salva o rollup exato, então a próxima abertura é instantânea);
-      //   3) o merge de rollups sobrepostos vira apenas último fallback.
+      //   1) rollup exato em cache (instantâneo), se existir e for consistente;
+      //   2) agregação no banco via RPC build_visitor_rollup (rápida, o Postgres soma);
+      //   3) rebuild_rollup no backend (fallback se a RPC não existir no banco);
+      //   4) merge de rollups sobrepostos como último fallback.
       {
         // 1) rollup exato em cache
         let cachedExactGlobal: any = null;
@@ -2021,7 +2021,39 @@ export function ClientDashboard() {
           }
         }
 
-        // 2) recomputa do banco no período exato (server-side, sempre aditivo)
+        // 2) AGREGAÇÃO NO BANCO (rápida): o Postgres faz count/group by/avg e
+        //    devolve só os números — instantâneo, não baixa as linhas.
+        try {
+          const rpcResult = await withTimeout(
+            supabase.rpc('build_visitor_rollup', {
+              p_client_id: id,
+              p_start: startIso,
+              p_end: endIso,
+            }),
+            30000,
+            'build_visitor_rollup (rpc)',
+          );
+          if (!isCurrent()) return;
+          const rpcData: any = (rpcResult as any)?.data ?? null;
+          const rpcError: any = (rpcResult as any)?.error ?? null;
+          if (!rpcError && rpcData && Number(rpcData.total_visitors) > 0) {
+            console.log('[loadData] ✅ agregação no banco (RPC):', rpcData.total_visitors, `(${startDay}→${endDay})`);
+            applyRollup(rpcData, { updatedAt: new Date().toISOString() });
+            await Promise.all([
+              syncExpressions([rpcData]),
+              syncDeviceFlow([rpcData]),
+            ]);
+            return;
+          }
+          if (rpcError) {
+            console.warn('[loadData] RPC build_visitor_rollup indisponível, usando rebuild:', rpcError?.message ?? rpcError);
+          }
+        } catch (rpcErr) {
+          console.warn('[loadData] RPC build_visitor_rollup falhou, usando rebuild:', rpcErr);
+        }
+
+        // 3) recomputa via backend (fallback se a RPC não estiver no banco);
+        //    baixa as linhas e soma — mais lento, mas salva o rollup exato em cache.
         const rebuildKeyGlobal = `${id}:${startDay}:${endDay}`;
         if (!_rebuilding.has(rebuildKeyGlobal)) {
           _rebuilding.add(rebuildKeyGlobal);
@@ -2060,7 +2092,7 @@ export function ClientDashboard() {
             _rebuilding.delete(rebuildKeyGlobal);
           }
         }
-        // 3) sem período exato disponível → cai no merge de rollups abaixo (fallback)
+        // 4) sem período exato disponível → cai no merge de rollups abaixo (último fallback)
       }
 
       // ── Fallback: merge de rollups sobrepostos ───────────────────────────
