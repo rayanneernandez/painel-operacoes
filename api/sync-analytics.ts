@@ -1265,7 +1265,16 @@ function buildRollup(rows: any[], client_id: string, rangeStart: string, rangeEn
     if (typeof row.contact_time_seconds === "number" && Number.isFinite(row.contact_time_seconds) && row.contact_time_seconds > 0) { sumContact += row.contact_time_seconds; cntContact++; }
   }
 
-  const totalVisitors = rows.length;
+  // Usa a soma dos buckets diários como total_visitors para garantir consistência
+  // com o caminho de merge do dashboard (que soma visitors_per_day).
+  // rows com timestamp nulo/inválido são atribuídos ao primeiro dia do range como fallback.
+  for (const row of rows) {
+    if (!row.timestamp || isNaN(new Date(row.timestamp).getTime())) {
+      const fallbackKey = asSaoPauloDateKey(new Date(rangeStart));
+      perDayCount[fallbackKey] = (perDayCount[fallbackKey] ?? 0) + 1;
+    }
+  }
+  const totalVisitors = Object.values(perDayCount).reduce((a, b) => a + b, 0);
   const perHourAvg: Record<string,number> = {};
   for (let h = 0; h < 24; h++) perHourAvg[String(h)] = Number(((perHourTotal[String(h)] ?? 0) / daysInRange).toFixed(2));
   const n = Math.max(rows.length, 1);
