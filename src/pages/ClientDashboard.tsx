@@ -1974,6 +1974,96 @@ export function ClientDashboard() {
       }
 
       // ── Rede global ────────────────────────────────────────────────────
+      // FONTE PRIMÁRIA: dados do período EXATO, sempre aditivos e consistentes
+      // (junho + julho = junho+julho). Ordem:
+      //   1) rollup exato em cache (rápido), se existir e for consistente;
+      //   2) senão recomputa do banco no período exato via rebuild_rollup
+      //      (o backend salva o rollup exato, então a próxima abertura é instantânea);
+      //   3) o merge de rollups sobrepostos vira apenas último fallback.
+      {
+        // 1) rollup exato em cache
+        let cachedExactGlobal: any = null;
+        try {
+          const cachedResult = await withTimeout(
+            supabase
+              .from('visitor_analytics_rollups')
+              .select('*')
+              .eq('client_id', id)
+              .eq('start', startIso)
+              .eq('end', endIso)
+              .gt('total_visitors', 0)
+              .order('updated_at', { ascending: false })
+              .limit(1),
+            8000,
+            'rollup exato (global primário)',
+          );
+          cachedExactGlobal = (cachedResult as any)?.data?.[0] ?? null;
+        } catch (cacheErr) {
+          console.warn('[loadData] cache de rollup exato falhou, seguindo:', cacheErr);
+        }
+        if (!isCurrent()) return;
+
+        if (cachedExactGlobal && !rangeTouchesToday) {
+          const cachedDaily = sumVisitorsPerDay(cachedExactGlobal.visitors_per_day);
+          const cachedTotal = Number(cachedExactGlobal.total_visitors ?? 0);
+          const cachedConsistent =
+            cachedTotal > 0 &&
+            cachedDaily > 0 &&
+            Math.abs(cachedTotal - cachedDaily) <= Math.max(5, Math.ceil(cachedTotal * 0.01));
+          if (cachedConsistent) {
+            console.log(`[loadData] ✅ rollup exato em cache: ${cachedTotal} (${startDay}→${endDay})`);
+            applyRollup(cachedExactGlobal, { updatedAt: cachedExactGlobal.updated_at ?? null });
+            await Promise.all([
+              syncExpressions([cachedExactGlobal]),
+              syncDeviceFlow([cachedExactGlobal]),
+            ]);
+            return;
+          }
+        }
+
+        // 2) recomputa do banco no período exato (server-side, sempre aditivo)
+        const rebuildKeyGlobal = `${id}:${startDay}:${endDay}`;
+        if (!_rebuilding.has(rebuildKeyGlobal)) {
+          _rebuilding.add(rebuildKeyGlobal);
+          setSyncMessage('Calculando dados...');
+          try {
+            const json = await fetchJsonWithTimeout('/api/sync-analytics', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ client_id: id, start: startIso, end: endIso, rebuild_rollup: true }),
+            }, 45000, 'sync-analytics rebuild global primário');
+            if (!isCurrent()) return;
+
+            if (json?.dashboard && Number(json.dashboard.total_visitors) > 0) {
+              console.log('[loadData] ✅ Rebuild global (período exato):', json.dashboard.total_visitors);
+              const rollupPayload = {
+                total_visitors:         json.dashboard.total_visitors,
+                avg_visitors_per_day:   json.dashboard.avg_visitors_per_day,
+                avg_visit_time_seconds: json.dashboard.avg_times_seconds?.avg_visit_time_seconds ?? 0,
+                avg_attention_seconds:  json.dashboard.avg_times_seconds?.avg_attention_seconds ?? 0,
+                visitors_per_day:       json.dashboard.visitors_per_day,
+                visitors_per_hour_avg:  json.dashboard.visitors_per_hour_avg,
+                gender_percent:         json.dashboard.gender_percent,
+                attributes_percent:     json.dashboard.attributes_percent,
+                age_pyramid_percent:    json.dashboard.age_pyramid_percent,
+              };
+              applyRollup(rollupPayload, { updatedAt: json?.dashboard?.updated_at ?? null });
+              await Promise.all([
+                syncExpressions([rollupPayload]),
+                syncDeviceFlow([rollupPayload]),
+              ]);
+              setSyncMessage(`✅ ${Number(json.dashboard.total_visitors).toLocaleString()} visitantes.`);
+              return;
+            }
+          } catch (rebuildErr) {
+            console.warn('[loadData] rebuild global primário falhou, usando merge como fallback:', rebuildErr);
+          } finally {
+            _rebuilding.delete(rebuildKeyGlobal);
+          }
+        }
+        // 3) sem período exato disponível → cai no merge de rollups abaixo (fallback)
+      }
+
+      // ── Fallback: merge de rollups sobrepostos ───────────────────────────
       // Busca rollups que se sobrepõem ao período selecionado
       // e extrai apenas os dias dentro do período
       const selectedDays = Math.max(
