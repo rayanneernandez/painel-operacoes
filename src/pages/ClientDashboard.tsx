@@ -2021,24 +2021,73 @@ export function ClientDashboard() {
           }
         }
 
-        // 2) AGREGAÇÃO NO BANCO (rápida): o Postgres faz count/group by/avg e
-        //    devolve só os números — instantâneo, não baixa as linhas.
+        // 2) RESUMO DIÁRIO (instantâneo): soma o resumo pré-calculado por dia
+        //    (get_visitor_rollup). Antes, se o período inclui hoje, atualiza só
+        //    o dia de hoje (rápido, 1 dia) para o total ficar em dia.
         try {
+          setSyncMessage('Calculando dados...');
+          if (rangeTouchesToday) {
+            // Atualiza os últimos dias no resumo (a Panvel tem atraso de ~2 dias
+            // nos dados, então recalcula uma janela recente para ficar correto).
+            const refreshFrom = formatLocalDateKey(new Date(Date.now() - 3 * 86400000));
+            try {
+              await withTimeout(
+                supabase.rpc('refresh_visitor_daily', {
+                  p_client: id,
+                  p_from: refreshFrom,
+                  p_to: todayDay,
+                }),
+                25000,
+                'refresh_visitor_daily (dias recentes)',
+              );
+            } catch (refreshErr) {
+              console.warn('[loadData] não atualizou o resumo dos dias recentes, seguindo com o que há:', refreshErr);
+            }
+            if (!isCurrent()) return;
+          }
           const rpcResult = await withTimeout(
-            supabase.rpc('build_visitor_rollup', {
-              p_client_id: id,
+            supabase.rpc('get_visitor_rollup', {
+              p_client: id,
               p_start: startIso,
               p_end: endIso,
             }),
             30000,
-            'build_visitor_rollup (rpc)',
+            'get_visitor_rollup (resumo diário)',
           );
           if (!isCurrent()) return;
           const rpcData: any = (rpcResult as any)?.data ?? null;
           const rpcError: any = (rpcResult as any)?.error ?? null;
           if (!rpcError && rpcData && Number(rpcData.total_visitors) > 0) {
-            console.log('[loadData] ✅ agregação no banco (RPC):', rpcData.total_visitors, `(${startDay}→${endDay})`);
+            console.log('[loadData] ✅ resumo diário (get_visitor_rollup):', rpcData.total_visitors, `(${startDay}→${endDay})`);
+            // A RPC não recomputa atributos (óculos/barba/cabelo) por performance.
+            // Reaproveita a distribuição do rollup salvo mais recente (quase não muda).
+            const rpcAttrs = rpcData.attributes_percent;
+            const rpcHasAttrs = rpcAttrs && typeof rpcAttrs === 'object'
+              && Object.values(rpcAttrs).some((v: any) => v && typeof v === 'object' && Object.keys(v).length > 0);
+            if (!rpcHasAttrs) {
+              try {
+                const attrResult = await withTimeout(
+                  supabase
+                    .from('visitor_analytics_rollups')
+                    .select('attributes_percent')
+                    .eq('client_id', id)
+                    .gt('total_visitors', 0)
+                    .order('updated_at', { ascending: false })
+                    .limit(1),
+                  8000,
+                  'atributos (rollup recente)',
+                );
+                const attrRow: any = (attrResult as any)?.data?.[0] ?? null;
+                if (attrRow?.attributes_percent) {
+                  rpcData.attributes_percent = attrRow.attributes_percent;
+                }
+              } catch (attrErr) {
+                console.warn('[loadData] não foi possível reaproveitar atributos:', attrErr);
+              }
+              if (!isCurrent()) return;
+            }
             applyRollup(rpcData, { updatedAt: new Date().toISOString() });
+            setSyncMessage('');
             await Promise.all([
               syncExpressions([rpcData]),
               syncDeviceFlow([rpcData]),
@@ -2046,10 +2095,10 @@ export function ClientDashboard() {
             return;
           }
           if (rpcError) {
-            console.warn('[loadData] RPC build_visitor_rollup indisponível, usando rebuild:', rpcError?.message ?? rpcError);
+            console.warn('[loadData] get_visitor_rollup indisponível (resumo ainda não populado?), usando rebuild:', rpcError?.message ?? rpcError);
           }
         } catch (rpcErr) {
-          console.warn('[loadData] RPC build_visitor_rollup falhou, usando rebuild:', rpcErr);
+          console.warn('[loadData] get_visitor_rollup falhou, usando rebuild:', rpcErr);
         }
 
         // 3) recomputa via backend (fallback se a RPC não estiver no banco);
