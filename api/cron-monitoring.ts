@@ -41,6 +41,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(405).json({ error: "Method Not Allowed" });
   }
 
+  // HEAD: responde 200 imediatamente para o UptimeRobot não reclamar,
+  // mas o código continua executando o sync normalmente abaixo.
+  const isHead = req.method === "HEAD";
+  if (isHead) {
+    res.status(200).end();
+  }
+
   const authHeader = req.headers.authorization;
   const providedAuth =
     typeof authHeader === "string" && authHeader.startsWith("Bearer ")
@@ -113,17 +120,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    return res.status(200).json({
-      ok: true,
-      ran_at: new Date().toISOString(),
-      synced_clients: results.length,
-      results,
-      duration_ms: Date.now() - startedAt,
-    });
+    if (!isHead) {
+      return res.status(200).json({
+        ok: true,
+        ran_at: new Date().toISOString(),
+        synced_clients: results.length,
+        results,
+        duration_ms: Date.now() - startedAt,
+      });
+    }
   } catch (error: any) {
-    return res.status(500).json({
-      ok: false,
-      error: error?.message || "Erro inesperado no cron de monitoramento",
-    });
+    if (!isHead) {
+      return res.status(500).json({
+        ok: false,
+        error: error?.message || "Erro inesperado no cron de monitoramento",
+      });
+    }
   }
 }
