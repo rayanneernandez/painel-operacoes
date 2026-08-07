@@ -17,6 +17,7 @@ import {
   PanelLeftOpen,
   Wifi,
   Monitor,
+  Activity,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import globaliaLogo from '../assets/globalia.png';
@@ -235,6 +236,12 @@ export function Layout() {
       icon: Wifi,
       label: 'Dispositivos Online',
       path: '/dispositivos-online',
+      show: user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)
+    },
+    {
+      icon: Activity,
+      label: 'Evolução',
+      path: '/evolucao',
       show: user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)
     },
     {

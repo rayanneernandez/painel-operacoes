@@ -1379,7 +1379,7 @@ export function ClientDashboard() {
     while (true) {
       let query = supabase
         .from('visitor_analytics')
-        .select('timestamp,attributes,raw_data,device_id')
+        .select('timestamp,attributes,device_id')
         .eq('client_id', clientId)
         .gte('timestamp', rangeStart)
         .lte('timestamp', rangeEnd)
@@ -1442,7 +1442,7 @@ export function ClientDashboard() {
         while (true) {
           let q2 = supabase
             .from('visitor_analytics')
-            .select('timestamp,attributes,raw_data,device_id')
+            .select('timestamp,attributes,device_id')
             .eq('client_id', clientId)
             .gte('timestamp', rangeStart)
             .lte('timestamp', rangeEnd)
@@ -2736,64 +2736,10 @@ export function ClientDashboard() {
     setIsLoadingQuarter(true);
     try {
       const months = quarterMonthsForFilter(selectedStartDate, selectedEndDate);
-      const quarterStart = months[0].startIso;
       const filterEndIso = alignUtcEndOfDay(selectedEndDate).toISOString();
       const quarterEnd   = new Date(
         Math.min(Date.parse(months[months.length - 1].endIso), Date.parse(filterEndIso))
       ).toISOString();
-      const qStartDay    = quarterStart.slice(0, 10);
-      const qEndDay      = quarterEnd.slice(0, 10);
-
-      let rollupVisitorsPerDay: Record<string, number> | null = null;
-
-      if (deviceIds.length === 0) {
-        const { data: rollups } = await withTimeout(
-          supabase
-            .from('visitor_analytics_rollups')
-            .select('visitors_per_day, start, end, updated_at')
-            .eq('client_id', id)
-            .lte('start', quarterEnd)
-            .gte('end', quarterStart)
-            .order('updated_at', { ascending: false })
-            .limit(200),
-          10000,
-          'rollups trimestre'
-        );
-
-        if (rollups && rollups.length > 0) {
-          const merged: Record<string, number> = {};
-          for (const r of rollups as any[]) {
-            const vpd = r.visitors_per_day as Record<string, number> | null;
-            if (!vpd) continue;
-            for (const [dateStr, count] of Object.entries(vpd)) {
-              const d = dateStr.slice(0, 10);
-              if (d >= qStartDay && d <= qEndDay && !(d in merged)) {
-                merged[d] = Number(count) || 0;
-              }
-            }
-          }
-          if (Object.keys(merged).length > 0) rollupVisitorsPerDay = merged;
-        }
-      }
-
-      if (!rollupVisitorsPerDay) {
-        try {
-          const json = await fetchJsonWithTimeout('/api/sync-analytics', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              client_id: id, start: quarterStart, end: quarterEnd, rebuild_rollup: true,
-              ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
-            }),
-          }, 20000, 'sync-analytics trimestre');
-          if (json?.dashboard?.visitors_per_day) {
-            const vpd = json.dashboard.visitors_per_day as Record<string, number>;
-            rollupVisitorsPerDay = {};
-            for (const [d, v] of Object.entries(vpd)) {
-              if (d >= qStartDay && d <= qEndDay) rollupVisitorsPerDay[d] = Number(v) || 0;
-            }
-          }
-        } catch (e) { console.warn('[Quarter] Rebuild falhou:', e); }
-      }
 
       const rows: { label: string; visitors: number; sales: number }[] = [];
       for (const month of months) {
@@ -2801,19 +2747,25 @@ export function ClientDashboard() {
           Math.min(Date.parse(month.endIso), Date.parse(quarterEnd))
         ).toISOString();
         let visitors = 0;
-        let coveredDays = 0;
-        if (rollupVisitorsPerDay) {
-          const mStart = month.startIso.slice(0, 10);
-          const mEnd   = monthEndIso.slice(0, 10);
-          for (const [dateStr, count] of Object.entries(rollupVisitorsPerDay)) {
-            if (dateStr >= mStart && dateStr <= mEnd) {
-              visitors += Number(count) || 0;
-              coveredDays += 1;
-            }
+        // Rede global: usa o resumo diário (get_visitor_rollup) — instantâneo.
+        // Loja selecionada: conta no banco com o filtro de device.
+        if (deviceIds.length === 0) {
+          try {
+            const monthRpc = await withTimeout(
+              supabase.rpc('get_visitor_rollup', {
+                p_client: id,
+                p_start: month.startIso,
+                p_end: monthEndIso,
+              }),
+              15000,
+              'get_visitor_rollup (trimestre)',
+            );
+            visitors = Number((monthRpc as any)?.data?.total_visitors ?? 0) || 0;
+          } catch (e) {
+            console.warn('[Quarter] get_visitor_rollup falhou, usando contagem:', e);
           }
         }
-        const expectedDays = countInclusiveUtcDays(month.startIso, monthEndIso);
-        if (!rollupVisitorsPerDay || coveredDays < expectedDays || visitors <= 0) {
+        if (visitors <= 0) {
           const dbVisitors = await fetchVisitorsFromDb(month.startIso, monthEndIso);
           visitors = Math.max(visitors, dbVisitors);
         }
