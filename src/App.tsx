@@ -150,6 +150,20 @@ const EvolucaoRoute = () => {
   return <Navigate to="/" replace />;
 };
 
+const CampaignUploadRoute = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">Carregando...</div>;
+  }
+
+  if (user?.role === 'admin' || (user?.permissions?.import_campaigns ?? false)) {
+    return <CampaignUpload />;
+  }
+
+  return <Navigate to="/" replace />;
+};
+
 const WhatsappAlertsRoute = () => {
   const { user, isLoading } = useAuth();
 
@@ -191,13 +205,13 @@ function App() {
               <Route path="relatorios" element={<ReportsRoute />} />
               <Route path="dispositivos-online" element={<DevicesOnlineRoute />} />
               <Route path="evolucao" element={<EvolucaoRoute />} />
+              <Route path="clientes/:id/campanhas" element={<CampaignUploadRoute />} />
               <Route path="monitoramento" element={<MonitoramentoRoute />} />
               <Route path="alertas-whatsapp" element={<WhatsappAlertsRoute />} />
 
               {/* Rotas administrativas */}
               <Route element={<AdminOnlyRoute />}>
                 <Route path="clientes" element={<Clients />} />
-                <Route path="clientes/:id/campanhas" element={<CampaignUpload />} />
                 <Route path="usuarios" element={<Users />} />
                 <Route path="logs" element={<Logs />} />
                 <Route path="permissoes" element={<Permissions />} />

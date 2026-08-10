@@ -42,6 +42,7 @@ type UserType = {
     export_data: boolean;
     manage_settings: boolean;
     view_monitoring: boolean;
+    import_campaigns: boolean;
     monitoring_folder_ids: string[];
     monitoring_device_ids: string[];
   };
@@ -125,11 +126,12 @@ export function Users() {
     export_data: false,
     manage_settings: false,
     view_monitoring: false,
+    import_campaigns: false,
     monitoring_folder_ids: [] as string[],
     monitoring_device_ids: [] as string[]
   });
 
-  const togglePerm = (key: 'view_dashboard' | 'view_devices_online' | 'manage_whatsapp_alerts' | 'view_reports' | 'view_analytics' | 'export_data' | 'manage_settings' | 'view_monitoring') => {
+  const togglePerm = (key: 'view_dashboard' | 'view_devices_online' | 'manage_whatsapp_alerts' | 'view_reports' | 'view_analytics' | 'export_data' | 'manage_settings' | 'view_monitoring' | 'import_campaigns') => {
     setPerms(p => ({ ...p, [key]: !p[key] }));
   };
 
@@ -263,6 +265,7 @@ export function Users() {
         export_data: false,
         manage_settings: false,
         view_monitoring: false,
+        import_campaigns: false,
         monitoring_folder_ids: [],
         monitoring_device_ids: []
       };
@@ -275,6 +278,7 @@ export function Users() {
         export_data: p.export_data ?? false,
         manage_settings: p.manage_settings ?? false,
         view_monitoring: p.view_monitoring ?? false,
+        import_campaigns: p.import_campaigns ?? false,
         monitoring_folder_ids: p.monitoring_folder_ids ?? [],
         monitoring_device_ids: p.monitoring_device_ids ?? []
       });
@@ -297,6 +301,7 @@ export function Users() {
         export_data: false,
         manage_settings: false,
         view_monitoring: false,
+        import_campaigns: false,
         monitoring_folder_ids: [],
         monitoring_device_ids: []
       });
@@ -878,6 +883,19 @@ export function Users() {
                         </div>
                       </div>
                       <Toggle checked={perms.manage_whatsapp_alerts} onChange={() => togglePerm('manage_whatsapp_alerts')} />
+                    </div>
+
+                    <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">
+                      <div className="flex items-center gap-4">
+                        <div className="w-10 h-10 rounded-lg bg-gray-800 flex items-center justify-center text-gray-400">
+                          <FileText size={20} />
+                        </div>
+                        <div>
+                          <p className="font-medium text-white text-sm">Importar campanhas</p>
+                          <p className="text-xs text-gray-500">Permite importar o relatório de campanhas da DisplayForce (alimenta o gráfico)</p>
+                        </div>
+                      </div>
+                      <Toggle checked={perms.import_campaigns} onChange={() => togglePerm('import_campaigns')} />
                     </div>
 
                     <div className="flex items-center justify-between p-4 hover:bg-gray-900/50 rounded-lg transition-colors">

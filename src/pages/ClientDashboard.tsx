@@ -3582,8 +3582,8 @@ export function ClientDashboard() {
                 </>
               )}
 
-              {/* Upload campanhas (apenas admin) */}
-              {authUser?.role === 'admin' && (
+              {/* Upload campanhas (admin ou permissão import_campaigns) */}
+              {(authUser?.role === 'admin' || authUser?.permissions?.import_campaigns) && (
                 <button
                   onClick={() => navigate(`/clientes/${id}/campanhas`)}
                   title="Importar relatório de campanhas do e-mail"
