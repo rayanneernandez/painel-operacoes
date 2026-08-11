@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
-import { Activity, RefreshCw, CalendarDays, CalendarRange, FileDown, FileText, ChevronDown, ChevronRight } from 'lucide-react';
+import { Activity, RefreshCw, CalendarDays, CalendarRange, FileDown, FileText, ChevronDown, ChevronRight, AlertTriangle } from 'lucide-react';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { saveAs } from 'file-saver';
@@ -44,7 +44,7 @@ type Scope = 'all' | string; // 'all' ou client_id
 interface ClientRow { id: string; name: string; }
 interface StoreRow { id: string; name: string; city: string | null; client_id: string; }
 interface DeviceRow { id: string; store_id: string; mac_address: string | null; status: string | null; name: string | null; }
-interface AlertRow { first_detected_at: string; resolved_at: string | null; device_id: string; store_id: string; client_id: string; }
+interface AlertRow { first_detected_at: string; resolved_at: string | null; device_id: string; store_id: string; client_id: string; device_name: string | null; store_name: string | null; }
 interface SnapRow { store_id: string; client_id: string; date: string; total: number; online: number; offline: number; not_connected: number; }
 
 interface DailyRow {
@@ -63,7 +63,7 @@ interface WeeklyRow {
   weeksWithData: number;
 }
 interface DeviceWeekRow {
-  key: string; name: string;
+  key: string; name: string; status: 'online' | 'offline' | 'not_connected'; quedas: number;
   weekPct: (number | null)[];
   lastPct: number | null; prevPct: number | null; delta: number | null;
   trend: 'Piorou' | 'Melhorou' | 'Estável' | '—';
@@ -109,11 +109,29 @@ const normStatus = (s: string | null): 'online' | 'offline' | 'not_connected' =>
 };
 const statusRank = (s: 'online' | 'offline' | 'not_connected') => (s === 'offline' ? 3 : s === 'not_connected' ? 2 : 1);
 
-// Nome do dispositivo = parte depois do último " - " (ex: "Loja X - Painel Caixa 2" -> "Painel Caixa 2")
-const shortDeviceName = (full: string): string => {
-  const idx = full.lastIndexOf(' - ');
-  const tail = idx >= 0 ? full.slice(idx + 3).trim() : full.trim();
-  return tail || full.trim();
+// Nome do dispositivo removendo o prefixo da loja (com ou sem "-").
+const DEVICE_KEYWORD = /(Painel|Corredor|G[oôó]ndola|Gondula|Caixa|Entrada|FLV|Totem|Recepç|Vitrine|A RETIRAR|Cam\b)/i;
+const deviceLabel = (deviceName: string | null, storeName: string | null): string => {
+  const original = (deviceName || '').trim();
+  let s = original;
+  // 1) formato "Loja - Dispositivo": pega depois do último " - "
+  if (s.includes(' - ')) {
+    const tail = s.slice(s.lastIndexOf(' - ') + 3).trim();
+    if (tail) return tail;
+  }
+  // 2) remove o prefixo da loja (do alerta), se o nome começar com ele
+  const store = (storeName || '').trim();
+  if (store && s.toLowerCase().startsWith(store.toLowerCase())) {
+    const rest = s.slice(store.length).replace(/^[\s\-–—:·|]+/, '').trim();
+    if (rest) return rest;
+  }
+  // 3) corta a partir da palavra-chave do dispositivo (ex: "...JACU PÊSSEGO Painel Caixa 1" -> "Painel Caixa 1")
+  const m = s.match(DEVICE_KEYWORD);
+  if (m && m.index !== undefined && m.index > 0) {
+    const rest = s.slice(m.index).trim();
+    if (rest) return rest;
+  }
+  return original || 'Dispositivo';
 };
 
 const parseStoreCode = (name: string): string => {
@@ -141,9 +159,12 @@ export function EvolucaoMonitoramento() {
 
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [scope, setScope] = useState<Scope>(() => (user?.role === 'client' ? (user?.clientId || '') : 'all'));
-  const [tab, setTab] = useState<'diario' | 'semanal'>('diario');
+  const [tab, setTab] = useState<'diario' | 'semanal' | 'criticidade'>('diario');
+  const [critFilter, setCritFilter] = useState<'gt24' | 'lt24'>('gt24');
   const [weekPage, setWeekPage] = useState(0);
   const [expandedStore, setExpandedStore] = useState<string | null>(null);
+  const [expandedDay, setExpandedDay] = useState<string | null>(null);
+  const [statusFilter, setStatusFilter] = useState<'' | 'online' | 'offline' | 'not_connected'>('');
   const [filterWeekday, setFilterWeekday] = useState('');
   const [filterFrom, setFilterFrom] = useState('');
   const [filterTo, setFilterTo] = useState('');
@@ -200,7 +221,7 @@ export function EvolucaoMonitoramento() {
       // Alertas (quedas/recuperações) que sobrepõem o período
       let alertQuery = supabase
         .from('device_offline_alerts')
-        .select('first_detected_at, resolved_at, device_id, store_id, client_id')
+        .select('first_detected_at, resolved_at, device_id, store_id, client_id, device_name, store_name')
         .lte('first_detected_at', `${today}T23:59:59`)
         .or(`resolved_at.is.null,resolved_at.gte.${windowStart}T00:00:00`)
         .limit(20000);
@@ -236,6 +257,60 @@ export function EvolucaoMonitoramento() {
     }
     return map;
   }, [devices]);
+
+  // Status atual de cada dispositivo (por id)
+  const deviceStatusById = useMemo(() => {
+    const m = new Map<string, 'online' | 'offline' | 'not_connected'>();
+    for (const d of devices) m.set(d.id, normStatus(d.status));
+    return m;
+  }, [devices]);
+
+  // Quantidade de quedas por dispositivo no período carregado (últimos WINDOW_DAYS)
+  const quedasByDevice = useMemo(() => {
+    const m = new Map<string, number>();
+    const startMs = Date.now() - WINDOW_DAYS * 86400000;
+    for (const a of alerts) {
+      const t = Date.parse(a.first_detected_at);
+      if (Number.isFinite(t) && t >= startMs) m.set(a.device_id, (m.get(a.device_id) ?? 0) + 1);
+    }
+    return m;
+  }, [alerts]);
+
+  // ── Criticidade: dispositivos atualmente offline, agrupados por loja ──────
+  const criticalityRows = useMemo(() => {
+    const now = Date.now();
+    const groups = new Map<string, { loja: string; devices: { key: string; name: string; since: string; hours: number; quedas: number }[] }>();
+    for (const a of alerts) {
+      if (a.resolved_at) continue; // só os que ainda estão offline
+      const detected = Date.parse(a.first_detected_at);
+      if (!Number.isFinite(detected)) continue;
+      const hours = (now - detected) / 3600000;
+      const matches = critFilter === 'gt24' ? hours >= 24 : hours < 24;
+      if (!matches) continue;
+      const loja = a.store_name || '—';
+      const g = groups.get(loja) ?? { loja, devices: [] };
+      g.devices.push({
+        key: `${a.device_id}-${a.first_detected_at}`,
+        name: deviceLabel(a.device_name, a.store_name),
+        since: a.first_detected_at,
+        hours,
+        quedas: quedasByDevice.get(a.device_id) ?? 0,
+      });
+      groups.set(loja, g);
+    }
+    const list = [...groups.values()];
+    list.forEach((g) => g.devices.sort((x, y) => y.hours - x.hours));
+    // lojas com mais dispositivos offline primeiro
+    return list.sort((x, y) => y.devices.length - x.devices.length || x.loja.localeCompare(y.loja));
+  }, [alerts, critFilter, quedasByDevice]);
+
+  const critTotalDevices = useMemo(() => criticalityRows.reduce((acc, g) => acc + g.devices.length, 0), [criticalityRows]);
+
+  const fmtDuration = (hours: number) => {
+    if (hours >= 24) { const d = Math.floor(hours / 24); const h = Math.round(hours % 24); return `${d}d ${h}h`; }
+    if (hours >= 1) return `${Math.round(hours)}h`;
+    return `${Math.round(hours * 60)}min`;
+  };
 
   const currentTotals = useMemo(() => {
     const seen = new Map<string, 'online' | 'offline' | 'not_connected'>();
@@ -458,6 +533,31 @@ export function EvolucaoMonitoramento() {
     }
   };
 
+  // ── Dispositivos offline num dia (expansão da tabela diária) ──────────────
+  const fmtDateTime = (iso: string) => {
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? '—' : d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+  const buildDayDevices = (day: string) => {
+    const today = todaySp();
+    return alerts
+      .filter((a) => {
+        const start = spDate(a.first_detected_at);
+        const end = a.resolved_at ? spDate(a.resolved_at) : today;
+        return start <= day && end >= day;
+      })
+      .map((a) => ({
+        key: `${a.device_id}-${a.first_detected_at}`,
+        name: deviceLabel(a.device_name, a.store_name),
+        store: a.store_name || '—',
+        since: a.first_detected_at,
+        until: a.resolved_at,
+        status: deviceStatusById.get(a.device_id) ?? 'offline',
+        quedas: quedasByDevice.get(a.device_id) ?? 0,
+      }))
+      .sort((x, y) => x.store.localeCompare(y.store) || x.name.localeCompare(y.name));
+  };
+
   // ── Dispositivos de uma loja (expansão) — % por semana, sem cor ───────────
   const buildDeviceRows = (storeIds: string[]): DeviceWeekRow[] => {
     const today = todaySp();
@@ -467,13 +567,15 @@ export function EvolucaoMonitoramento() {
       end: a.resolved_at ? spDate(a.resolved_at) : null,
     }));
     // dedup por MAC (junta os device_id do mesmo aparelho)
-    const macMap = new Map<string, { name: string; ids: string[] }>();
+    const macMap = new Map<string, { name: string; ids: string[]; status: 'online' | 'offline' | 'not_connected' }>();
     for (const d of devices) {
       if (!storeIds.includes(d.store_id)) continue;
       const key = (d.mac_address && d.mac_address.trim()) || d.id;
-      const cur = macMap.get(key) ?? { name: d.name ? shortDeviceName(d.name) : `Dispositivo ${key}`, ids: [] };
+      const cur = macMap.get(key) ?? { name: d.name ? deviceLabel(d.name, null) : `Dispositivo ${key}`, ids: [], status: 'online' as const };
       cur.ids.push(d.id);
-      if (d.name) cur.name = shortDeviceName(d.name);
+      if (d.name) cur.name = deviceLabel(d.name, null);
+      const st = normStatus(d.status);
+      if (statusRank(st) > statusRank(cur.status)) cur.status = st; // mantém o pior status
       macMap.set(key, cur);
     }
     return [...macMap.values()].map((dev, idx) => {
@@ -497,8 +599,9 @@ export function EvolucaoMonitoramento() {
       const delta = lastPct !== null && prevPct !== null ? Number((lastPct - prevPct).toFixed(1)) : null;
       let trend: DeviceWeekRow['trend'] = '—';
       if (delta !== null) trend = delta > 1 ? 'Melhorou' : delta < -1 ? 'Piorou' : 'Estável';
+      const quedas = dev.ids.reduce((acc, id) => acc + (quedasByDevice.get(id) ?? 0), 0);
       return {
-        key: `${dev.ids[0]}-${idx}`, name: dev.name, weekPct, lastPct, prevPct, delta, trend,
+        key: `${dev.ids[0]}-${idx}`, name: dev.name, status: dev.status, quedas, weekPct, lastPct, prevPct, delta, trend,
         weeksWithData: weekPct.filter((v) => v !== null).length,
       };
     });
@@ -528,6 +631,17 @@ export function EvolucaoMonitoramento() {
               {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
             </select>
           )}
+          <select
+            value={statusFilter}
+            onChange={(e) => setStatusFilter(e.target.value as '' | 'online' | 'offline' | 'not_connected')}
+            className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
+            title="Filtra os dispositivos ao expandir (por status atual)"
+          >
+            <option value="">Status: todos</option>
+            <option value="online">Online</option>
+            <option value="offline">Offline</option>
+            <option value="not_connected">Não conectado</option>
+          </select>
           <button
             onClick={() => handleExport('csv')}
             className="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm hover:bg-gray-700"
@@ -564,6 +678,12 @@ export function EvolucaoMonitoramento() {
           className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'semanal' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
         >
           <CalendarRange className="w-4 h-4" /> Semanal por Loja
+        </button>
+        <button
+          onClick={() => setTab('criticidade')}
+          className={`flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-medium ${tab === 'criticidade' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}
+        >
+          <AlertTriangle className="w-4 h-4" /> Criticidade
         </button>
       </div>
 
@@ -613,9 +733,23 @@ export function EvolucaoMonitoramento() {
               </tr>
             </thead>
             <tbody>
-              {filteredDailyRows.map((r) => (
-                <tr key={r.date} className="border-t border-gray-800 hover:bg-gray-900/50">
-                  <td className="px-3 py-1.5 whitespace-nowrap">{ddmm(r.date)}/{r.date.slice(0, 4)}</td>
+              {filteredDailyRows.map((r) => {
+                const isOpen = expandedDay === r.date;
+                const offlineDevs = isOpen
+                  ? buildDayDevices(r.date).filter((d) => !statusFilter || d.status === statusFilter)
+                  : [];
+                return (
+                <Fragment key={r.date}>
+                <tr
+                  className="border-t border-gray-800 hover:bg-gray-900/50 cursor-pointer"
+                  onClick={() => setExpandedDay(isOpen ? null : r.date)}
+                >
+                  <td className="px-3 py-1.5 whitespace-nowrap">
+                    <span className="inline-flex items-center gap-1">
+                      {isOpen ? <ChevronDown className="w-3 h-3" /> : <ChevronRight className="w-3 h-3" />}
+                      {ddmm(r.date)}/{r.date.slice(0, 4)}
+                    </span>
+                  </td>
                   <td className="px-3 py-1.5 text-gray-400">{r.weekday}</td>
                   <td className="px-3 py-1.5">{r.total}</td>
                   <td className="px-3 py-1.5 text-green-400">{r.online}</td>
@@ -628,12 +762,49 @@ export function EvolucaoMonitoramento() {
                   <td className={`px-3 py-1.5 font-medium ${r.saldo > 0 ? 'text-green-400' : r.saldo < 0 ? 'text-red-400' : 'text-gray-400'}`}>{r.saldo > 0 ? `+${r.saldo}` : r.saldo}</td>
                   <td className="px-3 py-1.5 text-gray-300">{r.mudancas}</td>
                 </tr>
-              ))}
+                {isOpen && (
+                  <tr className="bg-gray-900/40">
+                    <td colSpan={12} className="px-6 py-2">
+                      {offlineDevs.length === 0 ? (
+                        <span className="text-gray-500 text-xs">Nenhum dispositivo offline neste dia.</span>
+                      ) : (
+                        <div className="text-xs">
+                          <div className="text-gray-400 mb-1">{offlineDevs.length} dispositivo(s) offline em {ddmm(r.date)}:</div>
+                          <table className="w-full">
+                            <thead className="text-gray-500">
+                              <tr>
+                                <th className="text-left font-medium py-0.5 pr-4">Dispositivo</th>
+                                <th className="text-left font-medium py-0.5 pr-4">Loja</th>
+                                <th className="text-left font-medium py-0.5 pr-4">Queda em</th>
+                                <th className="text-left font-medium py-0.5 pr-4">Retorno</th>
+                                <th className="text-center font-medium py-0.5">Quedas no período</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {offlineDevs.map((d) => (
+                                <tr key={d.key} className="text-gray-300">
+                                  <td className="py-0.5 pr-4">{d.name}</td>
+                                  <td className="py-0.5 pr-4 text-gray-400">{d.store}</td>
+                                  <td className="py-0.5 pr-4">{fmtDateTime(d.since)}</td>
+                                  <td className="py-0.5 pr-4">{d.until ? fmtDateTime(d.until) : <span className="text-red-400">continua offline</span>}</td>
+                                  <td className="py-0.5 text-center text-amber-400/80">{d.quedas}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
         </>
-      ) : (
+      ) : tab === 'semanal' ? (
         <>
         <div className="border border-gray-800 rounded-lg overflow-hidden">
           <table className="w-full table-fixed text-xs">
@@ -657,7 +828,9 @@ export function EvolucaoMonitoramento() {
             <tbody>
               {pagedWeekly.map((r) => {
                 const isOpen = expandedStore === r.storeId;
-                const deviceRows = isOpen ? buildDeviceRows(r.storeIds) : [];
+                const deviceRows = isOpen
+                  ? buildDeviceRows(r.storeIds).filter((dr) => !statusFilter || dr.status === statusFilter)
+                  : [];
                 return (
                 <Fragment key={r.storeId}>
                 <tr
@@ -694,7 +867,10 @@ export function EvolucaoMonitoramento() {
                 )}
                 {isOpen && deviceRows.map((dr) => (
                   <tr key={dr.key} className="border-t border-gray-900 bg-gray-900/30 text-gray-300">
-                    <td className="px-2 py-1 pl-6 truncate text-[11px]" title={dr.name}>{dr.name}</td>
+                    <td className="px-2 py-1 pl-6 truncate text-[11px]" title={dr.name}>
+                      {dr.name}
+                      {dr.quedas > 0 && <span className="ml-1 text-amber-400/80">· {dr.quedas} queda{dr.quedas > 1 ? 's' : ''}</span>}
+                    </td>
                     <td className="px-1 py-1"></td>
                     <td className="px-1 py-1 text-center text-gray-600">1</td>
                     {dr.weekPct.map((p, i) => (
@@ -750,6 +926,53 @@ export function EvolucaoMonitoramento() {
             </div>
           </div>
         )}
+        </>
+      ) : (
+        <>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <button
+            onClick={() => setCritFilter('gt24')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border ${critFilter === 'gt24' ? 'bg-red-600 border-red-600 text-white' : 'border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+          >Offline há mais de 24h</button>
+          <button
+            onClick={() => setCritFilter('lt24')}
+            className={`px-3 py-1.5 rounded-lg text-sm font-medium border ${critFilter === 'lt24' ? 'bg-amber-500 border-amber-500 text-gray-900' : 'border-gray-700 bg-gray-800 text-gray-300 hover:bg-gray-700'}`}
+          >Offline há menos de 24h</button>
+          <span className="text-xs text-gray-500 ml-auto">{critTotalDevices} dispositivo(s) · {criticalityRows.length} loja(s)</span>
+        </div>
+        <div className="overflow-x-auto border border-gray-800 rounded-lg">
+          <table className="w-full text-sm">
+            <thead className="bg-gray-900 text-gray-300">
+              <tr>
+                <th className="px-3 py-2 text-left font-semibold">Loja / Dispositivo</th>
+                <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Offline desde</th>
+                <th className="px-3 py-2 text-left font-semibold whitespace-nowrap">Tempo offline</th>
+                <th className="px-3 py-2 text-center font-semibold whitespace-nowrap">Quedas no período</th>
+              </tr>
+            </thead>
+            <tbody>
+              {criticalityRows.map((g) => (
+                <Fragment key={g.loja}>
+                  <tr className="border-t border-gray-800 bg-gray-900/40">
+                    <td className="px-3 py-1.5 font-semibold text-white">{g.loja}</td>
+                    <td className="px-3 py-1.5 text-gray-500 text-xs" colSpan={3}>{g.devices.length} dispositivo(s) offline</td>
+                  </tr>
+                  {g.devices.map((d) => (
+                    <tr key={d.key} className="border-t border-gray-900 text-gray-300">
+                      <td className="px-3 py-1.5 pl-8">{d.name}</td>
+                      <td className="px-3 py-1.5 text-gray-400 whitespace-nowrap">{fmtDateTime(d.since)}</td>
+                      <td className={`px-3 py-1.5 whitespace-nowrap font-medium ${d.hours >= 24 ? 'text-red-400' : 'text-amber-400'}`}>{fmtDuration(d.hours)}</td>
+                      <td className="px-3 py-1.5 text-center">{d.quedas}</td>
+                    </tr>
+                  ))}
+                </Fragment>
+              ))}
+              {criticalityRows.length === 0 && (
+                <tr><td colSpan={4} className="px-3 py-6 text-center text-gray-500">Nenhum dispositivo offline {critFilter === 'gt24' ? 'há mais de 24h' : 'há menos de 24h'}.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
         </>
       )}
     </div>
