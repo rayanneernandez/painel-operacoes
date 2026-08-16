@@ -161,6 +161,7 @@ export function EvolucaoMonitoramento() {
   const [scope, setScope] = useState<Scope>(() => (user?.role === 'client' ? (user?.clientId || '') : 'all'));
   const [tab, setTab] = useState<'diario' | 'semanal' | 'criticidade'>('diario');
   const [critFilter, setCritFilter] = useState<'gt24' | 'lt24'>('gt24');
+  const [trendFilter, setTrendFilter] = useState<'' | 'Piorou' | 'Melhorou' | 'Estável'>('');
   const [weekPage, setWeekPage] = useState(0);
   const [expandedStore, setExpandedStore] = useState<string | null>(null);
   const [expandedDay, setExpandedDay] = useState<string | null>(null);
@@ -241,22 +242,6 @@ export function EvolucaoMonitoramento() {
 
   useEffect(() => { void load(); }, [load]);
 
-  // ── Contagem atual (dedup por MAC, pior status) por loja ──────────────────
-  const deviceCountByStore = useMemo(() => {
-    const map = new Map<string, number>();
-    const seen = new Map<string, 'online' | 'offline' | 'not_connected'>(); // key store|mac
-    for (const d of devices) {
-      const key = `${d.store_id}|${d.mac_address?.trim() || d.id}`;
-      const st = normStatus(d.status);
-      const prev = seen.get(key);
-      if (!prev || statusRank(st) > statusRank(prev)) seen.set(key, st);
-    }
-    for (const key of seen.keys()) {
-      const storeId = key.split('|')[0];
-      map.set(storeId, (map.get(storeId) ?? 0) + 1);
-    }
-    return map;
-  }, [devices]);
 
   // Status atual de cada dispositivo (por id)
   const deviceStatusById = useMemo(() => {
@@ -264,6 +249,13 @@ export function EvolucaoMonitoramento() {
     for (const d of devices) m.set(d.id, normStatus(d.status));
     return m;
   }, [devices]);
+
+  // Total de lojas (pastas) no escopo — conta grupos únicos por rede + nome
+  const totalLojas = useMemo(() => {
+    const s = new Set<string>();
+    for (const st of stores) s.add(`${st.client_id}|${st.name.trim().toLowerCase()}`);
+    return s.size;
+  }, [stores]);
 
   // Quantidade de quedas por dispositivo no período carregado (últimos WINDOW_DAYS)
   const quedasByDevice = useMemo(() => {
@@ -415,13 +407,10 @@ export function EvolucaoMonitoramento() {
   const weeklyRows = useMemo<WeeklyRow[]>(() => {
     const today = todaySp();
     const alertDates = alerts.map((a) => ({
-      dev: a.device_id, store: a.store_id,
+      dev: a.device_id,
       start: spDate(a.first_detected_at),
       end: a.resolved_at ? spDate(a.resolved_at) : null,
     }));
-    // snapshot por loja+dia
-    const snapMap = new Map<string, SnapRow>(); // store|date
-    for (const s of snaps) snapMap.set(`${s.store_id}|${s.date}`, s);
 
     // Agrupa lojas duplicadas por (rede + nome) — junta os store_id repetidos numa linha só
     const groups = new Map<string, { name: string; storeIds: string[] }>();
@@ -434,32 +423,36 @@ export function EvolucaoMonitoramento() {
 
     const rows: WeeklyRow[] = [...groups.values()].map((group) => {
       const storeIds = group.storeIds;
-      const deviceCount = storeIds.reduce((acc, sid) => acc + (deviceCountByStore.get(sid) ?? 0), 0);
+      // Dispositivos da loja (dedup por MAC) — MESMA base que a expansão por device usa,
+      // pra loja e device baterem: loja = média dos devices dela.
+      const macIds = new Map<string, string[]>(); // macKey -> device ids
+      for (const d of devices) {
+        if (!storeIds.includes(d.store_id)) continue;
+        const key = (d.mac_address && d.mac_address.trim()) || d.id;
+        const arr = macIds.get(key) ?? [];
+        arr.push(d.id);
+        macIds.set(key, arr);
+      }
+      const deviceCount = macIds.size;
+      const idToMac = new Map<string, string>();
+      for (const [mac, ids] of macIds) for (const id of ids) idToMac.set(id, mac);
+      const groupAlerts = alertDates.filter((a) => idToMac.has(a.dev));
+
       const weekPct: (number | null)[] = weeks.map((w) => {
-        // média diária de %online na semana (só dias <= hoje), somando todos os store_id do grupo
+        // Média de disponibilidade da SEMANA (offline = dispositivos da loja com queda no dia)
         const daily: number[] = [];
         for (let d = w.start; d <= w.end; d = addDays(d, 1)) {
           if (d > today) break;
-          let snapTotal = 0, snapOnline = 0, hasSnap = false;
-          for (const sid of storeIds) {
-            const snap = snapMap.get(`${sid}|${d}`);
-            if (snap && snap.total > 0) { snapTotal += snap.total; snapOnline += snap.online; hasSnap = true; }
+          if (deviceCount === 0) continue;
+          const offlineMacs = new Set<string>();
+          for (const a of groupAlerts) {
+            const endDay = a.end ?? today;
+            if (a.start <= d && endDay >= d) offlineMacs.add(idToMac.get(a.dev)!);
           }
-          if (hasSnap && snapTotal > 0) {
-            daily.push((snapOnline / snapTotal) * 100);
-          } else if (deviceCount > 0) {
-            const offlineDevs = new Set<string>();
-            for (const a of alertDates) {
-              if (!storeIds.includes(a.store)) continue;
-              const endDay = a.end ?? today;
-              if (a.start <= d && endDay >= d) offlineDevs.add(a.dev);
-            }
-            const online = Math.max(0, deviceCount - offlineDevs.size);
-            daily.push((online / deviceCount) * 100);
-          }
+          daily.push((Math.max(0, deviceCount - offlineMacs.size) / deviceCount) * 100);
         }
         if (daily.length === 0) return null;
-        return Number((daily.reduce((a, b) => a + b, 0) / daily.length).toFixed(0));
+        return Math.round(daily.reduce((a, b) => a + b, 0) / daily.length);
       });
 
       const withData = weekPct.filter((v): v is number => v !== null);
@@ -484,7 +477,7 @@ export function EvolucaoMonitoramento() {
     // Mostra TODAS as lojas (não esconde nenhuma). Ordem: Piorou -> Melhorou -> Estável -> sem dados
     const order: Record<WeeklyRow['trend'], number> = { Piorou: 0, Melhorou: 1, 'Estável': 2, '—': 3 };
     return rows.sort((a, b) => order[a.trend] - order[b.trend] || (a.delta ?? 0) - (b.delta ?? 0) || a.name.localeCompare(b.name));
-  }, [stores, weeks, alerts, snaps, deviceCountByStore]);
+  }, [stores, weeks, alerts, devices]);
 
   const trendClass = (t: WeeklyRow['trend']) =>
     t === 'Piorou' ? 'text-red-400' : t === 'Melhorou' ? 'text-green-400' : t === 'Estável' ? 'text-gray-400' : 'text-gray-600';
@@ -540,6 +533,11 @@ export function EvolucaoMonitoramento() {
   };
   const buildDayDevices = (day: string) => {
     const today = todaySp();
+    // quedas que aconteceram NESSE dia, por dispositivo
+    const quedasNoDia = new Map<string, number>();
+    for (const a of alerts) {
+      if (spDate(a.first_detected_at) === day) quedasNoDia.set(a.device_id, (quedasNoDia.get(a.device_id) ?? 0) + 1);
+    }
     return alerts
       .filter((a) => {
         const start = spDate(a.first_detected_at);
@@ -553,7 +551,7 @@ export function EvolucaoMonitoramento() {
         since: a.first_detected_at,
         until: a.resolved_at,
         status: deviceStatusById.get(a.device_id) ?? 'offline',
-        quedas: quedasByDevice.get(a.device_id) ?? 0,
+        quedas: quedasNoDia.get(a.device_id) ?? 0,
       }))
       .sort((x, y) => x.store.localeCompare(y.store) || x.name.localeCompare(y.name));
   };
@@ -581,6 +579,7 @@ export function EvolucaoMonitoramento() {
     return [...macMap.values()].map((dev, idx) => {
       const idSet = new Set(dev.ids);
       const weekPct: (number | null)[] = weeks.map((w) => {
+        // Média de disponibilidade do dispositivo na SEMANA (mesmo método da loja).
         const vals: number[] = [];
         for (let d = w.start; d <= w.end; d = addDays(d, 1)) {
           if (d > today) break;
@@ -607,10 +606,14 @@ export function EvolucaoMonitoramento() {
     });
   };
 
-  // ── Paginação da tabela semanal ──────────────────────────────────────────
-  const totalWeekPages = Math.max(1, Math.ceil(weeklyRows.length / PAGE_SIZE));
+  // ── Paginação da tabela semanal (com filtro de tendência) ────────────────
+  const filteredWeekly = useMemo(
+    () => (trendFilter ? weeklyRows.filter((r) => r.trend === trendFilter) : weeklyRows),
+    [weeklyRows, trendFilter],
+  );
+  const totalWeekPages = Math.max(1, Math.ceil(filteredWeekly.length / PAGE_SIZE));
   const safeWeekPage = Math.min(Math.max(0, weekPage), totalWeekPages - 1);
-  const pagedWeekly = weeklyRows.slice(safeWeekPage * PAGE_SIZE, safeWeekPage * PAGE_SIZE + PAGE_SIZE);
+  const pagedWeekly = filteredWeekly.slice(safeWeekPage * PAGE_SIZE, safeWeekPage * PAGE_SIZE + PAGE_SIZE);
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -642,6 +645,19 @@ export function EvolucaoMonitoramento() {
             <option value="offline">Offline</option>
             <option value="not_connected">Não conectado</option>
           </select>
+          {tab === 'semanal' && (
+            <select
+              value={trendFilter}
+              onChange={(e) => { setTrendFilter(e.target.value as '' | 'Piorou' | 'Melhorou' | 'Estável'); setWeekPage(0); }}
+              className="bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm"
+              title="Filtra as lojas por tendência"
+            >
+              <option value="">Tendência: todas</option>
+              <option value="Piorou">Piorou</option>
+              <option value="Melhorou">Melhorou</option>
+              <option value="Estável">Estável</option>
+            </select>
+          )}
           <button
             onClick={() => handleExport('csv')}
             className="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm hover:bg-gray-700"
@@ -727,7 +743,7 @@ export function EvolucaoMonitoramento() {
           <table className="w-full text-sm">
             <thead className="bg-gray-900 text-gray-300">
               <tr>
-                {['Data', 'Dia', 'Dispositivos', 'Online', 'Offline', 'Não Conect.', '% Online', 'Média 7d', 'Quedas', 'Recuperações', 'Saldo', 'Mud. status'].map((h) => (
+                {['Data', 'Dia', 'Lojas', 'Dispositivos', 'Online', 'Offline', 'Não Conect.', '% Online', 'Média 7d', 'Quedas', 'Recuperações', 'Saldo', 'Mud. status'].map((h) => (
                   <th key={h} className="px-3 py-2 text-left font-semibold whitespace-nowrap">{h}</th>
                 ))}
               </tr>
@@ -751,6 +767,7 @@ export function EvolucaoMonitoramento() {
                     </span>
                   </td>
                   <td className="px-3 py-1.5 text-gray-400">{r.weekday}</td>
+                  <td className="px-3 py-1.5 text-gray-400">{totalLojas}</td>
                   <td className="px-3 py-1.5">{r.total}</td>
                   <td className="px-3 py-1.5 text-green-400">{r.online}</td>
                   <td className="px-3 py-1.5 text-red-400">{r.offline}</td>
@@ -764,7 +781,7 @@ export function EvolucaoMonitoramento() {
                 </tr>
                 {isOpen && (
                   <tr className="bg-gray-900/40">
-                    <td colSpan={12} className="px-6 py-2">
+                    <td colSpan={13} className="px-6 py-2">
                       {offlineDevs.length === 0 ? (
                         <span className="text-gray-500 text-xs">Nenhum dispositivo offline neste dia.</span>
                       ) : (
@@ -773,18 +790,18 @@ export function EvolucaoMonitoramento() {
                           <table className="w-full">
                             <thead className="text-gray-500">
                               <tr>
-                                <th className="text-left font-medium py-0.5 pr-4">Dispositivo</th>
                                 <th className="text-left font-medium py-0.5 pr-4">Loja</th>
+                                <th className="text-left font-medium py-0.5 pr-4">Dispositivo</th>
                                 <th className="text-left font-medium py-0.5 pr-4">Queda em</th>
                                 <th className="text-left font-medium py-0.5 pr-4">Retorno</th>
-                                <th className="text-center font-medium py-0.5">Quedas no período</th>
+                                <th className="text-center font-medium py-0.5">Quedas no dia</th>
                               </tr>
                             </thead>
                             <tbody>
                               {offlineDevs.map((d) => (
                                 <tr key={d.key} className="text-gray-300">
-                                  <td className="py-0.5 pr-4">{d.name}</td>
                                   <td className="py-0.5 pr-4 text-gray-400">{d.store}</td>
+                                  <td className="py-0.5 pr-4">{d.name}</td>
                                   <td className="py-0.5 pr-4">{fmtDateTime(d.since)}</td>
                                   <td className="py-0.5 pr-4">{d.until ? fmtDateTime(d.until) : <span className="text-red-400">continua offline</span>}</td>
                                   <td className="py-0.5 text-center text-amber-400/80">{d.quedas}</td>
@@ -806,6 +823,9 @@ export function EvolucaoMonitoramento() {
         </>
       ) : tab === 'semanal' ? (
         <>
+        <div className="flex justify-end mb-2">
+          <span className="text-xs text-gray-500 self-center">{filteredWeekly.length} loja(s)</span>
+        </div>
         <div className="border border-gray-800 rounded-lg overflow-hidden">
           <table className="w-full table-fixed text-xs">
             <thead className="bg-gray-900 text-gray-300">
@@ -890,7 +910,7 @@ export function EvolucaoMonitoramento() {
                 </Fragment>
                 );
               })}
-              {weeklyRows.length === 0 && (
+              {filteredWeekly.length === 0 && (
                 <tr><td colSpan={weeks.length + 8} className="px-3 py-6 text-center text-gray-500">Sem lojas para exibir.</td></tr>
               )}
             </tbody>
@@ -899,7 +919,7 @@ export function EvolucaoMonitoramento() {
         {totalWeekPages > 1 && (
           <div className="flex items-center justify-between mt-3 text-sm text-gray-400">
             <span>
-              {weeklyRows.length} lojas · página {safeWeekPage + 1} de {totalWeekPages}
+              {filteredWeekly.length} lojas · página {safeWeekPage + 1} de {totalWeekPages}
             </span>
             <div className="flex items-center gap-1">
               <button
