@@ -239,6 +239,33 @@ function parseZipViewsStreaming(buf: ArrayBuffer): any[] | null {
   return started ? agg.results() : null;
 }
 
+// Lê um CSV solto em FLUXO (file.stream()), sem carregar o arquivo todo na memória.
+// Aguenta 1,2 GB+ e não congela a tela (assíncrono). Retorna null se não for "Views of visitors".
+async function parseCsvFileStreaming(file: File): Promise<any[] | null> {
+  const agg = makeViewsAggregator();
+  const decoder = new TextDecoder('utf-8');
+  let textBuffer = '';
+  const flush = (final: boolean) => {
+    let nl: number;
+    while ((nl = textBuffer.indexOf('\n')) >= 0) {
+      const line = textBuffer.slice(0, nl).replace(/\r$/, '');
+      textBuffer = textBuffer.slice(nl + 1);
+      agg.processLine(line);
+    }
+    if (final && textBuffer.length > 0) { agg.processLine(textBuffer.replace(/\r$/, '')); textBuffer = ''; }
+  };
+  const reader = file.stream().getReader();
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    textBuffer += decoder.decode(value, { stream: true });
+    flush(false);
+  }
+  textBuffer += decoder.decode();
+  flush(true);
+  return agg.hasHeader() ? agg.results() : null;
+}
+
 // ── Detecta se CSV é do formato "Views of visitors" da DisplayForce ───────────
 function isViewsCsvFormat(headers: string[]): boolean {
   const h = headers.map(s => s.toLowerCase());
@@ -557,25 +584,41 @@ export function CampaignUpload() {
     setStatus('parsing');
     setMessage('');
     try {
-      const buf = await file.arrayBuffer();
       const lowerName = file.name.toLowerCase();
       let allRows: any[] = [];
 
-      if (lowerName.endsWith('.zip')) {
-        // Tenta ler o "Views of visitors" em streaming (aguenta arquivos gigantes).
-        setMessage('Processando o relatório (arquivos grandes podem levar alguns minutos, não feche a aba)...');
-        await new Promise((r) => setTimeout(r, 60)); // deixa a mensagem aparecer antes do processamento pesado
-        const streamed = parseZipViewsStreaming(buf);
+      if (lowerName.endsWith('.csv')) {
+        // CSV solto (ex: "Views of visitors"): lê em FLUXO pelo próprio arquivo,
+        // sem alocar tudo — aguenta 1,2 GB+ e não congela a tela.
+        setMessage('Lendo o CSV (arquivos grandes podem levar um tempo, não feche a aba)...');
+        const streamed = await parseCsvFileStreaming(file);
         if (streamed !== null) {
           allRows = streamed;
         } else {
-          // ZIP sem "Views of visitors" → caminho normal (arquivos pequenos)
+          // CSV que não é "Views of visitors" (pequeno) → parse normal
+          const buf = await file.arrayBuffer();
+          allRows = processWorkbookBytes(buf);
+        }
+      } else if (lowerName.endsWith('.zip')) {
+        const buf = await file.arrayBuffer();
+        setMessage('Processando o relatório (arquivos grandes podem levar alguns minutos, não feche a aba)...');
+        await new Promise((r) => setTimeout(r, 60));
+        let streamed: any[] | null = null;
+        try {
+          streamed = parseZipViewsStreaming(buf);
+        } catch {
+          streamed = null; // ZIP grande demais pra descompactar no navegador
+        }
+        if (streamed !== null) {
+          allRows = streamed;
+        } else {
+          // ZIP sem "Views" ou grande demais → caminho normal (arquivos pequenos)
           setMessage('Extraindo ZIP...');
           const files = await extractZip(buf);
           const procFiles = files.filter(f => /\.(csv|xlsx|xls)$/i.test(f.name));
           if (procFiles.length === 0) {
             setStatus('error');
-            setMessage('ZIP não contém arquivos .csv, .xlsx ou .xls reconhecíveis.');
+            setMessage('Este ZIP é grande demais pro navegador. Extraia o zip e suba só o arquivo "Views of visitors ....csv".');
             return;
           }
           const viewsRows: any[] = [];
@@ -587,16 +630,8 @@ export function CampaignUpload() {
           }
           allRows = viewsRows.length > 0 ? viewsRows : summaryRows;
         }
-      } else if (lowerName.endsWith('.csv')) {
-        const text = new TextDecoder('utf-8').decode(new Uint8Array(buf));
-        const firstLine = text.split('\n')[0] || '';
-        const headers = firstLine.split(/[,;]/).map(h => h.trim().replace(/^"|"$/g, ''));
-        if (isViewsCsvFormat(headers)) {
-          allRows = parseViewsCsv(text);
-        } else {
-          allRows = processWorkbookBytes(buf);
-        }
       } else {
+        const buf = await file.arrayBuffer();
         allRows = processWorkbookBytes(buf);
       }
 
@@ -687,11 +722,11 @@ export function CampaignUpload() {
       {/* Instrução rápida */}
       {status === 'idle' && (
         <div className="bg-blue-950/30 border border-blue-800/40 rounded-xl p-4 text-sm text-blue-300 space-y-1">
-          <p className="font-semibold text-blue-200">📧 Como importar do e-mail da DisplayForce:</p>
-          <p>1. Abra o e-mail "Relatório de visitantes" recebido da DisplayForce</p>
-          <p>2. Baixe o arquivo <code className="bg-blue-900/40 px-1 rounded">attachments.zip</code></p>
-          <p>3. Arraste o ZIP aqui (não precisa extrair)</p>
-          <p>4. Os dados aparecerão automaticamente no widget "Engajamento em Campanhas"</p>
+          <p className="font-semibold text-blue-200">📧 Como importar da DisplayForce:</p>
+          <p>1. Baixe o <code className="bg-blue-900/40 px-1 rounded">attachments.zip</code> da DisplayForce</p>
+          <p>2. <strong>Se o relatório for grande</strong> (mês inteiro): extraia o ZIP e suba <strong>só o arquivo <code className="bg-blue-900/40 px-1 rounded">Views of visitors ....csv</code></strong> — o navegador lê ele em fluxo, sem travar.</p>
+          <p>3. Se for pequeno, pode arrastar o ZIP inteiro (não precisa extrair).</p>
+          <p>4. Os dados aparecem automaticamente no widget "Engajamento em Campanhas".</p>
         </div>
       )}
 
