@@ -3,7 +3,7 @@ import { useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Upload, FileSpreadsheet, CheckCircle, XCircle, ArrowLeft, Loader2, FileArchive } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { unzip } from 'fflate';
+import { unzip, Unzip, UnzipInflate } from 'fflate';
 import supabase from '../lib/supabase';
 
 // ── Normaliza nome de coluna (remove acentos, espaços, case) ─────────────────
@@ -107,6 +107,138 @@ function parseRowsExcel(sheet: XLSX.WorkSheet): any[] {
   return rows;
 }
 
+// ── Agregador incremental do "Views of visitors" (para arquivos GIGANTES) ─────
+// Recebe linha a linha (streaming) e agrega por (campaign|content|device),
+// sem guardar o arquivo inteiro na memória. Ignora a coluna de histórico facial.
+function makeViewsAggregator() {
+  let headers: string[] | null = null;
+  let sep = ',';
+  const idx = { campaign: -1, content: -1, device: -1, visitor: -1, contactId: -1, contactDur: -1, start: -1, end: -1 };
+  const map = new Map<string, {
+    visitors: Set<string>; contactIds: Map<string, number>;
+    minStart: number; maxEnd: number; displayCount: number;
+  }>();
+
+  const parseRow = (line: string) => {
+    const parts: string[] = []; let cur = ''; let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') { inQ = !inQ; continue; }
+      if (ch === sep && !inQ) { parts.push(cur.trim()); cur = ''; continue; }
+      cur += ch;
+    }
+    parts.push(cur.trim());
+    return parts;
+  };
+  const find = (h: string[], ...names: string[]) => {
+    // 1º tenta match EXATO (pra pegar "Campaign", não "Campaign ID")
+    for (const n of names) { const i = h.findIndex(x => x.trim().toLowerCase() === n.toLowerCase()); if (i >= 0) return i; }
+    // 2º cai pro "contém" como fallback
+    for (const n of names) { const i = h.findIndex(x => x.toLowerCase().includes(n.toLowerCase())); if (i >= 0) return i; }
+    return -1;
+  };
+
+  const processLine = (line: string) => {
+    if (!line) return;
+    if (headers === null) {
+      if (!line.toLowerCase().includes('campaign')) return; // pula "sep=," e linhas vazias
+      sep = line.includes(';') && !line.includes(',') ? ';' : ',';
+      headers = parseRow(line);
+      idx.campaign = find(headers, 'Campaign', 'Campanha');
+      idx.content = find(headers, 'Content', 'Conteúdo', 'Conteudo');
+      idx.device = find(headers, 'Device', 'Dispositivo');
+      idx.visitor = find(headers, 'Visitor ID', 'VisitorID');
+      idx.contactId = find(headers, 'Contact ID', 'ContactID');
+      idx.contactDur = find(headers, 'Contact Duration');
+      idx.start = find(headers, 'Content View Start', 'Contact Start');
+      idx.end = find(headers, 'Content View End', 'Contact End');
+      return;
+    }
+    const row = parseRow(line);
+    if (row.length < 3) return;
+    const campaign = row[idx.campaign]?.trim();
+    const device = row[idx.device]?.trim();
+    if (!campaign || !device) return;
+    const content = idx.content >= 0 ? cleanViewsContentName(row[idx.content]?.trim() || '') : '';
+    const key = `${campaign}|||${content}|||${device}`;
+    let agg = map.get(key);
+    if (!agg) { agg = { visitors: new Set(), contactIds: new Map(), minStart: Infinity, maxEnd: -Infinity, displayCount: 0 }; map.set(key, agg); }
+    agg.displayCount += 1;
+    const visId = idx.visitor >= 0 ? row[idx.visitor]?.trim() : '';
+    if (visId) agg.visitors.add(visId);
+    if (idx.contactId >= 0 && idx.contactDur >= 0) {
+      const cid = row[idx.contactId]?.trim();
+      if (cid && !agg.contactIds.has(cid)) agg.contactIds.set(cid, parseFloat(row[idx.contactDur]) || 0);
+    }
+    if (idx.start >= 0 && row[idx.start]) { const t = new Date(row[idx.start]).getTime(); if (!isNaN(t) && t < agg.minStart) agg.minStart = t; }
+    if (idx.end >= 0 && row[idx.end]) { const t = new Date(row[idx.end]).getTime(); if (!isNaN(t) && t > agg.maxEnd) agg.maxEnd = t; }
+  };
+
+  const results = () => {
+    const out: any[] = [];
+    for (const [key, agg] of map) {
+      const [campaign, content_name, device] = key.split('|||');
+      let loja = device, tipo_midia = '';
+      const devClean = device.includes(': ') ? device.split(': ').slice(1).join(': ') : device;
+      if (devClean.includes(' - ')) { const p = devClean.split(' - '); loja = p.slice(0, -1).join(' - ').trim(); tipo_midia = p[p.length - 1].trim(); }
+      else loja = devClean;
+      const visitors = agg.visitors.size || agg.contactIds.size;
+      let avg_attention_sec = 0;
+      if (agg.contactIds.size > 0) { let tot = 0; for (const v of agg.contactIds.values()) tot += v; avg_attention_sec = Math.round(tot / agg.contactIds.size); }
+      const start_date = agg.minStart !== Infinity ? new Date(agg.minStart).toISOString() : null;
+      const end_date = agg.maxEnd !== -Infinity ? new Date(agg.maxEnd).toISOString() : null;
+      let duration_days: number | null = null, duration_hms: string | null = null;
+      if (start_date && end_date) {
+        const delta = (agg.maxEnd - agg.minStart) / 1000;
+        duration_days = Math.round(delta / 86400 * 100) / 100;
+        const hh = Math.floor(delta / 3600), mm = Math.floor((delta % 3600) / 60), ss = Math.floor(delta % 60);
+        duration_hms = `${hh}:${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+      }
+      out.push({ name: campaign, content_name: content_name || null, tipo_midia, loja, start_date, end_date, duration_days, duration_hms, display_count: agg.displayCount, visitors, avg_attention_sec });
+    }
+    return out;
+  };
+
+  return { processLine, results, hasHeader: () => headers !== null };
+}
+
+// Lê só o "Views of visitors" de dentro do ZIP em streaming (aguenta 1,2 GB+).
+// Retorna null se não houver esse arquivo no ZIP (aí o chamador usa o caminho normal).
+function parseZipViewsStreaming(buf: ArrayBuffer): any[] | null {
+  const agg = makeViewsAggregator();
+  const decoder = new TextDecoder('utf-8');
+  let textBuffer = '';
+  let started = false;
+
+  const flush = (final: boolean) => {
+    let nl: number;
+    while ((nl = textBuffer.indexOf('\n')) >= 0) {
+      const line = textBuffer.slice(0, nl).replace(/\r$/, '');
+      textBuffer = textBuffer.slice(nl + 1);
+      agg.processLine(line);
+    }
+    if (final && textBuffer.length > 0) { agg.processLine(textBuffer.replace(/\r$/, '')); textBuffer = ''; }
+  };
+
+  const unzipper = new Unzip();
+  unzipper.register(UnzipInflate);
+  unzipper.onfile = (file) => {
+    if (started) return;
+    if (/views of visitors/i.test(file.name) && /\.csv$/i.test(file.name)) {
+      started = true;
+      file.ondata = (err, chunk, final) => {
+        if (err) throw err;
+        textBuffer += decoder.decode(chunk, { stream: !final });
+        flush(final);
+      };
+      file.start();
+    }
+  };
+  unzipper.push(new Uint8Array(buf), true);
+
+  return started ? agg.results() : null;
+}
+
 // ── Detecta se CSV é do formato "Views of visitors" da DisplayForce ───────────
 function isViewsCsvFormat(headers: string[]): boolean {
   const h = headers.map(s => s.toLowerCase());
@@ -144,6 +276,10 @@ function parseViewsCsv(csvText: string): any[] {
 
   const headers = parseRow(lines[headerLine]);
   const find = (...names: string[]) => {
+    for (const n of names) {
+      const idx = headers.findIndex(h => h.trim().toLowerCase() === n.toLowerCase());
+      if (idx >= 0) return idx;
+    }
     for (const n of names) {
       const idx = headers.findIndex(h => h.toLowerCase().includes(n.toLowerCase()));
       if (idx >= 0) return idx;
@@ -426,22 +562,31 @@ export function CampaignUpload() {
       let allRows: any[] = [];
 
       if (lowerName.endsWith('.zip')) {
-        setMessage('Extraindo ZIP...');
-        const files = await extractZip(buf);
-        const procFiles = files.filter(f => /\.(csv|xlsx|xls)$/i.test(f.name));
-        if (procFiles.length === 0) {
-          setStatus('error');
-          setMessage('ZIP não contém arquivos .csv, .xlsx ou .xls reconhecíveis.');
-          return;
+        // Tenta ler o "Views of visitors" em streaming (aguenta arquivos gigantes).
+        setMessage('Processando o relatório (arquivos grandes podem levar alguns minutos, não feche a aba)...');
+        await new Promise((r) => setTimeout(r, 60)); // deixa a mensagem aparecer antes do processamento pesado
+        const streamed = parseZipViewsStreaming(buf);
+        if (streamed !== null) {
+          allRows = streamed;
+        } else {
+          // ZIP sem "Views of visitors" → caminho normal (arquivos pequenos)
+          setMessage('Extraindo ZIP...');
+          const files = await extractZip(buf);
+          const procFiles = files.filter(f => /\.(csv|xlsx|xls)$/i.test(f.name));
+          if (procFiles.length === 0) {
+            setStatus('error');
+            setMessage('ZIP não contém arquivos .csv, .xlsx ou .xls reconhecíveis.');
+            return;
+          }
+          const viewsRows: any[] = [];
+          const summaryRows: any[] = [];
+          for (const f of procFiles) {
+            const parsed = processFileBytes(f.name, f.bytes);
+            const target = (parsed.source === 'views' || isViewsSource(f.name, parsed.rows)) ? viewsRows : summaryRows;
+            for (const row of parsed.rows) target.push(row);
+          }
+          allRows = viewsRows.length > 0 ? viewsRows : summaryRows;
         }
-        const viewsRows: any[] = [];
-        const summaryRows: any[] = [];
-        for (const f of procFiles) {
-          const parsed = processFileBytes(f.name, f.bytes);
-          const target = (parsed.source === 'views' || isViewsSource(f.name, parsed.rows)) ? viewsRows : summaryRows;
-          for (const row of parsed.rows) target.push(row); // laço em vez de spread (arquivos grandes)
-        }
-        allRows = viewsRows.length > 0 ? viewsRows : summaryRows;
       } else if (lowerName.endsWith('.csv')) {
         const text = new TextDecoder('utf-8').decode(new Uint8Array(buf));
         const firstLine = text.split('\n')[0] || '';
