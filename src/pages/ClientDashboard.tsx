@@ -667,6 +667,9 @@ export function ClientDashboard() {
 
   // Dashboard state
   const [totalVisitors, setTotalVisitors] = useState(0);
+  // Total exato do período direto da API (pagination.total = Alcance da DisplayForce).
+  // Quando disponível, é a fonte da verdade do KPI "Total de Visitantes".
+  const [apiTotalVisitors, setApiTotalVisitors] = useState<number | null>(null);
   const [dailyStats, setDailyStats] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
   const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
   const [avgVisitorsPerDay, setAvgVisitorsPerDay] = useState(0);
@@ -2026,25 +2029,10 @@ export function ClientDashboard() {
         //    o dia de hoje (rápido, 1 dia) para o total ficar em dia.
         try {
           setSyncMessage('Calculando dados...');
-          if (rangeTouchesToday) {
-            // Atualiza os últimos dias no resumo (a Panvel tem atraso de ~2 dias
-            // nos dados, então recalcula uma janela recente para ficar correto).
-            const refreshFrom = formatLocalDateKey(new Date(Date.now() - 3 * 86400000));
-            try {
-              await withTimeout(
-                supabase.rpc('refresh_visitor_daily', {
-                  p_client: id,
-                  p_from: refreshFrom,
-                  p_to: todayDay,
-                }),
-                25000,
-                'refresh_visitor_daily (dias recentes)',
-              );
-            } catch (refreshErr) {
-              console.warn('[loadData] não atualizou o resumo dos dias recentes, seguindo com o que há:', refreshErr);
-            }
-            if (!isCurrent()) return;
-          }
+          // Obs: o resumo de visitantes (visitor_daily) agora é alimentado pelo
+          // import do arquivo "Visitors" da DisplayForce (visitantes únicos).
+          // Por isso NÃO recalculamos mais os dias recentes a partir das sessões
+          // aqui — isso sobrescreveria os dados únicos importados.
           const rpcResult = await withTimeout(
             supabase.rpc('get_visitor_rollup', {
               p_client: id,
@@ -2747,9 +2735,22 @@ export function ClientDashboard() {
           Math.min(Date.parse(month.endIso), Date.parse(quarterEnd))
         ).toISOString();
         let visitors = 0;
-        // Rede global: usa o resumo diário (get_visitor_rollup) — instantâneo.
-        // Loja selecionada: conta no banco com o filtro de device.
-        if (deviceIds.length === 0) {
+        // Fonte da verdade: total exato da API (Alcance), servido do cache do banco
+        // (visitor_total_cache) — instantâneo. Mesmo número da DisplayForce.
+        try {
+          const apiJson = await fetchJsonWithTimeout('/api/sync-analytics', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              client_id: id, count_only: true, start: month.startIso, end: monthEndIso, auth: 'painel@2026*',
+              ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
+            }),
+          }, 25000, 'count_only (trimestre)');
+          const at = Number(apiJson?.total);
+          if (Number.isFinite(at) && at > 0) visitors = at;
+        } catch (_) { /* sem API → cai nos caminhos abaixo */ }
+
+        // Fallback (rede global): resumo diário; ou contagem no banco com filtro de device.
+        if (visitors <= 0 && deviceIds.length === 0) {
           try {
             const monthRpc = await withTimeout(
               supabase.rpc('get_visitor_rollup', {
@@ -3000,6 +3001,40 @@ export function ClientDashboard() {
   useEffect(() => { loadQuarterData(); }, [loadQuarterData]);
   useEffect(() => { loadCompareData(); }, [loadCompareData]);
   useEffect(() => { refreshLastUpdate(); }, [refreshLastUpdate]);
+
+  // ── Total de Visitantes (Alcance) exato via API ─────────────────────────────
+  // Uma chamada leve (count_only) devolve pagination.total do período — o mesmo
+  // número que aparece na DisplayForce — sem baixar todas as páginas de visitor_id.
+  const apiTotalSeqRef = useRef(0);
+  useEffect(() => {
+    if (!id) return;
+    const seq = ++apiTotalSeqRef.current;
+    const startIso = alignUtcStartOfDay(selectedStartDate).toISOString();
+    const endIso = alignUtcEndOfDay(selectedEndDate).toISOString();
+    const devs = Array.isArray(deviceIds) ? deviceIds : [];
+    (async () => {
+      try {
+        const json = await fetchJsonWithTimeout('/api/sync-analytics', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            client_id: id,
+            count_only: true,
+            start: startIso,
+            end: endIso,
+            auth: 'painel@2026*',
+            ...(devs.length > 0 ? { devices: devs } : {}),
+          }),
+        }, 20000, 'count_only (total API)');
+        if (seq !== apiTotalSeqRef.current) return;
+        const t = Number(json?.total);
+        setApiTotalVisitors(Number.isFinite(t) && t > 0 ? t : null);
+      } catch (_) {
+        if (seq !== apiTotalSeqRef.current) return;
+        setApiTotalVisitors(null); // sem API → cai no total do rollup
+      }
+    })();
+  }, [id, selectedStartDate, selectedEndDate, deviceIds]);
 
   const refreshClientAndStores = useCallback(async () => {
     if (!id) return;
@@ -3419,6 +3454,13 @@ export function ClientDashboard() {
     return <ClientDashboardLED />;
   }
 
+  // Total exibido no KPI: prioriza o total exato da API (Alcance DisplayForce);
+  // se indisponível, usa o do rollup. A média/dia acompanha a mesma base.
+  const displayTotalVisitors = apiTotalVisitors != null ? apiTotalVisitors : totalVisitors;
+  const displayAvgVisitorsPerDay = apiTotalVisitors != null
+    ? Math.round(apiTotalVisitors / Math.max(1, countInclusiveUtcDays(selectedStartDate, selectedEndDate)))
+    : avgVisitorsPerDay;
+
   return (
     <div
       ref={dashboardRef}
@@ -3613,7 +3655,7 @@ export function ClientDashboard() {
                   clientName,
                   lojaFilter: selectedStore?.name ?? null,
                   period: { start: selectedStartDate, end: selectedEndDate },
-                  kpis: { totalVisitors, avgVisitorsPerDay, avgVisitSeconds, avgAttentionSeconds },
+                  kpis: { totalVisitors: displayTotalVisitors, avgVisitorsPerDay: displayAvgVisitorsPerDay, avgVisitSeconds, avgAttentionSeconds },
                   dailyStats: periodSeries.values, dailyLabels: periodSeries.labels, hourlyStats, genderStats, ageStats, attributeStats,
                   hairTypeData, hairColorData, visitorsPerDayMap, quarterBars, dashboardRef,
                 }}
@@ -3749,8 +3791,8 @@ export function ClientDashboard() {
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'attributes')                widgetProps.attrData = attributeStats;
-                if (widget.id === 'kpi_total_visitors')        widgetProps.totalVisitors = totalVisitors;
-                if (widget.id === 'kpi_avg_visitors_day')      widgetProps.avgVisitorsPerDay = avgVisitorsPerDay;
+                if (widget.id === 'kpi_total_visitors')        widgetProps.totalVisitors = displayTotalVisitors;
+                if (widget.id === 'kpi_avg_visitors_day')      widgetProps.avgVisitorsPerDay = displayAvgVisitorsPerDay;
                 if (widget.id === 'kpi_avg_visit_time')        widgetProps.avgVisitSeconds = avgVisitSeconds;
                 if (widget.id === 'kpi_attention_time')        widgetProps.avgAttentionSeconds = avgAttentionSeconds;
                 if (widget.id === 'chart_age_ranges')          widgetProps.ageData = ageStats;
@@ -3842,8 +3884,8 @@ export function ClientDashboard() {
             fim: selectedEndDate.toLocaleDateString('pt-BR'),
           },
           visitantes: {
-            total: totalVisitors,
-            mediaPorDia: avgVisitorsPerDay,
+            total: displayTotalVisitors,
+            mediaPorDia: displayAvgVisitorsPerDay,
             tempoMedioVisitaSegundos: avgVisitSeconds,
             tempoMedioAtencaoSegundos: avgAttentionSeconds,
             porHora: hourlyStats,

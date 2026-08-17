@@ -266,6 +266,100 @@ async function parseCsvFileStreaming(file: File): Promise<any[] | null> {
   return agg.hasHeader() ? agg.results() : null;
 }
 
+// ── Agregador do "Visitors" (visitantes ÚNICOS) por dia → visitor_daily ───────
+const SP_TZ = 'America/Sao_Paulo';
+const _spDateFmt = new Intl.DateTimeFormat('en-CA', { timeZone: SP_TZ, year: 'numeric', month: '2-digit', day: '2-digit' });
+const _spHourFmt = new Intl.DateTimeFormat('en-US', { timeZone: SP_TZ, hour: '2-digit', hour12: false });
+function ageBucketVisitors(a: number): string {
+  if (!Number.isFinite(a) || a < 0) return 'unknown';
+  if (a <= 9) return '0-9'; if (a <= 17) return '10-17'; if (a <= 24) return '18-24';
+  if (a <= 34) return '25-34'; if (a <= 44) return '35-44'; if (a <= 54) return '45-54';
+  if (a <= 64) return '55-64'; if (a <= 74) return '65-74'; return '75+';
+}
+function makeVisitorsAggregator(clientId: string) {
+  let headers: string[] | null = null;
+  let sep = ',';
+  const idx = { vs: -1, gender: -1, age: -1, visitDur: -1, contactDur: -1 };
+  const map = new Map<string, { total: number; m: number; f: number; u: number; age: Record<string, number>; hour: Record<string, number>; sumV: number; cntV: number; sumC: number; cntC: number }>();
+  const parseRow = (line: string) => {
+    const parts: string[] = []; let cur = ''; let inQ = false;
+    for (let i = 0; i < line.length; i++) { const ch = line[i]; if (ch === '"') { inQ = !inQ; continue; } if (ch === sep && !inQ) { parts.push(cur.trim()); cur = ''; continue; } cur += ch; }
+    parts.push(cur.trim()); return parts;
+  };
+  const find = (h: string[], ...names: string[]) => {
+    for (const n of names) { const i = h.findIndex(x => x.trim().toLowerCase() === n.toLowerCase()); if (i >= 0) return i; }
+    for (const n of names) { const i = h.findIndex(x => x.toLowerCase().includes(n.toLowerCase())); if (i >= 0) return i; }
+    return -1;
+  };
+  const processLine = (line: string) => {
+    if (!line) return;
+    if (headers === null) {
+      if (!line.toLowerCase().includes('visit start')) return;
+      sep = line.includes(';') && !line.includes(',') ? ';' : ',';
+      headers = parseRow(line);
+      idx.vs = find(headers, 'Visit Start');
+      idx.gender = find(headers, 'Gender');
+      idx.age = find(headers, 'Age');
+      idx.visitDur = find(headers, 'Visit Duration');
+      idx.contactDur = find(headers, 'Contacts Duration', 'Contact Duration');
+      return;
+    }
+    const r = parseRow(line);
+    if (r.length < 3 || idx.vs < 0) return;
+    const vsRaw = (r[idx.vs] || '').trim();
+    if (!vsRaw) return;
+    const d = new Date(vsRaw.replace(' ', 'T') + (/[zZ]|[+-]\d\d:?\d\d$/.test(vsRaw) ? '' : 'Z'));
+    if (isNaN(d.getTime())) return;
+    const day = _spDateFmt.format(d);
+    const hour = String(parseInt(_spHourFmt.format(d), 10));
+    let a = map.get(day);
+    if (!a) { a = { total: 0, m: 0, f: 0, u: 0, age: {}, hour: {}, sumV: 0, cntV: 0, sumC: 0, cntC: 0 }; map.set(day, a); }
+    a.total += 1;
+    const g = (idx.gender >= 0 ? (r[idx.gender] || '') : '').toLowerCase();
+    if (g === 'male' || g === '1') a.m += 1; else if (g === 'female' || g === '2') a.f += 1; else a.u += 1;
+    const ageN = idx.age >= 0 ? parseInt(r[idx.age], 10) : NaN;
+    const b = ageBucketVisitors(ageN); a.age[b] = (a.age[b] || 0) + 1;
+    a.hour[hour] = (a.hour[hour] || 0) + 1;
+    const vd = idx.visitDur >= 0 ? parseFloat(r[idx.visitDur]) : NaN;
+    if (Number.isFinite(vd) && vd > 0) { a.sumV += vd; a.cntV += 1; }
+    const cd = idx.contactDur >= 0 ? parseFloat(r[idx.contactDur]) : NaN;
+    if (Number.isFinite(cd) && cd > 0) { a.sumC += cd; a.cntC += 1; }
+  };
+  const rows = () => {
+    const out: any[] = [];
+    for (const [day, a] of map) {
+      out.push({ client_id: clientId, day, total: a.total, g_male: a.m, g_female: a.f, g_unknown: a.u, age_counts: a.age, hour_counts: a.hour, sum_visit: Math.round(a.sumV), cnt_visit: a.cntV, sum_contact: Math.round(a.sumC), cnt_contact: a.cntC });
+    }
+    return out;
+  };
+  return { processLine, rows, hasHeader: () => headers !== null };
+}
+
+async function parseVisitorsCsvStreaming(file: File, clientId: string): Promise<any[] | null> {
+  const agg = makeVisitorsAggregator(clientId);
+  const decoder = new TextDecoder('utf-8');
+  let textBuffer = '';
+  const flush = (final: boolean) => {
+    let nl: number;
+    while ((nl = textBuffer.indexOf('\n')) >= 0) { const line = textBuffer.slice(0, nl).replace(/\r$/, ''); textBuffer = textBuffer.slice(nl + 1); agg.processLine(line); }
+    if (final && textBuffer.length > 0) { agg.processLine(textBuffer.replace(/\r$/, '')); textBuffer = ''; }
+  };
+  const reader = file.stream().getReader();
+  for (;;) { const { done, value } = await reader.read(); if (done) break; textBuffer += decoder.decode(value, { stream: true }); flush(false); }
+  textBuffer += decoder.decode(); flush(true);
+  return agg.hasHeader() ? agg.rows() : null;
+}
+
+// Detecta o tipo do CSV lendo só o cabeçalho (primeiros KB).
+async function detectCsvKind(file: File): Promise<'views' | 'visitors' | 'other'> {
+  const head = await file.slice(0, 65536).text();
+  const lines = head.split(/\r?\n/).slice(0, 5).map(l => l.toLowerCase());
+  const headerLine = lines.find(l => l.includes('campaign') || l.includes('visit start')) || '';
+  if (headerLine.includes('campaign') && headerLine.includes('device')) return 'views';
+  if (headerLine.includes('visit start') && (headerLine.includes('contacts count') || headerLine.includes('contacts duration'))) return 'visitors';
+  return 'other';
+}
+
 // ── Detecta se CSV é do formato "Views of visitors" da DisplayForce ───────────
 function isViewsCsvFormat(headers: string[]): boolean {
   const h = headers.map(s => s.toLowerCase());
@@ -588,14 +682,20 @@ export function CampaignUpload() {
       let allRows: any[] = [];
 
       if (lowerName.endsWith('.csv')) {
-        // CSV solto (ex: "Views of visitors"): lê em FLUXO pelo próprio arquivo,
-        // sem alocar tudo — aguenta 1,2 GB+ e não congela a tela.
+        const kind = await detectCsvKind(file);
+        if (kind === 'visitors') {
+          // Arquivo "Visitors": NÃO importamos mais por arquivo. O "Total de
+          // Visitantes (Alcance)" agora vem direto da API configurada do cliente.
+          setStatus('error');
+          setMessage('Este arquivo é o "Visitors" (visitantes). Não precisa importar: o "Total de Visitantes" já vem direto da API configurada. Aqui só entra o "Views of visitors" (campanhas).');
+          return;
+        }
+        // "Views of visitors" ou outro → caminho de campanhas (em fluxo)
         setMessage('Lendo o CSV (arquivos grandes podem levar um tempo, não feche a aba)...');
         const streamed = await parseCsvFileStreaming(file);
         if (streamed !== null) {
           allRows = streamed;
         } else {
-          // CSV que não é "Views of visitors" (pequeno) → parse normal
           const buf = await file.arrayBuffer();
           allRows = processWorkbookBytes(buf);
         }

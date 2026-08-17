@@ -1603,6 +1603,81 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (apiCfgErr || !apiCfg) return bad(res, 400, { error: "Config da API não encontrada", details: apiCfgErr });
     const cfg = apiCfg as ClientApiConfig;
 
+    // ── count_only ───────────────────────────────────────────────────────────
+    // Retorna SÓ o total do período (pagination.total = Alcance da DisplayForce).
+    // Estratégia: lê do cache (visitor_total_cache) → instantâneo. Só chama a API
+    // (1 request leve, limit 1) quando o período FALTA no cache ou quando toca o
+    // dia de hoje e o cache passou de 30 min. Meses fechados = nunca reconsulta.
+    if ((req.body as any)?.count_only === true) {
+      if (providedAuth !== "painel@2026*") return bad(res, 401, { error: "count_only requer Bearer painel@2026*" });
+      if (!start || !end) return bad(res, 400, { error: "start e end são obrigatórios" });
+
+      const devList = (Array.isArray(devices) ? devices.map(Number).filter(Number.isFinite) : []).sort((a, b) => a - b);
+      const deviceKey = devList.join(",");
+      const pStart = String(start).slice(0, 10);
+      const pEnd = String(end).slice(0, 10);
+      const forceRefresh = (req.body as any)?.refresh === true;
+      // "hoje" em São Paulo (UTC-3) só pra decidir se o período ainda muda
+      const todaySp = new Date(Date.now() - 3 * 3600 * 1000).toISOString().slice(0, 10);
+      const isClosedPast = pEnd < todaySp;
+      const STALE_MS = 30 * 60 * 1000;
+
+      // 1) tenta o cache
+      let cachedTotal: number | null = null;
+      try {
+        const { data: cachedRow } = await supabase.from("visitor_total_cache")
+          .select("total, updated_at")
+          .eq("client_id", client_id).eq("period_start", pStart).eq("period_end", pEnd).eq("device_key", deviceKey)
+          .maybeSingle();
+        if (cachedRow) {
+          cachedTotal = Number(cachedRow.total);
+          const fresh = isClosedPast || (Date.now() - Date.parse(cachedRow.updated_at) < STALE_MS);
+          if (fresh && !forceRefresh) return ok(res, { total: cachedTotal, cached: true });
+        }
+      } catch (_) { /* cache indisponível → segue pra API */ }
+
+      // 2) busca na API e atualiza o cache
+      try {
+        const analyticsUrl = `${(cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "")}${cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`}`;
+        const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
+        const ck = cfg.custom_header_key?.trim(); const cv = cfg.custom_header_value?.trim();
+        if (ck && cv) headers[ck] = cv;
+        else if (cfg.api_key?.trim()) headers["X-API-Token"] = cfg.api_key.trim();
+        else return bad(res, 400, { error: "api_key não configurada" });
+
+        const body: any = {
+          start: String(start), end: String(end),
+          tracks: cfg.collect_tracks ?? true, face_quality: cfg.collect_face_quality ?? true,
+          glasses: cfg.collect_glasses ?? true, facial_hair: cfg.collect_beard ?? true,
+          hair_color: cfg.collect_hair_color ?? true, hair_type: cfg.collect_hair_type ?? true,
+          headwear: cfg.collect_headwear ?? true,
+          additional_attributes: ["smile", "pitch", "yaw", "x", "y", "height"],
+          limit: 1, offset: 0,
+        };
+        if (devList.length > 0) body.devices = devList;
+
+        const resp = await fetch(analyticsUrl, { method: "POST", headers, body: JSON.stringify(body) });
+        if (!resp.ok) {
+          if (cachedTotal != null) return ok(res, { total: cachedTotal, cached: true, stale: true });
+          return bad(res, 502, { error: `API ${resp.status}` });
+        }
+        const json = await resp.json();
+        const t = json?.pagination?.total ?? json?.pagination?.count ?? json?.total ?? json?.count ?? json?.meta?.total;
+        const total = Number(t);
+        if (Number.isFinite(total)) {
+          await supabase.from("visitor_total_cache").upsert(
+            { client_id, period_start: pStart, period_end: pEnd, device_key: deviceKey, total, updated_at: new Date().toISOString() },
+            { onConflict: "client_id,period_start,period_end,device_key" }
+          );
+          return ok(res, { total, cached: false });
+        }
+        return ok(res, { total: cachedTotal, cached: cachedTotal != null });
+      } catch (e: any) {
+        if (cachedTotal != null) return ok(res, { total: cachedTotal, cached: true, stale: true });
+        return bad(res, 502, { error: e?.message || String(e) });
+      }
+    }
+
     if (live_facial_expressions === true) {
       if (!start || !end) return bad(res, 400, { error: "start e end sao obrigatorios" });
 
