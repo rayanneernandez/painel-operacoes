@@ -224,16 +224,17 @@ function parseViewsCsv(csvText: string): any[] {
 
     let avg_attention_sec = 0;
     if (agg.contactIds.size > 0) {
-      const total = [...agg.contactIds.values()].reduce((a, b) => a + b, 0);
+      let total = 0;
+      for (const v of agg.contactIds.values()) total += v;
       avg_attention_sec = Math.round(total / agg.contactIds.size);
     }
 
-    const start_date = agg.startDates.length > 0
-      ? new Date(Math.min(...agg.startDates.map(d => d.getTime()))).toISOString()
-      : null;
-    const end_date = agg.endDates.length > 0
-      ? new Date(Math.max(...agg.endDates.map(d => d.getTime()))).toISOString()
-      : null;
+    // Usa laço (não spread) para não estourar com muitas linhas
+    let minStart = Infinity, maxEnd = -Infinity;
+    for (const d of agg.startDates) { const t = d.getTime(); if (t < minStart) minStart = t; }
+    for (const d of agg.endDates) { const t = d.getTime(); if (t > maxEnd) maxEnd = t; }
+    const start_date = agg.startDates.length > 0 ? new Date(minStart).toISOString() : null;
+    const end_date = agg.endDates.length > 0 ? new Date(maxEnd).toISOString() : null;
 
     let duration_days: number | null = null;
     let duration_hms: string | null = null;
@@ -437,11 +438,8 @@ export function CampaignUpload() {
         const summaryRows: any[] = [];
         for (const f of procFiles) {
           const parsed = processFileBytes(f.name, f.bytes);
-          if (parsed.source === 'views' || isViewsSource(f.name, parsed.rows)) {
-            viewsRows.push(...parsed.rows);
-          } else {
-            summaryRows.push(...parsed.rows);
-          }
+          const target = (parsed.source === 'views' || isViewsSource(f.name, parsed.rows)) ? viewsRows : summaryRows;
+          for (const row of parsed.rows) target.push(row); // laço em vez de spread (arquivos grandes)
         }
         allRows = viewsRows.length > 0 ? viewsRows : summaryRows;
       } else if (lowerName.endsWith('.csv')) {
