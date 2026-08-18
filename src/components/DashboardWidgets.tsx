@@ -888,12 +888,14 @@ export const WidgetCampaigns = ({
   lojaFilter,
   startDate,
   endDate,
+  canSeeDeleted = false,
 }: {
   view?: string;
   clientId?: string;
   lojaFilter?: string | null;
   startDate?: Date | string;
   endDate?: Date | string;
+  canSeeDeleted?: boolean;
 }) => {
   const MESES_PT = ['Jan','Fev','Mar','Abr','Mai','Jun','Jul','Ago','Set','Out','Nov','Dez'];
 
@@ -1045,6 +1047,10 @@ export const WidgetCampaigns = ({
     const deduped = new Map<string, any>();
 
     for (const rawRow of rows) {
+      // Conteúdos "[Deleted]" (apagados na DisplayForce): o cliente não vê;
+      // o administrador vê (canSeeDeleted).
+      const rawContent = String(rawRow.content_name ?? rawRow.name ?? '').replace(/[[\]\s]/g, '').toLowerCase();
+      if (rawContent === 'deleted' && !canSeeDeleted) continue;
       const campaignLabel = cleanCampaignContentName(rawRow.content_name) || cleanCampaignContentName(rawRow.name) || rawRow.content_name || rawRow.name || '—';
       const status = getCampaignStatusMeta(rawRow.start_date, rawRow.end_date, rawRow.uploaded_at, rawRow.status);
       const normalizedRow = {
@@ -1093,7 +1099,7 @@ export const WidgetCampaigns = ({
       if (startDiff !== 0) return startDiff;
       return (Number(b.visitors) || 0) - (Number(a.visitors) || 0);
     });
-  }, [rows]);
+  }, [rows, canSeeDeleted]);
 
   const campaignOptions = React.useMemo(
     () => Array.from(new Set(normalizedRows.map((row) => row._campaignLabel).filter(Boolean))).sort((a, b) => String(a).localeCompare(String(b), 'pt-BR')),
