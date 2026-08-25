@@ -1588,6 +1588,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const authHeader = req.headers.authorization;
     const providedAuth = typeof authHeader === "string" && authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : auth;
     if (providedAuth && providedAuth !== "painel@2026*") return bad(res, 401, { error: "Não autorizado" });
+
+    // ── list_clients ─────────────────────────────────────────────────────────
+    // Lista as redes que têm API configurada (pra scripts sincronizarem todas de
+    // uma vez, sem precisar hardcodar client_id). Requer Bearer.
+    if ((req.body as any)?.list_clients === true) {
+      if (providedAuth !== "painel@2026*") return bad(res, 401, { error: "list_clients requer Bearer painel@2026*" });
+      const { data: cfgs } = await supabase.from("client_api_configs").select("client_id");
+      const ids = Array.from(new Set((cfgs || []).map((c: any) => c.client_id).filter(Boolean)));
+      const { data: cls } = ids.length ? await supabase.from("clients").select("id,name").in("id", ids) : { data: [] as any[] };
+      return ok(res, { clients: cls ?? [] });
+    }
+
     if (!client_id) return bad(res, 400, { error: "client_id é obrigatório" });
 
     // Endpoints live_* (raw fetch direto na DisplayForce) ficam restritos: só rodam com Bearer
@@ -2308,8 +2320,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         assignedMacs.add(mac);
         console.log(`[sync_stores] Device "${devName}" (${mac}) atribuído à loja ${m[1]} via fallback de nome`);
       });
+      let devicesUpsertError: string | null = null;
       if (devicesPayload.length > 0) {
-        await supabase.from("devices").upsert(devicesPayload);
+        const { error: devUpsertErr } = await supabase.from("devices").upsert(devicesPayload);
+        if (devUpsertErr) {
+          devicesUpsertError = devUpsertErr.message ?? String(devUpsertErr);
+          console.error("[sync_stores] Erro no upsert de devices:", devicesUpsertError);
+          // Fallback: tenta gravar sem activation_date (caso a coluna ainda não exista)
+          const legacyPayload = devicesPayload.map(({ activation_date, ...rest }) => rest);
+          const { error: legacyErr } = await supabase.from("devices").upsert(legacyPayload);
+          if (legacyErr) console.error("[sync_stores] Erro no upsert legado de devices:", legacyErr.message ?? legacyErr);
+        }
       }
 
       // Remove dispositivos de stores não sincronizadas (segurança adicional)
@@ -2374,6 +2395,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         store_id: d.store_id,
         mac: d.mac_address,
         status: d.status,
+        activation_date: d.activation_date ?? null,
+      }));
+      // Amostra da data de ativação crua vinda da API (diagnóstico da instalação)
+      const activationRawSample = devicesData.slice(0, 5).map((d: any) => ({
+        name: d?.name,
+        activation_date: d?.activation_date ?? null,
+        activated_at: d?.activated_at ?? null,
+        created_at: d?.created_at ?? null,
+        last_online: d?.last_online ?? null,
       }));
       // Verifica no banco quantos dispositivos existem agora para esses store IDs
       const { count: devCountAfter } = await supabase
@@ -2388,6 +2418,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         devices_total_api: devicesData.length,
         devices_in_db_after: devCountAfter,
         monitoring: monitoringSummary,
+        devices_upsert_error: devicesUpsertError,
         diag: {
           device_keys: diagKeys,
           device_parent_id_sample: diagParentId,
@@ -2395,6 +2426,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           folder_device_match: sampleFolderKeys,
           device_parent_ids: sampleDevParentIds,
           payload_sample: samplePayload,
+          activation_raw_sample: activationRawSample,
         },
       });
     }

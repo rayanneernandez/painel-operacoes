@@ -570,6 +570,20 @@ export function EvolucaoMonitoramento() {
     ]);
     return { headers, rows };
   };
+  const buildCriticidade = () => {
+    const headers = ['Loja', 'Dispositivo', 'Offline desde', 'Horas offline', 'Quedas (total)'];
+    const rows: (string | number)[][] = [];
+    for (const g of criticalityRows) {
+      for (const d of g.devices) {
+        rows.push([
+          g.loja, d.name,
+          new Date(d.since).toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit' }),
+          fmtHours(d.hours), d.quedas,
+        ]);
+      }
+    }
+    return { headers, rows };
+  };
   const handleExport = (format: 'csv' | 'pdf') => {
     const today = todaySp();
     if (tab === 'diario') {
@@ -577,6 +591,12 @@ export function EvolucaoMonitoramento() {
       const fname = `evolucao-diario-${scopeSlug}-${today}`;
       if (format === 'csv') downloadCsv(fname, headers, rows);
       else downloadPdf(`Evolução Diária — ${scopeLabel}`, headers, rows, fname, 'landscape');
+    } else if (tab === 'criticidade') {
+      const { headers, rows } = buildCriticidade();
+      const critLabel = critFilter === 'gt24' ? 'offline +24h' : 'offline -24h';
+      const fname = `evolucao-criticidade-${scopeSlug}-${today}`;
+      if (format === 'csv') downloadCsv(fname, headers, rows);
+      else downloadPdf(`Criticidade (${critLabel}) — ${scopeLabel}`, headers, rows, fname, 'landscape');
     } else {
       const { headers, rows } = buildWeekly();
       const fname = `evolucao-semanal-${scopeSlug}-${today}`;
