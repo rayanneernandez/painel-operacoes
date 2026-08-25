@@ -1952,9 +1952,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       }
 
-      const { data: dbDevs } = storeIds.length ? await supabase.from("devices").select("id,mac_address,store_id").in("store_id", storeIds) : { data: [] as any[] };
+      const { data: dbDevs } = storeIds.length ? await supabase.from("devices").select("id,mac_address,store_id,activation_date").in("store_id", storeIds) : { data: [] as any[] };
       const devIdByStoreMac = new Map<string,string>();
       const existingStoreIdByMac = new Map<string,string>();
+      const existingActivationById = new Map<string,string|null>();
       (dbDevs||[]).forEach((d:any) => {
         const sid=String(d?.store_id||"");
         const mac=String(d?.mac_address||"").trim();
@@ -1962,7 +1963,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if(!sid||!mac||!did)return;
         devIdByStoreMac.set(`${sid}:${mac}`,did);
         existingStoreIdByMac.set(mac,sid);
+        existingActivationById.set(did, d?.activation_date ?? null);
       });
+      // Extrai a data de ativação/instalação do device vinda da API (vários formatos possíveis)
+      const parseActivationDate = (d:any): string | null => {
+        const raw = d?.activation_date ?? d?.activated_at ?? d?.created_at ?? d?.created ?? d?.registration_date ?? null;
+        if (!raw) return null;
+        const t = Date.parse(String(raw));
+        return Number.isFinite(t) ? new Date(t).toISOString() : null;
+      };
 
       const devicesByFolder = new Map<string,any[]>();
       devicesData.forEach((d:any) => { const pid=d?.parent_id; if(pid==null)return; const k=String(pid); const arr=devicesByFolder.get(k)||[]; arr.push(d); devicesByFolder.set(k,arr); });
@@ -2264,7 +2273,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if (assignedMacs.has(mac)) return; // já atribuído em pasta anterior — evita duplicatas
           const existingId=devIdByStoreMac.get(`${storeId}:${mac}`);
           const extId=Number(mac);
-          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d) });
+          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:String(d?.name||mac), type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d), activation_date: parseActivationDate(d) ?? (existingId ? (existingActivationById.get(existingId) ?? null) : null) });
           assignedMacs.add(mac);
         });
       });
@@ -2282,7 +2291,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (previousStoreId) {
           const existingId = devIdByStoreMac.get(`${previousStoreId}:${mac}`);
           const extId = Number(mac);
-          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:previousStoreId, name:devName||mac, type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d) });
+          devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:previousStoreId, name:devName||mac, type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d), activation_date: parseActivationDate(d) ?? (existingId ? (existingActivationById.get(existingId) ?? null) : null) });
           assignedMacs.add(mac);
           return;
         }
@@ -2295,7 +2304,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!storeId) return;
         const existingId = devIdByStoreMac.get(`${storeId}:${mac}`);
         const extId = Number(mac);
-        devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:devName||mac, type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d) });
+        devicesPayload.push({ id:existingId||crypto.randomUUID(), store_id:storeId, name:devName||mac, type:"camera", mac_address:mac, external_id:Number.isFinite(extId)?extId:null, status:parseDevStatus(d), activation_date: parseActivationDate(d) ?? (existingId ? (existingActivationById.get(existingId) ?? null) : null) });
         assignedMacs.add(mac);
         console.log(`[sync_stores] Device "${devName}" (${mac}) atribuído à loja ${m[1]} via fallback de nome`);
       });

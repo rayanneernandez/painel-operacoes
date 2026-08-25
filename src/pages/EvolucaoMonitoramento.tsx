@@ -43,7 +43,7 @@ const downloadPdf = (
 type Scope = 'all' | string; // 'all' ou client_id
 interface ClientRow { id: string; name: string; }
 interface StoreRow { id: string; name: string; city: string | null; client_id: string; }
-interface DeviceRow { id: string; store_id: string; mac_address: string | null; status: string | null; name: string | null; }
+interface DeviceRow { id: string; store_id: string; mac_address: string | null; status: string | null; name: string | null; activation_date: string | null; }
 interface AlertRow { first_detected_at: string; resolved_at: string | null; device_id: string; store_id: string; client_id: string; device_name: string | null; store_name: string | null; }
 interface SnapRow { store_id: string; client_id: string; date: string; total: number; online: number; offline: number; not_connected: number; }
 
@@ -61,6 +61,7 @@ interface WeeklyRow {
   lastPct: number | null; prevPct: number | null; delta: number | null;
   trend: 'Piorou' | 'Melhorou' | 'Estável' | '—';
   weeksWithData: number;
+  onlineHours: number; offlineHours: number;
 }
 interface DeviceWeekRow {
   key: string; name: string; status: 'online' | 'offline' | 'not_connected'; quedas: number;
@@ -68,6 +69,7 @@ interface DeviceWeekRow {
   lastPct: number | null; prevPct: number | null; delta: number | null;
   trend: 'Piorou' | 'Melhorou' | 'Estável' | '—';
   weeksWithData: number;
+  onlineHours: number; offlineHours: number; activationDate: string | null;
 }
 
 // ── Helpers de data (fuso São Paulo) ────────────────────────────────────────
@@ -99,6 +101,21 @@ const mondayOf = (ymd: string): string => {
   const diff = dow === 0 ? -6 : 1 - dow;
   dt.setUTCDate(dt.getUTCDate() + diff);
   return dt.toISOString().slice(0, 10);
+};
+
+// Formata horas: "1.344h", "72h", "5.3h"
+const fmtHours = (h: number): string => {
+  if (!Number.isFinite(h) || h <= 0) return '0h';
+  if (h >= 100) return `${Math.round(h).toLocaleString('pt-BR')}h`;
+  if (h >= 10) return `${h.toFixed(0)}h`;
+  return `${h.toFixed(1)}h`;
+};
+// Data de instalação/ativação → dd/mm/aaaa (fuso São Paulo)
+const instFmt = new Intl.DateTimeFormat('pt-BR', { timeZone: SP_TZ, day: '2-digit', month: '2-digit', year: 'numeric' });
+const fmtInstall = (iso: string | null): string => {
+  if (!iso) return '—';
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? '—' : instFmt.format(d);
 };
 
 const normStatus = (s: string | null): 'online' | 'offline' | 'not_connected' => {
@@ -210,7 +227,7 @@ export function EvolucaoMonitoramento() {
       const storeIds = new Set(storeRows.map((s) => s.id));
 
       // Dispositivos (tabela pequena — busca tudo e filtra pelas lojas do escopo)
-      const { data: devData } = await supabase.from('devices').select('id, store_id, mac_address, status, name');
+      const { data: devData } = await supabase.from('devices').select('id, store_id, mac_address, status, name, activation_date');
       const devRows = ((devData || []) as DeviceRow[]).filter((d) => storeIds.has(d.store_id));
 
       // Snapshots do período
@@ -404,8 +421,35 @@ export function EvolucaoMonitoramento() {
     return out; // 8 semanas, mais antiga -> atual
   }, []);
 
+  // Horas online/offline na janela mostrada (weeks[0].start → agora), a partir das
+  // quedas registradas (device_offline_alerts). Intervalos mesclados p/ não duplicar.
+  const computeHours = useCallback((idSet: Set<string>, activationMs: number | null) => {
+    const windowStartMs = Date.parse(`${weeks[0].start}T00:00:00-03:00`);
+    const nowMs = Date.now();
+    const intervals: [number, number][] = [];
+    for (const a of alerts) {
+      if (!idSet.has(a.device_id)) continue;
+      const s = Math.max(Date.parse(a.first_detected_at), windowStartMs);
+      const e = Math.min(a.resolved_at ? Date.parse(a.resolved_at) : nowMs, nowMs);
+      if (Number.isFinite(s) && Number.isFinite(e) && e > s) intervals.push([s, e]);
+    }
+    intervals.sort((x, y) => x[0] - y[0]);
+    let offlineMs = 0, curS: number | null = null, curE = 0;
+    for (const [s, e] of intervals) {
+      if (curS === null) { curS = s; curE = e; }
+      else if (s <= curE) { curE = Math.max(curE, e); }
+      else { offlineMs += curE - curS; curS = s; curE = e; }
+    }
+    if (curS !== null) offlineMs += curE - curS;
+    const effStart = activationMs && activationMs > windowStartMs ? activationMs : windowStartMs;
+    const totalMs = Math.max(0, nowMs - effStart);
+    const onlineMs = Math.max(0, totalMs - offlineMs);
+    return { onlineHours: onlineMs / 3_600_000, offlineHours: offlineMs / 3_600_000 };
+  }, [alerts, weeks]);
+
   const weeklyRows = useMemo<WeeklyRow[]>(() => {
     const today = todaySp();
+    const actById = new Map(devices.map((d) => [d.id, d.activation_date] as const));
     const alertDates = alerts.map((a) => ({
       dev: a.device_id,
       start: spDate(a.first_detected_at),
@@ -468,16 +512,30 @@ export function EvolucaoMonitoramento() {
       let trend: WeeklyRow['trend'] = '—';
       if (delta !== null) trend = delta > 1 ? 'Melhorou' : delta < -1 ? 'Piorou' : 'Estável';
 
+      // Horas online/offline da loja = soma dos dispositivos (dedup por MAC)
+      let onlineHours = 0, offlineHours = 0;
+      for (const ids of macIds.values()) {
+        let actMs: number | null = null;
+        for (const id of ids) {
+          const raw = actById.get(id);
+          const t = raw ? Date.parse(raw) : NaN;
+          if (Number.isFinite(t)) actMs = actMs === null ? t : Math.min(actMs, t);
+        }
+        const h = computeHours(new Set(ids), actMs);
+        onlineHours += h.onlineHours; offlineHours += h.offlineHours;
+      }
+
       return {
         storeId: storeIds[0], storeIds, name: group.name, code: parseStoreCode(group.name),
         deviceCount, weekPct, lastPct, prevPct, delta, trend, weeksWithData,
+        onlineHours, offlineHours,
       };
     });
 
     // Mostra TODAS as lojas (não esconde nenhuma). Ordem: Piorou -> Melhorou -> Estável -> sem dados
     const order: Record<WeeklyRow['trend'], number> = { Piorou: 0, Melhorou: 1, 'Estável': 2, '—': 3 };
     return rows.sort((a, b) => order[a.trend] - order[b.trend] || (a.delta ?? 0) - (b.delta ?? 0) || a.name.localeCompare(b.name));
-  }, [stores, weeks, alerts, devices]);
+  }, [stores, weeks, alerts, devices, computeHours]);
 
   const trendClass = (t: WeeklyRow['trend']) =>
     t === 'Piorou' ? 'text-red-400' : t === 'Melhorou' ? 'text-green-400' : t === 'Estável' ? 'text-gray-400' : 'text-gray-600';
@@ -500,7 +558,7 @@ export function EvolucaoMonitoramento() {
     return { headers, rows };
   };
   const buildWeekly = () => {
-    const headers = ['Loja', 'Código', 'Dispositivos', ...weeks.map((w) => w.label), 'Última semana', 'Semana anterior', 'Δ p.p.', 'Tendência', 'Semanas com dados'];
+    const headers = ['Loja', 'Código', 'Dispositivos', ...weeks.map((w) => w.label), 'Última semana', 'Semana anterior', 'Δ p.p.', 'Tendência', 'Semanas com dados', 'Horas online', 'Horas offline'];
     const rows: (string | number)[][] = weeklyRows.map((r) => [
       r.name, r.code || '—', r.deviceCount,
       ...r.weekPct.map((p) => (p !== null ? `${p}%` : '')),
@@ -508,6 +566,7 @@ export function EvolucaoMonitoramento() {
       r.prevPct !== null ? `${r.prevPct}%` : '—',
       r.delta !== null ? `${r.delta > 0 ? '+' : ''}${r.delta}` : '—',
       r.trend, r.weeksWithData,
+      fmtHours(r.onlineHours), fmtHours(r.offlineHours),
     ]);
     return { headers, rows };
   };
@@ -565,15 +624,20 @@ export function EvolucaoMonitoramento() {
       end: a.resolved_at ? spDate(a.resolved_at) : null,
     }));
     // dedup por MAC (junta os device_id do mesmo aparelho)
-    const macMap = new Map<string, { name: string; ids: string[]; status: 'online' | 'offline' | 'not_connected' }>();
+    const macMap = new Map<string, { name: string; ids: string[]; status: 'online' | 'offline' | 'not_connected'; activation: string | null }>();
     for (const d of devices) {
       if (!storeIds.includes(d.store_id)) continue;
       const key = (d.mac_address && d.mac_address.trim()) || d.id;
-      const cur = macMap.get(key) ?? { name: d.name ? deviceLabel(d.name, null) : `Dispositivo ${key}`, ids: [], status: 'online' as const };
+      const cur = macMap.get(key) ?? { name: d.name ? deviceLabel(d.name, null) : `Dispositivo ${key}`, ids: [], status: 'online' as const, activation: null };
       cur.ids.push(d.id);
       if (d.name) cur.name = deviceLabel(d.name, null);
       const st = normStatus(d.status);
       if (statusRank(st) > statusRank(cur.status)) cur.status = st; // mantém o pior status
+      // menor (mais antiga) data de ativação entre os ids do mesmo MAC
+      if (d.activation_date) {
+        const t = Date.parse(d.activation_date);
+        if (Number.isFinite(t) && (!cur.activation || t < Date.parse(cur.activation))) cur.activation = d.activation_date;
+      }
       macMap.set(key, cur);
     }
     return [...macMap.values()].map((dev, idx) => {
@@ -599,9 +663,12 @@ export function EvolucaoMonitoramento() {
       let trend: DeviceWeekRow['trend'] = '—';
       if (delta !== null) trend = delta > 1 ? 'Melhorou' : delta < -1 ? 'Piorou' : 'Estável';
       const quedas = dev.ids.reduce((acc, id) => acc + (quedasByDevice.get(id) ?? 0), 0);
+      const actMs = dev.activation ? Date.parse(dev.activation) : NaN;
+      const { onlineHours, offlineHours } = computeHours(idSet, Number.isFinite(actMs) ? actMs : null);
       return {
         key: `${dev.ids[0]}-${idx}`, name: dev.name, status: dev.status, quedas, weekPct, lastPct, prevPct, delta, trend,
         weeksWithData: weekPct.filter((v) => v !== null).length,
+        onlineHours, offlineHours, activationDate: dev.activation,
       };
     });
   };
@@ -826,23 +893,26 @@ export function EvolucaoMonitoramento() {
         <div className="flex justify-end mb-2">
           <span className="text-xs text-gray-500 self-center">{filteredWeekly.length} loja(s)</span>
         </div>
-        <div className="border border-gray-800 rounded-lg overflow-hidden">
+        <div className="border border-gray-800 rounded-lg overflow-x-auto">
           <table className="w-full table-fixed text-xs">
             <thead className="bg-gray-900 text-gray-300">
               <tr>
-                <th className="px-2 py-2 text-left font-semibold w-[16%]">Loja</th>
-                <th className="px-1 py-2 text-left font-semibold w-[4%]">Cód.</th>
-                <th className="px-1 py-2 text-center font-semibold w-[4%]">Disp.</th>
+                <th className="px-2 py-2 text-left font-semibold w-[13%]">Loja</th>
+                <th className="px-1 py-2 text-left font-semibold w-[3.5%]">Cód.</th>
+                <th className="px-1 py-2 text-center font-semibold w-[3.5%]">Disp.</th>
                 {weeks.map((w) => (
-                  <th key={w.key} className="px-1 py-2 text-center font-semibold w-[5.5%] leading-tight text-[10px]">
+                  <th key={w.key} className="px-0.5 py-2 text-center font-semibold w-[4.2%] leading-tight text-[10px]">
                     {ddmm(w.start)}<br />a {ddmm(w.end)}
                   </th>
                 ))}
-                <th className="px-1 py-2 text-center font-semibold w-[6%]">Últ.</th>
-                <th className="px-1 py-2 text-center font-semibold w-[6%]">Ant.</th>
-                <th className="px-1 py-2 text-center font-semibold w-[5%]">Δ</th>
-                <th className="px-2 py-2 text-left font-semibold w-[9%]">Tendência</th>
-                <th className="px-1 py-2 text-center font-semibold w-[4.5%]">Sem.</th>
+                <th className="px-1 py-2 text-center font-semibold w-[4.5%]">Últ.</th>
+                <th className="px-1 py-2 text-center font-semibold w-[4.5%]">Ant.</th>
+                <th className="px-1 py-2 text-center font-semibold w-[4%]">Δ</th>
+                <th className="px-1 py-2 text-left font-semibold w-[8%]">Tendência</th>
+                <th className="px-1 py-2 text-center font-semibold w-[3.5%]">Sem.</th>
+                <th className="px-1 py-2 text-center font-semibold w-[5.5%]">H. Online</th>
+                <th className="px-1 py-2 text-center font-semibold w-[5.5%]">H. Offline</th>
+                <th className="px-2 py-2 text-left font-semibold w-[7%]">Instalação</th>
               </tr>
             </thead>
             <tbody>
@@ -881,9 +951,12 @@ export function EvolucaoMonitoramento() {
                     {r.trend === 'Piorou' ? '▼ Piorou' : r.trend === 'Melhorou' ? '▲ Melhorou' : r.trend === 'Estável' ? '= Estável' : '—'}
                   </td>
                   <td className="px-1 py-1.5 text-center text-gray-400">{r.weeksWithData}</td>
+                  <td className="px-1 py-1.5 text-center text-green-400">{fmtHours(r.onlineHours)}</td>
+                  <td className="px-1 py-1.5 text-center text-red-400">{fmtHours(r.offlineHours)}</td>
+                  <td className="px-2 py-1.5 text-gray-500">—</td>
                 </tr>
                 {isOpen && deviceRows.length === 0 && (
-                  <tr className="bg-gray-900/30"><td colSpan={weeks.length + 8} className="px-8 py-2 text-gray-500 text-[11px]">Sem dispositivos cadastrados nesta loja.</td></tr>
+                  <tr className="bg-gray-900/30"><td colSpan={weeks.length + 11} className="px-8 py-2 text-gray-500 text-[11px]">Sem dispositivos cadastrados nesta loja.</td></tr>
                 )}
                 {isOpen && deviceRows.map((dr) => (
                   <tr key={dr.key} className="border-t border-gray-900 bg-gray-900/30 text-gray-300">
@@ -905,13 +978,16 @@ export function EvolucaoMonitoramento() {
                       {dr.trend === 'Piorou' ? '▼ Piorou' : dr.trend === 'Melhorou' ? '▲ Melhorou' : dr.trend === 'Estável' ? '= Estável' : '—'}
                     </td>
                     <td className="px-1 py-1 text-center text-[11px] text-gray-400">{dr.weeksWithData}</td>
+                    <td className="px-1 py-1 text-center text-[11px] text-green-400/90">{fmtHours(dr.onlineHours)}</td>
+                    <td className="px-1 py-1 text-center text-[11px] text-red-400/90">{fmtHours(dr.offlineHours)}</td>
+                    <td className="px-2 py-1 text-[11px] text-gray-300">{fmtInstall(dr.activationDate)}</td>
                   </tr>
                 ))}
                 </Fragment>
                 );
               })}
               {filteredWeekly.length === 0 && (
-                <tr><td colSpan={weeks.length + 8} className="px-3 py-6 text-center text-gray-500">Sem lojas para exibir.</td></tr>
+                <tr><td colSpan={weeks.length + 11} className="px-3 py-6 text-center text-gray-500">Sem lojas para exibir.</td></tr>
               )}
             </tbody>
           </table>

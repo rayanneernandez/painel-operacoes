@@ -405,7 +405,7 @@ export function Layout() {
             <PanelLeftOpen size={19} />
           </button>
         )}
-        <div className="p-4 pt-16 sm:p-6 sm:pt-16 lg:p-8 lg:pt-8 max-w-7xl mx-auto">
+        <div className={`p-4 pt-16 sm:p-6 sm:pt-16 lg:p-8 lg:pt-8 ${location.pathname.startsWith('/evolucao') ? 'w-full' : 'max-w-7xl mx-auto'}`}>
           <Outlet />
         </div>
       </main>
