@@ -3,6 +3,7 @@ import { Activity, RefreshCw, CalendarDays, CalendarRange, FileDown, FileText, C
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { saveAs } from 'file-saver';
+import * as XLSX from 'xlsx';
 import supabase from '../lib/supabase';
 import { useAuth } from '../contexts/AuthContext';
 
@@ -177,6 +178,7 @@ export function EvolucaoMonitoramento() {
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [scope, setScope] = useState<Scope>(() => (user?.role === 'client' ? (user?.clientId || '') : 'all'));
   const [tab, setTab] = useState<'diario' | 'semanal' | 'criticidade'>('diario');
+  const [critMenu, setCritMenu] = useState(false); // menu de escolha do CSV de criticidade
   const [critFilter, setCritFilter] = useState<'gt24' | 'lt24'>('gt24');
   const [trendFilter, setTrendFilter] = useState<'' | 'Piorou' | 'Melhorou' | 'Estável'>('');
   const [weekPage, setWeekPage] = useState(0);
@@ -570,10 +572,29 @@ export function EvolucaoMonitoramento() {
     ]);
     return { headers, rows };
   };
-  const buildCriticidade = () => {
-    const headers = ['Loja', 'Dispositivo', 'Offline desde', 'Horas offline', 'Quedas (total)'];
+  // Monta as linhas de criticidade para um filtro específico (independente do
+  // botão selecionado na tela), pra exportar +24h e -24h juntos.
+  const CRIT_HEADERS = ['Loja', 'Dispositivo', 'Offline desde', 'Horas offline', 'Quedas (total)'];
+  const buildCritRowsFor = (filter: 'gt24' | 'lt24') => {
+    const now = Date.now();
     const rows: (string | number)[][] = [];
-    for (const g of criticalityRows) {
+    // agrupa por loja mantendo a mesma ordem/lógica da tela
+    const groups = new Map<string, { loja: string; devices: { name: string; since: string; hours: number; quedas: number }[] }>();
+    for (const a of alerts) {
+      if (a.resolved_at) continue;
+      const detected = Date.parse(a.first_detected_at);
+      if (!Number.isFinite(detected)) continue;
+      const hours = (now - detected) / 3_600_000;
+      const matches = filter === 'gt24' ? hours >= 24 : hours < 24;
+      if (!matches) continue;
+      const loja = a.store_name || '—';
+      const g = groups.get(loja) ?? { loja, devices: [] };
+      g.devices.push({ name: deviceLabel(a.device_name, a.store_name), since: a.first_detected_at, hours, quedas: quedasByDevice.get(a.device_id) ?? 0 });
+      groups.set(loja, g);
+    }
+    const list = [...groups.values()].sort((x, y) => y.devices.length - x.devices.length || x.loja.localeCompare(y.loja));
+    for (const g of list) {
+      g.devices.sort((x, y) => y.hours - x.hours);
       for (const d of g.devices) {
         rows.push([
           g.loja, d.name,
@@ -582,7 +603,22 @@ export function EvolucaoMonitoramento() {
         ]);
       }
     }
-    return { headers, rows };
+    return rows;
+  };
+  // Exporta o CSV de criticidade conforme a escolha do menu
+  const exportCritCsv = (choice: 'gt24' | 'lt24' | 'both') => {
+    const today = todaySp();
+    const fname = `evolucao-criticidade-${scopeSlug}-${today}`;
+    if (choice === 'both') {
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([CRIT_HEADERS, ...buildCritRowsFor('gt24')]), 'Offline +24h');
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([CRIT_HEADERS, ...buildCritRowsFor('lt24')]), 'Offline -24h');
+      XLSX.writeFile(wb, `${fname}.xlsx`);
+    } else {
+      const label = choice === 'gt24' ? 'mais-24h' : 'menos-24h';
+      downloadCsv(`${fname}-${label}`, CRIT_HEADERS, buildCritRowsFor(choice));
+    }
+    setCritMenu(false);
   };
   const handleExport = (format: 'csv' | 'pdf') => {
     const today = todaySp();
@@ -592,11 +628,19 @@ export function EvolucaoMonitoramento() {
       if (format === 'csv') downloadCsv(fname, headers, rows);
       else downloadPdf(`Evolução Diária — ${scopeLabel}`, headers, rows, fname, 'landscape');
     } else if (tab === 'criticidade') {
-      const { headers, rows } = buildCriticidade();
-      const critLabel = critFilter === 'gt24' ? 'offline +24h' : 'offline -24h';
+      if (format === 'csv') {
+        // Abre o menu pra escolher qual exportar (+24h / -24h / ambos)
+        setCritMenu(true);
+        return;
+      }
+      // PDF: uma coluna "Situação" separando os dois grupos
       const fname = `evolucao-criticidade-${scopeSlug}-${today}`;
-      if (format === 'csv') downloadCsv(fname, headers, rows);
-      else downloadPdf(`Criticidade (${critLabel}) — ${scopeLabel}`, headers, rows, fname, 'landscape');
+      const pdfHeaders = ['Situação', ...CRIT_HEADERS];
+      const pdfRows = [
+        ...buildCritRowsFor('gt24').map((r) => ['Offline +24h', ...r]),
+        ...buildCritRowsFor('lt24').map((r) => ['Offline -24h', ...r]),
+      ];
+      downloadPdf(`Criticidade — ${scopeLabel}`, pdfHeaders, pdfRows, fname, 'landscape');
     } else {
       const { headers, rows } = buildWeekly();
       const fname = `evolucao-semanal-${scopeSlug}-${today}`;
@@ -745,13 +789,26 @@ export function EvolucaoMonitoramento() {
               <option value="Estável">Estável</option>
             </select>
           )}
-          <button
-            onClick={() => handleExport('csv')}
-            className="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm hover:bg-gray-700"
-            title="Exportar a aba atual em CSV"
-          >
-            <FileDown className="w-4 h-4" /> CSV
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => handleExport('csv')}
+              className="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm hover:bg-gray-700"
+              title="Exportar a aba atual em CSV"
+            >
+              <FileDown className="w-4 h-4" /> CSV
+            </button>
+            {critMenu && tab === 'criticidade' && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setCritMenu(false)} />
+                <div className="absolute right-0 mt-1 z-20 w-56 bg-gray-800 border border-gray-700 rounded-lg shadow-xl overflow-hidden">
+                  <div className="px-3 py-2 text-[11px] text-gray-400 border-b border-gray-700">Exportar criticidade:</div>
+                  <button onClick={() => exportCritCsv('gt24')} className="w-full text-left px-3 py-2 text-sm hover:bg-gray-700">Offline há mais de 24h</button>
+                  <button onClick={() => exportCritCsv('lt24')} className="w-full text-left px-3 py-2 text-sm hover:bg-gray-700">Offline há menos de 24h</button>
+                  <button onClick={() => exportCritCsv('both')} className="w-full text-left px-3 py-2 text-sm hover:bg-gray-700 border-t border-gray-700">Ambos (Excel, 2 abas)</button>
+                </div>
+              </>
+            )}
+          </div>
           <button
             onClick={() => handleExport('pdf')}
             className="flex items-center gap-1.5 bg-gray-800 border border-gray-700 rounded-lg px-3 py-1.5 text-sm hover:bg-gray-700"
