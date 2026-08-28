@@ -1,5 +1,5 @@
 // src/pages/CampaignUpload.tsx
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { Upload, FileSpreadsheet, CheckCircle, XCircle, ArrowLeft, Loader2, FileArchive } from 'lucide-react';
 import * as XLSX from 'xlsx';
@@ -141,18 +141,40 @@ function makeViewsAggregator() {
   const processLine = (line: string) => {
     if (!line) return;
     if (headers === null) {
-      if (!line.toLowerCase().includes('campaign')) return; // pula "sep=," e linhas vazias
-      sep = line.includes(';') && !line.includes(',') ? ';' : ',';
-      headers = parseRow(line);
-      idx.campaign = find(headers, 'Campaign', 'Campanha');
-      idx.content = find(headers, 'Content', 'Conteúdo', 'Conteudo');
-      idx.device = find(headers, 'Device', 'Dispositivo');
-      idx.visitor = find(headers, 'Visitor ID', 'VisitorID');
-      idx.contactId = find(headers, 'Contact ID', 'ContactID');
-      idx.contactDur = find(headers, 'Contact Duration');
-      idx.start = find(headers, 'Content View Start', 'Contact Start');
-      idx.end = find(headers, 'Content View End', 'Contact End');
-      return;
+      const low = line.trim().replace(/^"|"$/g, '').toLowerCase();
+      if (low.startsWith('sep=') || low === '') return; // pula "sep=," e linhas vazias
+      const looksLikeHeader = low.includes('campaign') && (low.includes('device') || low.includes('content') || low.includes('visitor'));
+      if (looksLikeHeader) {
+        sep = line.includes(';') && !line.includes(',') ? ';' : ',';
+        headers = parseRow(line);
+        idx.campaign = find(headers, 'Campaign', 'Campanha');
+        idx.content = find(headers, 'Content', 'Conteúdo', 'Conteudo');
+        idx.device = find(headers, 'Device', 'Dispositivo');
+        idx.visitor = find(headers, 'Visitor ID', 'VisitorID');
+        idx.contactId = find(headers, 'Contact ID', 'ContactID');
+        idx.contactDur = find(headers, 'Contact Duration');
+        idx.start = find(headers, 'Content View Start', 'Contact Start');
+        idx.end = find(headers, 'Content View End', 'Contact End');
+        return;
+      }
+      // Sem cabeçalho: export "Views of visitors" da DisplayForce só com dados.
+      // Mapeia pelas POSIÇÕES fixas do schema (25 colunas).
+      const probe = parseRow(line);
+      if (probe.length >= 24) {
+        sep = ',';
+        headers = ['__positional__'];
+        idx.visitor = 0;     // visitor id
+        idx.campaign = 15;   // nome da campanha/pasta (ex.: "Filial Dom Joaquim - 309")
+        idx.content = 17;    // nome do conteúdo
+        idx.contactId = 16;  // id da visualização do conteúdo (único por linha)
+        idx.start = 19;      // content view start
+        idx.end = 20;        // content view end
+        idx.contactDur = 21; // duração da visualização (s)
+        idx.device = 23;     // nome do dispositivo ("... - RS - Totem 1")
+        // NÃO retorna: processa esta linha como dados abaixo
+      } else {
+        return; // linha desconhecida
+      }
     }
     const row = parseRow(line);
     if (row.length < 3) return;
@@ -672,7 +694,28 @@ export function CampaignUpload() {
   const [preview,  setPreview]    = useState<any[]>([]);
   const [message,  setMessage]    = useState('');
   const [_upserted, setUpserted]  = useState(0);
+  const [coverageEnd, setCoverageEnd] = useState<string | null>(null);   // maior end_date já no banco
+  const [lastUpload, setLastUpload]   = useState<string | null>(null);   // último uploaded_at
   const fileRef = useRef<HTMLInputElement>(null);
+
+  // Descobre até quando já existem campanhas no banco (pra saber de quando puxar o próximo relatório)
+  const loadCoverage = async () => {
+    if (!clientId) return;
+    const { data: endRow } = await supabase.from('campaigns')
+      .select('end_date').eq('client_id', clientId).not('end_date', 'is', null)
+      .order('end_date', { ascending: false }).limit(1);
+    setCoverageEnd(endRow?.[0]?.end_date ?? null);
+    const { data: upRow } = await supabase.from('campaigns')
+      .select('uploaded_at').eq('client_id', clientId).not('uploaded_at', 'is', null)
+      .order('uploaded_at', { ascending: false }).limit(1);
+    setLastUpload(upRow?.[0]?.uploaded_at ?? null);
+  };
+  useEffect(() => { void loadCoverage(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [clientId]);
+  const fmtDate = (iso: string | null) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
+  };
 
   const handleFile = async (file: File) => {
     setStatus('parsing');
@@ -756,6 +799,7 @@ export function CampaignUpload() {
       setUpserted(saved);
       setStatus('done');
       setMessage(`✅ ${saved} registros salvos com sucesso!`);
+      void loadCoverage(); // atualiza o "campanhas vão até ..."
     } catch (e: any) {
       console.error(e);
       setStatus('error');
@@ -796,6 +840,16 @@ export function CampaignUpload() {
           </p>
         </div>
       </div>
+
+      {/* Até quando já temos campanhas no banco */}
+      {(coverageEnd || lastUpload) && (
+        <div className="rounded-lg border border-blue-800/50 bg-blue-900/20 px-4 py-3 text-sm">
+          {coverageEnd
+            ? <>📅 As campanhas no painel vão até <strong className="text-blue-300">{fmtDate(coverageEnd)}</strong>. Puxe o novo relatório da DisplayForce <strong>a partir dessa data</strong>.</>
+            : <>Ainda não há campanhas importadas para esta rede.</>}
+          {lastUpload && <span className="text-gray-400"> · Última importação: {fmtDate(lastUpload)}</span>}
+        </div>
+      )}
 
       {/* Drop zone */}
       {status === 'idle' && (
