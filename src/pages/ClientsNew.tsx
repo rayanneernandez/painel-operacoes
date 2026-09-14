@@ -151,6 +151,7 @@ export function Clients() {
     deviceEndpoint: '/public/v1/device/list',
     analyticsEndpoint: '/public/v1/stats/visitor/list',
     token: '',
+    folderFilter: '',      // pasta(s) a exibir (vazio = todas). Ex.: "POC Farmais"
     customHeaderKey: '',   // ← VAZIO, não 'Authorization'
     customHeaderValue: '', // ← VAZIO, não 'Bearer TOKEN'
     docUrl: '',
@@ -321,8 +322,14 @@ export function Clients() {
           { id: [], name: [], parent_ids: [], recursive: true, limit: 100, offset: 0 }
         );
       }
-      const folders = foldersData?.data || foldersData?.items || foldersData?.results || (Array.isArray(foldersData) ? foldersData : []);
-      if (folders.length === 0) throw new Error('Nenhuma pasta/loja encontrada. Verifique o token.');
+      const foldersAll = foldersData?.data || foldersData?.items || foldersData?.results || (Array.isArray(foldersData) ? foldersData : []);
+      if (foldersAll.length === 0) throw new Error('Nenhuma pasta/loja encontrada. Verifique o token.');
+      // Filtro de pasta(s): se preenchido, mantém só as pastas informadas.
+      const folderFilterNames = String(apiConfig.folderFilter || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+      const folders = folderFilterNames.length > 0
+        ? foldersAll.filter((f: any) => { const n = String(f?.name || '').trim().toLowerCase(); return folderFilterNames.some(fn => n === fn || n.includes(fn)); })
+        : foldersAll;
+      if (folders.length === 0) throw new Error(`Nenhuma pasta corresponde ao filtro "${apiConfig.folderFilter}". Verifique o nome da pasta.`);
 
       // 2. Dispositivos
       let devicesData: any;
@@ -511,6 +518,7 @@ export function Clients() {
         deviceEndpoint: apiData.device_endpoint || '/public/v1/device/list',
         analyticsEndpoint: apiData.analytics_endpoint || '/public/v1/stats/visitor/list',
         token: apiData.api_key || '',
+        folderFilter: apiData.folder_filter || '',
         customHeaderKey: apiData.custom_header_key || '',   // ← Sem fallback para 'Authorization'
         customHeaderValue: apiData.custom_header_value || '', // ← Sem fallback para Bearer
         docUrl: apiData.documentation_url || '',
@@ -776,6 +784,7 @@ export function Clients() {
         device_endpoint: (apiConfig.deviceEndpoint || '/public/v1/device/list').trim(),
         analytics_endpoint: (apiConfig.analyticsEndpoint || '/public/v1/stats/visitor/list').trim(),
         api_key: (apiConfig.token || '').trim(),
+        folder_filter: (apiConfig.folderFilter || '').trim() || null,
         custom_header_key: (apiConfig.customHeaderKey || '').trim(),
         custom_header_value: (apiConfig.customHeaderValue || '').trim(),
         documentation_url: (apiConfig.docUrl || '').trim(),
@@ -1351,6 +1360,11 @@ export function Clients() {
                           <input type="text" value={apiConfig.token} onChange={(e) => setApiConfig({...apiConfig, token: e.target.value})} placeholder="Insira o token do cliente aqui" className="w-full bg-gray-900 border border-gray-800 rounded-lg pl-4 pr-10 py-2.5 text-gray-300 font-mono text-sm focus:ring-1 focus:ring-emerald-500 outline-none" />
                           <Lock className="absolute right-3 top-2.5 text-gray-600" size={16} />
                         </div>
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs font-medium text-gray-500 uppercase tracking-wider">Pasta(s) a exibir (opcional)</label>
+                        <input type="text" value={apiConfig.folderFilter} onChange={(e) => setApiConfig({...apiConfig, folderFilter: e.target.value})} placeholder='Ex.: POC Farmais (separe por vírgula p/ várias). Vazio = todas' className="w-full bg-gray-900 border border-gray-800 rounded-lg px-4 py-2.5 text-gray-300 text-sm focus:ring-1 focus:ring-emerald-500 outline-none" />
+                        <p className="text-[11px] text-gray-600">Só as pastas com esses nomes (e os dispositivos dentro delas) serão sincronizadas e exibidas. Deixe vazio para trazer todas.</p>
                       </div>
                     </div>
 

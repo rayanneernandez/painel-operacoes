@@ -18,6 +18,7 @@ type ClientApiConfig = {
   api_endpoint: string; analytics_endpoint: string; api_key: string;
   custom_header_key?: string | null; custom_header_value?: string | null;
   device_endpoint?: string | null; folder_endpoint?: string | null;
+  folder_filter?: string | null;
   collection_start?: string | null; collection_end?: string | null;
   collect_tracks?: boolean; collect_face_quality?: boolean;
   collect_glasses?: boolean; collect_beard?: boolean;
@@ -1610,7 +1611,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const { data: apiCfg, error: apiCfgErr } = await supabase.from("client_api_configs")
-      .select("api_endpoint,analytics_endpoint,api_key,custom_header_key,custom_header_value,collection_start,collection_end,collect_tracks,collect_face_quality,collect_glasses,collect_beard,collect_hair_color,collect_hair_type,collect_headwear")
+      .select("api_endpoint,analytics_endpoint,device_endpoint,folder_endpoint,folder_filter,api_key,custom_header_key,custom_header_value,collection_start,collection_end,collect_tracks,collect_face_quality,collect_glasses,collect_beard,collect_hair_color,collect_hair_type,collect_headwear")
       .eq("client_id", client_id).single();
     if (apiCfgErr || !apiCfg) return bad(res, 400, { error: "Config da API não encontrada", details: apiCfgErr });
     const cfg = apiCfg as ClientApiConfig;
@@ -1860,6 +1861,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (folders.length === 0) {
         folders = await fetchAllPages(`${base}${legacyFolderEndpoint}`,
           { recursive:true }, true);
+      }
+      // Filtro de pasta(s): se cfg.folder_filter estiver preenchido, mantém só as
+      // pastas cujo nome bate com um dos nomes informados (separados por vírgula).
+      const folderFilterNames = String(cfg.folder_filter || "")
+        .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean);
+      if (folderFilterNames.length > 0) {
+        const before = folders.length;
+        folders = folders.filter((f: any) => {
+          const name = String(f?.name || "").trim().toLowerCase();
+          return folderFilterNames.some((fn) => name === fn || name.includes(fn));
+        });
+        console.log(`[sync_stores] Filtro de pasta ativo (${folderFilterNames.join(", ")}): ${before} → ${folders.length} pasta(s)`);
       }
       console.log(`[sync_stores] Lojas encontradas: ${folders.length}`);
 

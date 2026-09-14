@@ -93,7 +93,8 @@ export function DashboardChat({ context }: { context: ChatContext; queryFn?: Que
       historyRef.current.push({ role: 'assistant', content: text });
     } catch (error) {
       console.error('[Lia]', error);
-      setAssistant(assistId, 'Erro ao conectar com a Lia. Verifique a chave da Anthropic no ambiente e tente novamente.', false);
+      const msg = error instanceof Error ? error.message : String(error);
+      setAssistant(assistId, `Erro ao conectar com a Lia: ${msg}. Verifique a chave da Anthropic no ambiente e tente novamente.`, false);
     } finally {
       setLoading(false);
     }

@@ -696,9 +696,10 @@ export function CampaignUpload() {
   const [_upserted, setUpserted]  = useState(0);
   const [coverageEnd, setCoverageEnd] = useState<string | null>(null);   // maior end_date já no banco
   const [lastUpload, setLastUpload]   = useState<string | null>(null);   // último uploaded_at
+  const [batches, setBatches] = useState<{ uploadedAt: string; periodStart: string | null; periodEnd: string | null; count: number }[]>([]);
   const fileRef = useRef<HTMLInputElement>(null);
 
-  // Descobre até quando já existem campanhas no banco (pra saber de quando puxar o próximo relatório)
+  // Descobre até quando já existem campanhas + histórico dos últimos imports
   const loadCoverage = async () => {
     if (!clientId) return;
     const { data: endRow } = await supabase.from('campaigns')
@@ -709,6 +710,33 @@ export function CampaignUpload() {
       .select('uploaded_at').eq('client_id', clientId).not('uploaded_at', 'is', null)
       .order('uploaded_at', { ascending: false }).limit(1);
     setLastUpload(upRow?.[0]?.uploaded_at ?? null);
+
+    // Histórico: agrupa as campanhas por import (uploaded_at até o minuto) e calcula
+    // o período coberto (menor start_date → maior end_date) de cada import.
+    const { data: rows } = await supabase.from('campaigns')
+      .select('uploaded_at, start_date, end_date').eq('client_id', clientId).not('uploaded_at', 'is', null)
+      .order('uploaded_at', { ascending: false }).limit(5000);
+    const groups = new Map<string, { uploadedAt: string; minStart: number; maxEnd: number; count: number }>();
+    for (const r of (rows || []) as any[]) {
+      const key = String(r.uploaded_at).slice(0, 16); // YYYY-MM-DDTHH:MM
+      const g = groups.get(key) ?? { uploadedAt: r.uploaded_at, minStart: Infinity, maxEnd: -Infinity, count: 0 };
+      g.count += 1;
+      const s = r.start_date ? Date.parse(r.start_date) : NaN;
+      const e = r.end_date ? Date.parse(r.end_date) : NaN;
+      if (Number.isFinite(s)) g.minStart = Math.min(g.minStart, s);
+      if (Number.isFinite(e)) g.maxEnd = Math.max(g.maxEnd, e);
+      groups.set(key, g);
+    }
+    const list = [...groups.values()]
+      .sort((a, b) => Date.parse(b.uploadedAt) - Date.parse(a.uploadedAt))
+      .slice(0, 6)
+      .map((g) => ({
+        uploadedAt: g.uploadedAt,
+        periodStart: g.minStart !== Infinity ? new Date(g.minStart).toISOString() : null,
+        periodEnd: g.maxEnd !== -Infinity ? new Date(g.maxEnd).toISOString() : null,
+        count: g.count,
+      }));
+    setBatches(list);
   };
   useEffect(() => { void loadCoverage(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [clientId]);
   const fmtDate = (iso: string | null) => {
@@ -848,6 +876,31 @@ export function CampaignUpload() {
             ? <>📅 As campanhas no painel vão até <strong className="text-blue-300">{fmtDate(coverageEnd)}</strong>. Puxe o novo relatório da DisplayForce <strong>a partir dessa data</strong>.</>
             : <>Ainda não há campanhas importadas para esta rede.</>}
           {lastUpload && <span className="text-gray-400"> · Última importação: {fmtDate(lastUpload)}</span>}
+        </div>
+      )}
+
+      {/* Histórico dos últimos imports (período coberto por cada um) */}
+      {batches.length > 0 && (
+        <div className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
+          <div className="px-4 py-2 text-xs font-semibold text-gray-300 border-b border-gray-800">Histórico de importações (período de cada uma)</div>
+          <table className="w-full text-sm">
+            <thead className="text-gray-500 text-xs">
+              <tr>
+                <th className="text-left font-medium px-4 py-1.5">Importado em</th>
+                <th className="text-left font-medium px-4 py-1.5">Período coberto</th>
+                <th className="text-right font-medium px-4 py-1.5">Registros</th>
+              </tr>
+            </thead>
+            <tbody>
+              {batches.map((b, i) => (
+                <tr key={i} className={`border-t border-gray-800/60 ${i === 0 ? 'text-emerald-300' : 'text-gray-300'}`}>
+                  <td className="px-4 py-1.5">{fmtDate(b.uploadedAt)}{i === 0 && <span className="text-gray-500"> (última)</span>}</td>
+                  <td className="px-4 py-1.5">{b.periodStart ? fmtDate(b.periodStart) : '—'} a {b.periodEnd ? fmtDate(b.periodEnd) : '—'}</td>
+                  <td className="px-4 py-1.5 text-right">{b.count}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
 
