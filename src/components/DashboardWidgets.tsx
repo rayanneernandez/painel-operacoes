@@ -2003,12 +2003,15 @@ export const WidgetDeviceTypeAudience = ({ deviceAudience, trackingData }: { dev
 // ── WidgetCorridorFlow ────────────────────────────────────────────────────────
 // Donut do fluxo por corredor (device/área): mostra qual corredor tem mais fluxo.
 export const WidgetCorridorFlow = ({ deviceAudience }: { view?: string; deviceAudience?: { label: string; value: number; count?: number | null }[] }) => {
-  const PALETTE = ['#a78bfa', '#f472b6', '#60a5fa', '#34d399', '#fbbf24', '#fb7185', '#22d3ee', '#c084fc', '#4ade80', '#f59e0b', '#38bdf8', '#e879f9'];
+  // Gera uma cor por indice usando o angulo aureo (137.508 graus): garante tons
+  // sempre distintos entre si, mesmo com muitos corredores, sem repetir ou
+  // depender de uma paleta fixa que se esgota e volta a repetir.
+  const corridorColor = (i: number) => `hsl(${Math.round((i * 137.508) % 360)}, 68%, 60%)`;
   const rows = (deviceAudience || [])
     .map((d) => ({ label: String(d?.label ?? '').trim() || '—', value: Number(d?.value) || 0, count: d?.count ?? null }))
     .filter((d) => d.value > 0)
     .sort((a, b) => b.value - a.value);
-  const items = rows.map((d, i) => ({ ...d, color: PALETTE[i % PALETTE.length] }));
+  const items = rows.map((d, i) => ({ ...d, color: corridorColor(i) }));
   const sum = items.reduce((a, x) => a + x.value, 0) || 1;
   const isPct = sum <= 101;
   const pctOf = (v: number) => (isPct ? v : (v / sum) * 100);
