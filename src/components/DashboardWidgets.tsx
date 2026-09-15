@@ -2024,11 +2024,11 @@ export const WidgetCorridorFlow = ({ deviceAudience }: { view?: string; deviceAu
       ) : (
         <>
           {top && <div className="text-[11px] text-gray-400 mb-2 flex-shrink-0">Maior fluxo: <span className="text-white font-semibold">{top.label}</span> ({fmt(top.value)})</div>}
-          <div className="flex-1 min-h-0 flex items-center gap-4">
-            <div className="flex-none flex items-center justify-center self-center" style={{ width: 210, height: 210 }}>
-              <DonutLikeGender items={items} maxSize={210} showLegend={false} />
+          <div className="flex-1 min-h-0 flex items-center justify-center gap-6 px-2">
+            <div className="flex-none flex items-center justify-center self-center" style={{ width: 240, height: 240 }}>
+              <DonutLikeGender items={items} maxSize={240} showLegend={false} />
             </div>
-            <div className="flex-1 min-w-0 h-full overflow-y-auto text-[12px] space-y-1.5 pr-1">
+            <div className="flex-1 min-w-0 h-full overflow-y-auto text-[12px] space-y-1.5 pr-4">
               {items.map((it, i) => (
                 <div key={i} className="flex items-center justify-end gap-2 min-w-0">
                   <span className="flex items-center gap-1.5 min-w-0 max-w-[75%]"><span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.color }} /><span className="truncate" title={it.label}>{it.label}</span></span>
