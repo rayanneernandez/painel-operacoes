@@ -2029,7 +2029,7 @@ export const WidgetCorridorFlow = ({ deviceAudience }: { view?: string; deviceAu
               <div className="flex-none flex items-center justify-center self-center" style={{ width: 240, height: 240 }}>
                 <DonutLikeGender items={items} maxSize={240} showLegend={false} />
               </div>
-              <div className="flex-1 min-w-0 max-w-sm h-full overflow-y-auto text-[12px] space-y-1.5 pr-2">
+              <div className="flex-1 min-w-0 max-w-sm overflow-y-auto text-[12px] space-y-1.5 pr-2" style={{ maxHeight: 240 }}>
                 {items.map((it, i) => (
                   <div key={i} className="flex items-center justify-end gap-2 min-w-0">
                     <span className="flex items-center gap-1.5 min-w-0 max-w-[75%]"><span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.color }} /><span className="truncate" title={it.label}>{it.label}</span></span>
