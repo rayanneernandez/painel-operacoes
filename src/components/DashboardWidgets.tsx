@@ -2013,7 +2013,6 @@ export const WidgetCorridorFlow = ({ deviceAudience }: { view?: string; deviceAu
   const isPct = sum <= 101;
   const pctOf = (v: number) => (isPct ? v : (v / sum) * 100);
   const fmt = (v: number) => { const p = pctOf(v); return p >= 10 ? `${p.toFixed(0)}%` : `${p.toFixed(1)}%`; };
-  const top = items[0];
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <h3 className="font-bold text-white mb-1 flex items-center gap-2 uppercase text-xs tracking-wider flex-shrink-0">
@@ -2023,7 +2022,6 @@ export const WidgetCorridorFlow = ({ deviceAudience }: { view?: string; deviceAu
         <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Sem dados de fluxo por corredor.</div>
       ) : (
         <>
-          {top && <div className="text-[11px] text-gray-400 mb-2 flex-shrink-0">Maior fluxo: <span className="text-white font-semibold">{top.label}</span> ({fmt(top.value)})</div>}
           <div className="flex-1 min-h-0 flex items-center justify-center">
             <div className="flex items-center justify-center gap-6 w-full max-w-3xl mx-auto px-4">
               <div className="flex-none flex items-center justify-center self-center" style={{ width: 240, height: 240 }}>
