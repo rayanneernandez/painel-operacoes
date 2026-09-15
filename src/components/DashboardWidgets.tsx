@@ -188,7 +188,7 @@ export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'chart_facial_expressions', title: 'Expressoes Faciais', type: 'chart', size: 'half', description: 'Serie temporal de expressoes faciais quando disponivel' },
   { id: 'chart_device_flow', title: 'Fluxo e Audiencia Device', type: 'chart', size: 'half', description: 'Resumo visual de fluxo, devices e tracking quando disponivel' },
   { id: 'device_type_audience', title: 'Audiência por Tipo de Dispositivo', type: 'chart', size: 'half', description: 'Totem, Caixa, Gôndola, LED por % de audiência' },
-  { id: 'corridor_flow',       title: 'Fluxo por Corredor',              type: 'chart', size: 'third', description: 'Donut: corredor/área com maior fluxo de pessoas' },
+  { id: 'corridor_flow',       title: 'Fluxo por Corredor',              type: 'chart', size: 'half', description: 'Donut: corredor/área com maior fluxo de pessoas' },
   { id: 'kpi_total_visitors',  title: 'Total Visitantes',              type: 'kpi',   size: 'quarter', description: 'Card individual de total de visitantes' },
   { id: 'kpi_avg_visitors_day',title: 'Média Visitantes Dia',          type: 'kpi',   size: 'quarter', description: 'Card individual de média de visitantes por dia' },
   { id: 'kpi_avg_visit_time',  title: 'Tempo Médio Visita',            type: 'kpi',   size: 'quarter', description: 'Card individual de tempo médio de visita' },
@@ -445,10 +445,12 @@ function DonutLikeGender({
   items,
   totalCount,
   maxSize = 420,
+  showLegend = true,
 }: {
   items: { label: string; value: number; color: string; count?: number | null }[];
   totalCount?: number | null;
   maxSize?: number;
+  showLegend?: boolean;
 }) {
   const wrapRef = React.useRef<HTMLDivElement>(null);
   const [hover, setHover] = React.useState<null | { label: string; pct: number; color: string; count: number | null; x: number; y: number; cx: number; cy: number }>(null);
@@ -592,20 +594,22 @@ function DonutLikeGender({
       </div>
 
       {/* Legenda — sempre dentro do card, quebra em linhas se necessário */}
-      <div className="flex justify-center gap-x-3 gap-y-1 flex-wrap w-full min-w-0 px-1">
-        {segments.map((s, i) => (
-          <div key={i} className="group relative flex items-center gap-1 cursor-default min-w-0">
-            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.color }} />
-            <span className="text-[10px] text-gray-400 truncate">{s.label}</span>
-            <span className="text-[10px] font-semibold flex-shrink-0" style={{ color: s.color }}>{formatPct(s.pct)}%</span>
-            {s.count != null && (
-              <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-950 border border-gray-700 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
-                {s.count.toLocaleString()} visitantes
-              </div>
-            )}
-          </div>
-        ))}
-      </div>
+      {showLegend && (
+        <div className="flex justify-center gap-x-3 gap-y-1 flex-wrap w-full min-w-0 px-1">
+          {segments.map((s, i) => (
+            <div key={i} className="group relative flex items-center gap-1 cursor-default min-w-0">
+              <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: s.color }} />
+              <span className="text-[10px] text-gray-400 truncate">{s.label}</span>
+              <span className="text-[10px] font-semibold flex-shrink-0" style={{ color: s.color }}>{formatPct(s.pct)}%</span>
+              {s.count != null && (
+                <div className="absolute -top-8 left-1/2 -translate-x-1/2 bg-gray-950 border border-gray-700 text-white text-[10px] px-2 py-0.5 rounded whitespace-nowrap opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none z-10">
+                  {s.count.toLocaleString()} visitantes
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -2020,13 +2024,13 @@ export const WidgetCorridorFlow = ({ deviceAudience }: { view?: string; deviceAu
       ) : (
         <>
           {top && <div className="text-[11px] text-gray-400 mb-2 flex-shrink-0">Maior fluxo: <span className="text-white font-semibold">{top.label}</span> ({fmt(top.value)})</div>}
-          <div className="flex-1 min-h-0 flex gap-3">
-            <div className="flex-1 min-h-0 flex"><DonutLikeGender items={items} maxSize={360} /></div>
-            <div className="w-[46%] overflow-y-auto text-[11px] space-y-1 pr-1">
+          <div className="flex-1 min-h-0 flex gap-4">
+            <div className="flex-1 min-h-0 flex"><DonutLikeGender items={items} maxSize={480} showLegend={false} /></div>
+            <div className="w-[42%] overflow-y-auto text-[12px] space-y-1.5 pr-1">
               {items.map((it, i) => (
                 <div key={i} className="flex items-center justify-between gap-2">
                   <span className="flex items-center gap-1.5 min-w-0"><span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.color }} /><span className="truncate" title={it.label}>{it.label}</span></span>
-                  <span className="text-gray-300 shrink-0">{fmt(it.value)}</span>
+                  <span className="text-gray-300 shrink-0 font-semibold">{fmt(it.value)}</span>
                 </div>
               ))}
             </div>

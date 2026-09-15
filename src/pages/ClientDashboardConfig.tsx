@@ -28,7 +28,7 @@ const RECOMMENDED_WIDGET_HEIGHTS: Record<string, number> = {
   chart_facial_expressions: GRID_SPAN_TO_HEIGHT[3],
   chart_device_flow: GRID_SPAN_TO_HEIGHT[4],
   device_type_audience: GRID_SPAN_TO_HEIGHT[4],
-  corridor_flow: GRID_SPAN_TO_HEIGHT[4],
+  corridor_flow: GRID_SPAN_TO_HEIGHT[5],
   age_pyramid: GRID_SPAN_TO_HEIGHT[3],
   chart_age_ranges: GRID_SPAN_TO_HEIGHT[3],
   gender_dist: GRID_SPAN_TO_HEIGHT[3],
