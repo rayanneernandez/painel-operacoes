@@ -3788,6 +3788,14 @@ export function ClientDashboard() {
                   }));
                   widgetProps.trackingData = deviceFlowTracking;
                 }
+                if (widget.id === 'corridor_flow') {
+                  // Por enquanto espelha o mesmo fluxo por device/token da Panvel usado no device_type_audience,
+                  // ate existir uma fonte de dados dedicada por corredor.
+                  widgetProps.deviceAudience = deviceFlowAudience.map(e => ({
+                    ...e,
+                    label: resolveDeviceFlowLabel(String(e?.label ?? '')),
+                  }));
+                }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
                 if (widget.id === 'attributes')                widgetProps.attrData = attributeStats;

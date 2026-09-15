@@ -188,6 +188,7 @@ export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'chart_facial_expressions', title: 'Expressoes Faciais', type: 'chart', size: 'half', description: 'Serie temporal de expressoes faciais quando disponivel' },
   { id: 'chart_device_flow', title: 'Fluxo e Audiencia Device', type: 'chart', size: 'half', description: 'Resumo visual de fluxo, devices e tracking quando disponivel' },
   { id: 'device_type_audience', title: 'Audiência por Tipo de Dispositivo', type: 'chart', size: 'half', description: 'Totem, Caixa, Gôndola, LED por % de audiência' },
+  { id: 'corridor_flow',       title: 'Fluxo por Corredor',              type: 'chart', size: 'third', description: 'Donut: corredor/área com maior fluxo de pessoas' },
   { id: 'kpi_total_visitors',  title: 'Total Visitantes',              type: 'kpi',   size: 'quarter', description: 'Card individual de total de visitantes' },
   { id: 'kpi_avg_visitors_day',title: 'Média Visitantes Dia',          type: 'kpi',   size: 'quarter', description: 'Card individual de média de visitantes por dia' },
   { id: 'kpi_avg_visit_time',  title: 'Tempo Médio Visita',            type: 'kpi',   size: 'quarter', description: 'Card individual de tempo médio de visita' },
@@ -1995,7 +1996,49 @@ export const WidgetDeviceTypeAudience = ({ deviceAudience, trackingData }: { dev
   );
 };
 
+// ── WidgetCorridorFlow ────────────────────────────────────────────────────────
+// Donut do fluxo por corredor (device/área): mostra qual corredor tem mais fluxo.
+export const WidgetCorridorFlow = ({ deviceAudience }: { view?: string; deviceAudience?: { label: string; value: number; count?: number | null }[] }) => {
+  const PALETTE = ['#a78bfa', '#f472b6', '#60a5fa', '#34d399', '#fbbf24', '#fb7185', '#22d3ee', '#c084fc', '#4ade80', '#f59e0b', '#38bdf8', '#e879f9'];
+  const rows = (deviceAudience || [])
+    .map((d) => ({ label: String(d?.label ?? '').trim() || '—', value: Number(d?.value) || 0, count: d?.count ?? null }))
+    .filter((d) => d.value > 0)
+    .sort((a, b) => b.value - a.value);
+  const items = rows.map((d, i) => ({ ...d, color: PALETTE[i % PALETTE.length] }));
+  const sum = items.reduce((a, x) => a + x.value, 0) || 1;
+  const isPct = sum <= 101;
+  const pctOf = (v: number) => (isPct ? v : (v / sum) * 100);
+  const fmt = (v: number) => { const p = pctOf(v); return p >= 10 ? `${p.toFixed(0)}%` : `${p.toFixed(1)}%`; };
+  const top = items[0];
+  return (
+    <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
+      <h3 className="font-bold text-white mb-1 flex items-center gap-2 uppercase text-xs tracking-wider flex-shrink-0">
+        <Users size={14} className="text-violet-400" />Fluxo por Corredor
+      </h3>
+      {items.length === 0 ? (
+        <div className="flex-1 flex items-center justify-center text-gray-500 text-sm">Sem dados de fluxo por corredor.</div>
+      ) : (
+        <>
+          {top && <div className="text-[11px] text-gray-400 mb-2 flex-shrink-0">Maior fluxo: <span className="text-white font-semibold">{top.label}</span> ({fmt(top.value)})</div>}
+          <div className="flex-1 min-h-0 flex gap-3">
+            <div className="flex-1 min-h-0 flex"><DonutLikeGender items={items} maxSize={360} /></div>
+            <div className="w-[46%] overflow-y-auto text-[11px] space-y-1 pr-1">
+              {items.map((it, i) => (
+                <div key={i} className="flex items-center justify-between gap-2">
+                  <span className="flex items-center gap-1.5 min-w-0"><span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: it.color }} /><span className="truncate" title={it.label}>{it.label}</span></span>
+                  <span className="text-gray-300 shrink-0">{fmt(it.value)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
+    </div>
+  );
+};
+
 export const WIDGET_MAP: Record<string, React.FC<any>> = {
+  'corridor_flow':       WidgetCorridorFlow,
   'flow_trend':          WidgetFlowTrend,
   'hourly_flow':         WidgetHourlyFlow,
   'chart_facial_expressions': WidgetFacialExpressions,

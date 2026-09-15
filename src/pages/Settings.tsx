@@ -77,6 +77,13 @@ const PREVIEW_DEVICE_TYPE_AUDIENCE = [
   { label: 'caixa loja 1', value: 16.5 },
   { label: 'gondola loja 1', value: 9.8 },
 ];
+const PREVIEW_CORRIDOR_FLOW_AUDIENCE = [
+  { label: 'Corredor 1 - Entrada', value: 31.4 },
+  { label: 'Corredor 2 - Higiene', value: 22.7 },
+  { label: 'Corredor 3 - Perfumaria', value: 18.6 },
+  { label: 'Corredor 4 - Genericos', value: 15.1 },
+  { label: 'Corredor 5 - Caixa', value: 12.2 },
+];
 const PREVIEW_TRACKING_DATA = [
   { label: 'entrada -> caixa', value: 19.0, count: 458 },
   { label: 'entrada -> totem', value: 17.7, count: 427 },
@@ -104,6 +111,7 @@ const RECOMMENDED_WIDGET_HEIGHTS: Record<string, number> = {
   chart_facial_expressions: GRID_SPAN_TO_HEIGHT[3],
   chart_device_flow: GRID_SPAN_TO_HEIGHT[4],
   device_type_audience: GRID_SPAN_TO_HEIGHT[4],
+  corridor_flow: GRID_SPAN_TO_HEIGHT[4],
   age_pyramid: GRID_SPAN_TO_HEIGHT[3],
   chart_age_ranges: GRID_SPAN_TO_HEIGHT[3],
   gender_dist: GRID_SPAN_TO_HEIGHT[3],
@@ -584,6 +592,9 @@ export function Settings() {
     if (widget.id === 'device_type_audience') {
       props.deviceAudience = PREVIEW_DEVICE_TYPE_AUDIENCE;
       props.trackingData = PREVIEW_TRACKING_DATA;
+    }
+    if (widget.id === 'corridor_flow') {
+      props.deviceAudience = PREVIEW_CORRIDOR_FLOW_AUDIENCE;
     }
     if (widget.id === 'flow_trend') {
       props.dailyData = PREVIEW_DAILY_DATA;

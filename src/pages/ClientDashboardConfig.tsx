@@ -28,6 +28,7 @@ const RECOMMENDED_WIDGET_HEIGHTS: Record<string, number> = {
   chart_facial_expressions: GRID_SPAN_TO_HEIGHT[3],
   chart_device_flow: GRID_SPAN_TO_HEIGHT[4],
   device_type_audience: GRID_SPAN_TO_HEIGHT[4],
+  corridor_flow: GRID_SPAN_TO_HEIGHT[4],
   age_pyramid: GRID_SPAN_TO_HEIGHT[3],
   chart_age_ranges: GRID_SPAN_TO_HEIGHT[3],
   gender_dist: GRID_SPAN_TO_HEIGHT[3],
@@ -838,6 +839,15 @@ export function ClientDashboardConfig() {
                   { label: 'entrada -> totem -> caixa', value: 2.9, count: 70 },
                   { label: 'entrada -> led', value: 2.7, count: 65 },
                   { label: 'entrada -> totem -> caixa -> gondola perfumaria', value: 0.7, count: 17 },
+                ];
+              }
+              if (widget.id === 'corridor_flow') {
+                previewProps.deviceAudience = [
+                  { label: 'Corredor 1 - Entrada', value: 31.4 },
+                  { label: 'Corredor 2 - Higiene', value: 22.7 },
+                  { label: 'Corredor 3 - Perfumaria', value: 18.6 },
+                  { label: 'Corredor 4 - Genericos', value: 15.1 },
+                  { label: 'Corredor 5 - Caixa', value: 12.2 },
                 ];
               }
 
