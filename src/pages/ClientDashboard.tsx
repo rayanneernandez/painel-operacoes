@@ -3790,9 +3790,9 @@ export function ClientDashboard() {
                   widgetProps.trackingData = deviceFlowTracking;
                 }
                 if (widget.id === 'corridor_flow') {
-                  // Por enquanto espelha o mesmo fluxo por device/token da Panvel usado no device_type_audience,
-                  // ate existir uma fonte de dados dedicada por corredor.
-                  widgetProps.deviceAudience = deviceFlowAudience.map(e => ({
+                  // Fluxo por corredor: usa o fluxo por device (rede global usa por loja).
+                  const isNetworkView = !selectedStore && deviceIds.length === 0;
+                  widgetProps.deviceAudience = (isNetworkView ? deviceFlowAudienceByStore : deviceFlowAudience).map(e => ({
                     ...e,
                     label: resolveDeviceFlowLabel(String(e?.label ?? '')),
                   }));

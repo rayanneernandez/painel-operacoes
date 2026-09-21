@@ -1412,6 +1412,20 @@ async function needsSync(client_id: string, forceSync = false): Promise<boolean>
   return Date.now() - Date.parse(data.last_synced_at) > 10 * 60 * 1000;
 }
 
+// Quando o cliente tem folder_filter, a busca de visitantes deve se limitar aos
+// dispositivos das pastas filtradas. Como o sync_stores já grava só esses devices
+// no banco, usamos os external_id deles como filtro de "devices" na API.
+// Retorna [] quando não há filtro (= todos os devices) ou já veio devices explícito.
+async function resolveClientDeviceFilter(client_id: string, cfg: ClientApiConfig, explicit: number[]): Promise<number[]> {
+  if (Array.isArray(explicit) && explicit.length > 0) return explicit;
+  if (!cfg?.folder_filter || !String(cfg.folder_filter).trim()) return [];
+  const { data: sids } = await supabase.from("stores").select("id").eq("client_id", client_id);
+  const storeIds = (sids || []).map((s: any) => s.id).filter(Boolean);
+  if (storeIds.length === 0) return [];
+  const { data: devs } = await supabase.from("devices").select("external_id").in("store_id", storeIds);
+  return (devs || []).map((d: any) => Number(d.external_id)).filter((n: number) => Number.isFinite(n));
+}
+
 async function runSingleWindowSync(client_id: string, cfg: ClientApiConfig, syncStart: string, syncEnd: string, devices: any[]) {
   const analyticsUrl = `${(cfg.api_endpoint || "https://api.displayforce.ai").replace(/\/$/, "")}${cfg.analytics_endpoint?.startsWith("/") ? cfg.analytics_endpoint : `/${cfg.analytics_endpoint || "public/v1/stats/visitor/list"}`}`;
   const headers: Record<string, string> = { "Content-Type": "application/json", Accept: "application/json" };
@@ -1625,7 +1639,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (providedAuth !== "painel@2026*") return bad(res, 401, { error: "count_only requer Bearer painel@2026*" });
       if (!start || !end) return bad(res, 400, { error: "start e end são obrigatórios" });
 
-      const devList = (Array.isArray(devices) ? devices.map(Number).filter(Number.isFinite) : []).sort((a, b) => a - b);
+      const explicitDev = Array.isArray(devices) ? devices.map(Number).filter(Number.isFinite) : [];
+      const devList = (await resolveClientDeviceFilter(client_id, cfg, explicitDev)).sort((a, b) => a - b);
       const deviceKey = devList.join(",");
       const pStart = String(start).slice(0, 10);
       const pEnd = String(end).slice(0, 10);
@@ -1786,7 +1801,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const forceStart = Date.parse(collectionStart) > Date.parse(recoveryStart) ? collectionStart : recoveryStart;
       const syncStart = String(start || (forceSync ? forceStart : (Date.parse(collectionStart) > Date.parse(defaultStart) ? collectionStart : defaultStart)));
       const syncEnd   = String(end   || cfg.collection_end   || now.toISOString());
-      const deviceList = Array.isArray(devices) ? devices : [];
+      const explicitDevices = Array.isArray(devices) ? devices.map(Number).filter(Number.isFinite) : [];
+      const deviceList = await resolveClientDeviceFilter(client_id, cfg, explicitDevices);
       const syncReservation = beginBackgroundSync(client_id, syncStart, syncEnd, deviceList);
       if (!syncReservation.started) {
         const message = syncReservation.reason === "in_progress"
