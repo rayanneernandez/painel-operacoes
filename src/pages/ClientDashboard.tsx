@@ -908,6 +908,7 @@ export function ClientDashboard() {
   const [contentOptions, setContentOptions] = useState<string[]>([]);
   const [selectedContents, setSelectedContents] = useState<string[]>([]);
   const [contentMenuOpen, setContentMenuOpen] = useState(false);
+  const [contentSearch, setContentSearch] = useState('');
   const [contentMonths, setContentMonths] = useState<string[]>([]);       // meses (YYYY-MM) do conteúdo
   const [selectedContentMonth, setSelectedContentMonth] = useState<string>(''); // '' = todos os meses
   const [contentAgg, setContentAgg] = useState<null | {
@@ -3711,14 +3712,25 @@ export function ClientDashboard() {
                 {contentMenuOpen && (
                   <>
                     <div className="fixed inset-0 z-20" onClick={() => setContentMenuOpen(false)} />
-                    <div className="absolute right-0 mt-1 z-30 w-[260px] max-h-[340px] overflow-y-auto bg-gray-900 border border-gray-700 rounded-lg shadow-2xl p-1">
-                      <div className="flex items-center justify-between px-2 py-1.5 text-[11px] text-gray-400 border-b border-gray-800 mb-1">
+                    <div className="absolute right-0 mt-1 z-30 w-[280px] bg-gray-900 border border-gray-700 rounded-lg shadow-2xl p-1">
+                      <input
+                        type="text"
+                        autoFocus
+                        value={contentSearch}
+                        onChange={(e) => setContentSearch(e.target.value)}
+                        placeholder="Buscar conteúdo…"
+                        className="w-full bg-gray-950 border border-gray-800 rounded px-2 py-1.5 text-[12px] text-gray-200 focus:outline-none focus:ring-1 focus:ring-emerald-500 mb-1"
+                      />
+                      <div className="flex items-center justify-between px-2 py-1 text-[11px] text-gray-400 border-b border-gray-800 mb-1">
                         <span>{selectedContents.length} selecionado(s)</span>
                         {selectedContents.length > 0 && (
                           <button className="text-emerald-400 hover:text-emerald-300" onClick={() => setSelectedContents([])}>Limpar</button>
                         )}
                       </div>
-                      {contentOptions.map((c) => {
+                      <div className="max-h-[300px] overflow-y-auto">
+                      {contentOptions
+                        .filter((c) => c.toLowerCase().includes(contentSearch.trim().toLowerCase()))
+                        .map((c) => {
                         const checked = selectedContents.includes(c);
                         return (
                           <label key={c} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-800 cursor-pointer text-[12px] text-gray-200">
@@ -3732,6 +3744,7 @@ export function ClientDashboard() {
                           </label>
                         );
                       })}
+                      </div>
                     </div>
                   </>
                 )}
