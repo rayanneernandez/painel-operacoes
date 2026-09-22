@@ -3555,12 +3555,13 @@ export function ClientDashboard() {
   // proporção do conteúdo (m/f), já que o resumo por conteúdo não separa idade×gênero.
   const effAgeStats = contentActive
     ? (() => {
+        const ageTotal = Object.values(contentAgg!.age || {}).reduce((a, b) => a + (Number(b) || 0), 0) || 1;
         const denom = (contentAgg!.gMale + contentAgg!.gFemale) || 1;
         const mR = contentAgg!.gMale / denom;
+        // m/f em PORCENTAGEM do total (somam ~100 entre as faixas) — igual ao modo geral
         return LEGACY_AGE_ORDER.map((age) => {
-          const cnt = Number(contentAgg!.age[age] || 0);
-          const m = Math.round(cnt * mR);
-          return { age, m, f: Math.max(0, cnt - m) };
+          const pct = (Number(contentAgg!.age[age] || 0) / ageTotal) * 100;
+          return { age, m: Number((pct * mR).toFixed(1)), f: Number((pct * (1 - mR)).toFixed(1)) };
         });
       })()
     : ageStats;
