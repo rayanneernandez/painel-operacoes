@@ -760,6 +760,8 @@ export function CampaignUpload() {
   const [coverageEnd, setCoverageEnd] = useState<string | null>(null);   // maior end_date já no banco
   const [lastUpload, setLastUpload]   = useState<string | null>(null);   // último uploaded_at
   const [batches, setBatches] = useState<{ uploadedAt: string; periodStart: string | null; periodEnd: string | null; count: number }[]>([]);
+  const [batchPage, setBatchPage] = useState(0);
+  const BATCHES_PER_PAGE = 6;
   const fileRef = useRef<HTMLInputElement>(null);
 
   // Descobre até quando já existem campanhas + histórico dos últimos imports
@@ -774,32 +776,19 @@ export function CampaignUpload() {
       .order('uploaded_at', { ascending: false }).limit(1);
     setLastUpload(upRow?.[0]?.uploaded_at ?? null);
 
-    // Histórico: agrupa as campanhas por import (uploaded_at até o minuto) e calcula
-    // o período coberto (menor start_date → maior end_date) de cada import.
-    const { data: rows } = await supabase.from('campaigns')
-      .select('uploaded_at, start_date, end_date').eq('client_id', clientId).not('uploaded_at', 'is', null)
-      .order('uploaded_at', { ascending: false }).limit(5000);
-    const groups = new Map<string, { uploadedAt: string; minStart: number; maxEnd: number; count: number }>();
-    for (const r of (rows || []) as any[]) {
-      const key = String(r.uploaded_at).slice(0, 16); // YYYY-MM-DDTHH:MM
-      const g = groups.get(key) ?? { uploadedAt: r.uploaded_at, minStart: Infinity, maxEnd: -Infinity, count: 0 };
-      g.count += 1;
-      const s = r.start_date ? Date.parse(r.start_date) : NaN;
-      const e = r.end_date ? Date.parse(r.end_date) : NaN;
-      if (Number.isFinite(s)) g.minStart = Math.min(g.minStart, s);
-      if (Number.isFinite(e)) g.maxEnd = Math.max(g.maxEnd, e);
-      groups.set(key, g);
-    }
-    const list = [...groups.values()]
-      .sort((a, b) => Date.parse(b.uploadedAt) - Date.parse(a.uploadedAt))
-      .slice(0, 6)
-      .map((g) => ({
-        uploadedAt: g.uploadedAt,
-        periodStart: g.minStart !== Infinity ? new Date(g.minStart).toISOString() : null,
-        periodEnd: g.maxEnd !== -Infinity ? new Date(g.maxEnd).toISOString() : null,
-        count: g.count,
-      }));
-    setBatches(list);
+    // Histórico: cada importação é uma linha própria (log imutável). Reimportar
+    // o mesmo período gera uma nova linha — o histórico sempre cresce.
+    const { data: logs } = await supabase.from('campaign_import_log')
+      .select('imported_at, period_start, period_end, records')
+      .eq('client_id', clientId)
+      .order('imported_at', { ascending: false })
+      .limit(300);
+    setBatches((logs || []).map((l: any) => ({
+      uploadedAt: l.imported_at,
+      periodStart: l.period_start,
+      periodEnd: l.period_end,
+      count: Number(l.records) || 0,
+    })));
   };
   useEffect(() => { void loadCoverage(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [clientId]);
   const fmtDate = (iso: string | null) => {
@@ -900,10 +889,29 @@ export function CampaignUpload() {
         }
       }
 
+      // Registra esta importação no log (uma linha por import, imutável)
+      if (clientId) {
+        let minStart = Infinity, maxEnd = -Infinity;
+        for (const r of allRows) {
+          const s = r.start_date ? Date.parse(r.start_date) : NaN;
+          const e = r.end_date ? Date.parse(r.end_date) : NaN;
+          if (Number.isFinite(s)) minStart = Math.min(minStart, s);
+          if (Number.isFinite(e)) maxEnd = Math.max(maxEnd, e);
+        }
+        const { error: logErr } = await supabase.from('campaign_import_log').insert({
+          client_id: clientId,
+          period_start: minStart !== Infinity ? new Date(minStart).toISOString().slice(0, 10) : null,
+          period_end: maxEnd !== -Infinity ? new Date(maxEnd).toISOString().slice(0, 10) : null,
+          records: saved,
+        });
+        if (logErr) console.warn('[import_log]', logErr.message);
+      }
+
       setUpserted(saved);
       setStatus('done');
       setMessage(`✅ ${saved} registros salvos com sucesso!`);
-      void loadCoverage(); // atualiza o "campanhas vão até ..."
+      setBatchPage(0);
+      void loadCoverage(); // atualiza o histórico e o "campanhas vão até ..."
     } catch (e: any) {
       console.error(e);
       setStatus('error');
@@ -955,30 +963,53 @@ export function CampaignUpload() {
         </div>
       )}
 
-      {/* Histórico dos últimos imports (período coberto por cada um) */}
-      {batches.length > 0 && (
-        <div className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
-          <div className="px-4 py-2 text-xs font-semibold text-gray-300 border-b border-gray-800">Histórico de importações (período de cada uma)</div>
-          <table className="w-full text-sm">
-            <thead className="text-gray-500 text-xs">
-              <tr>
-                <th className="text-left font-medium px-4 py-1.5">Importado em</th>
-                <th className="text-left font-medium px-4 py-1.5">Período coberto</th>
-                <th className="text-right font-medium px-4 py-1.5">Registros</th>
-              </tr>
-            </thead>
-            <tbody>
-              {batches.map((b, i) => (
-                <tr key={i} className={`border-t border-gray-800/60 ${i === 0 ? 'text-emerald-300' : 'text-gray-300'}`}>
-                  <td className="px-4 py-1.5">{fmtDate(b.uploadedAt)}{i === 0 && <span className="text-gray-500"> (última)</span>}</td>
-                  <td className="px-4 py-1.5">{b.periodStart ? fmtDate(b.periodStart) : '—'} a {b.periodEnd ? fmtDate(b.periodEnd) : '—'}</td>
-                  <td className="px-4 py-1.5 text-right">{b.count}</td>
+      {/* Histórico de importações — cada import é uma linha (paginado, 6 por página) */}
+      {batches.length > 0 && (() => {
+        const totalPages = Math.max(1, Math.ceil(batches.length / BATCHES_PER_PAGE));
+        const page = Math.min(batchPage, totalPages - 1);
+        const pageRows = batches.slice(page * BATCHES_PER_PAGE, page * BATCHES_PER_PAGE + BATCHES_PER_PAGE);
+        return (
+          <div className="rounded-lg border border-gray-800 bg-gray-900/40 overflow-hidden">
+            <div className="px-4 py-2 text-xs font-semibold text-gray-300 border-b border-gray-800 flex items-center justify-between">
+              <span>Histórico de importações</span>
+              <span className="text-gray-500 font-normal">{batches.length} importaç{batches.length === 1 ? 'ão' : 'ões'}</span>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="text-gray-500 text-xs">
+                <tr>
+                  <th className="text-left font-medium px-4 py-1.5">Importado em</th>
+                  <th className="text-left font-medium px-4 py-1.5">Período importado</th>
+                  <th className="text-right font-medium px-4 py-1.5">Registros</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+              </thead>
+              <tbody>
+                {pageRows.map((b, i) => (
+                  <tr key={i} className={`border-t border-gray-800/60 ${page === 0 && i === 0 ? 'text-emerald-300' : 'text-gray-300'}`}>
+                    <td className="px-4 py-1.5">{fmtDate(b.uploadedAt) || '—'}{page === 0 && i === 0 && <span className="text-gray-500"> (última)</span>}</td>
+                    <td className="px-4 py-1.5">{b.periodStart ? fmtDate(b.periodStart) : '—'} a {b.periodEnd ? fmtDate(b.periodEnd) : '—'}</td>
+                    <td className="px-4 py-1.5 text-right">{b.count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {totalPages > 1 && (
+              <div className="flex items-center justify-end gap-2 px-4 py-2 border-t border-gray-800 text-xs">
+                <button
+                  onClick={() => setBatchPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  className="px-2 py-1 rounded border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-40"
+                >Anterior</button>
+                <span className="text-gray-500">Página {page + 1} de {totalPages}</span>
+                <button
+                  onClick={() => setBatchPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  className="px-2 py-1 rounded border border-gray-700 text-gray-300 hover:bg-gray-800 disabled:opacity-40"
+                >Próxima</button>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Drop zone */}
       {status === 'idle' && (
