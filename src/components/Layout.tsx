@@ -16,6 +16,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Wifi,
+  Upload,
   Monitor,
   Activity,
 } from 'lucide-react';
@@ -243,6 +244,12 @@ export function Layout() {
       label: 'Evolução',
       path: '/evolucao',
       show: user?.role === 'admin' || (user?.permissions?.view_devices_online ?? false)
+    },
+    {
+      icon: Upload,
+      label: 'Importar',
+      path: '/importar',
+      show: user?.role === 'admin' || (user?.permissions?.import_campaigns ?? false)
     },
     {
       icon: Monitor,

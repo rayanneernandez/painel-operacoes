@@ -18,6 +18,7 @@ import { Login } from './pages/Login';
 import { MyAccount } from './pages/MyAccount';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import CampaignUpload from './pages/CampaignUpload';
+import { ImportarShell } from './pages/ImportarShell';
 
 const PrivateRoute = () => {
   const { isAuthenticated, isLoading } = useAuth();
@@ -164,6 +165,20 @@ const CampaignUploadRoute = () => {
   return <Navigate to="/" replace />;
 };
 
+const ImportarRoute = () => {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <div className="flex items-center justify-center min-h-screen bg-gray-900 text-white">Carregando...</div>;
+  }
+
+  if (user?.role === 'admin' || (user?.permissions?.import_campaigns ?? false)) {
+    return <ImportarShell />;
+  }
+
+  return <Navigate to="/" replace />;
+};
+
 const WhatsappAlertsRoute = () => {
   const { user, isLoading } = useAuth();
 
@@ -206,6 +221,7 @@ function App() {
               <Route path="dispositivos-online" element={<DevicesOnlineRoute />} />
               <Route path="evolucao" element={<EvolucaoRoute />} />
               <Route path="clientes/:id/campanhas" element={<CampaignUploadRoute />} />
+              <Route path="importar" element={<ImportarRoute />} />
               <Route path="monitoramento" element={<MonitoramentoRoute />} />
               <Route path="alertas-whatsapp" element={<WhatsappAlertsRoute />} />
 

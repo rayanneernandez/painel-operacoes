@@ -3583,59 +3583,6 @@ export function ClientDashboard() {
                 {isFullscreen ? <Minimize2 size={16} className="text-emerald-400" /> : <Maximize2 size={16} className="text-gray-400" />}
               </button>
 
-              {/* Reorganizar Layout (drag-and-drop inline) */}
-              {!editLayoutMode ? (
-                <button
-                  onClick={enterEditMode}
-                  title="Reorganizar widgets - arraste para juntar os cards"
-                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-emerald-600 hover:text-emerald-400 transition-colors flex-shrink-0 h-[36px] w-[36px]"
-                >
-                  <Move size={16} className="text-gray-400" />
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={autoArrangeWidgets}
-                    disabled={savingLayout}
-                    title="Auto-organizar: poe os KPIs (cards pequenos) primeiro, depois os graficos. Elimina os espacos vazios."
-                    className="flex items-center justify-center bg-gray-900 border border-purple-500/60 text-purple-300 hover:text-white hover:bg-purple-600 rounded-lg transition-colors flex-shrink-0 h-[36px] px-2.5 gap-1 text-[11px] font-medium disabled:opacity-60"
-                  >
-                    <Wand2 size={14} />
-                    Auto-organizar
-                  </button>
-                  <button
-                    onClick={saveLayoutOrder}
-                    disabled={savingLayout}
-                    title="Salvar nova organizacao"
-                    className="flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg transition-colors flex-shrink-0 h-[36px] px-2.5 gap-1 text-[11px] font-medium disabled:opacity-60"
-                  >
-                    {savingLayout
-                      ? <span className="inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                      : <Save size={14} />}
-                    Salvar
-                  </button>
-                  <button
-                    onClick={cancelEditMode}
-                    disabled={savingLayout}
-                    title="Cancelar alteracoes"
-                    className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-red-500 hover:text-red-400 transition-colors flex-shrink-0 h-[36px] w-[36px] disabled:opacity-60"
-                  >
-                    <X size={16} className="text-gray-400" />
-                  </button>
-                </>
-              )}
-
-              {/* Upload campanhas (admin ou permissão import_campaigns) */}
-              {(authUser?.role === 'admin' || authUser?.permissions?.import_campaigns) && (
-                <button
-                  onClick={() => navigate(`/clientes/${id}/campanhas`)}
-                  title="Importar relatório de campanhas do e-mail"
-                  className="flex items-center justify-center bg-gray-900 border border-gray-800 text-white rounded-lg hover:border-blue-500 hover:text-blue-400 transition-colors flex-shrink-0 h-[36px] w-[36px]"
-                >
-                  <Upload size={16} className="text-gray-400" />
-                </button>
-              )}
-
               {/* Sync manual */}
               <button
                 onClick={() => triggerBackgroundSync(true)}

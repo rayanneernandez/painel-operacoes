@@ -638,7 +638,14 @@ async function findExistingCampaignId(record: any) {
 async function saveCampaignRows(rows: any[]) {
   let saved = 0;
 
-  for (const row of rows) {
+  for (const rawRow of rows) {
+    // content_name e name são NOT NULL no banco — garante valor quando vier vazio.
+    const fallbackName = String(rawRow.name ?? '').trim() || 'Sem nome';
+    const row = {
+      ...rawRow,
+      name: fallbackName,
+      content_name: String(rawRow.content_name ?? '').trim() || fallbackName,
+    };
     const existingId = await findExistingCampaignId(row);
     if (existingId) {
       const { error } = await supabase
