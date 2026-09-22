@@ -3532,16 +3532,20 @@ export function ClientDashboard() {
   // Quando um CONTEÚDO está selecionado, os KPIs/gráficos refletem só aquele
   // conteúdo (dados do content_rollup). Idade fica como está (formato difere).
   const contentActive = !!selectedContent && !!contentAgg;
+  const contentHasAttrs = contentActive && Object.keys(contentAgg!.glasses || {}).length > 0;
   const effTotalVisitors = contentActive ? contentAgg!.total : displayTotalVisitors;
   const effAvgVisitorsPerDay = contentActive
     ? Math.round(contentAgg!.total / Math.max(1, contentAgg!.days))
     : displayAvgVisitorsPerDay;
   const effGenderStats = contentActive
-    ? [
-        { label: 'Masculino', value: contentAgg!.gMale },
-        { label: 'Feminino', value: contentAgg!.gFemale },
-        ...(contentAgg!.gUnknown > 0 ? [{ label: 'Indefinido', value: contentAgg!.gUnknown }] : []),
-      ]
+    ? (() => {
+        const gTot = (contentAgg!.gMale + contentAgg!.gFemale + contentAgg!.gUnknown) || 1;
+        return [
+          { label: 'Masculino', value: Math.round((contentAgg!.gMale / gTot) * 100) },
+          { label: 'Feminino', value: Math.round((contentAgg!.gFemale / gTot) * 100) },
+          ...(contentAgg!.gUnknown > 0 ? [{ label: 'Indefinido', value: Math.round((contentAgg!.gUnknown / gTot) * 100) }] : []),
+        ];
+      })()
     : genderStats;
   const effHourlyStats = contentActive ? contentAgg!.hour : hourlyStats;
   const effAttentionSeconds = contentActive
@@ -3771,8 +3775,8 @@ export function ClientDashboard() {
                 }}
               />
 
-              {/* Date Picker */}
-              <div className="flex min-w-0 shrink flex-col items-end lg:w-[156px] xl:w-[188px]">
+              {/* Date Picker — escondido quando um conteúdo está selecionado (usa o seletor de mês) */}
+              <div className={`flex min-w-0 shrink flex-col items-end lg:w-[156px] xl:w-[188px] ${selectedContent ? 'hidden' : ''}`}>
                 <div className="relative w-full sm:w-auto sm:max-w-full">
                   <button
                     onClick={() => {
@@ -3856,6 +3860,8 @@ export function ClientDashboard() {
                 if (!Component) return null;
                 // Widgets sem recorte por conteúdo: escondidos quando um conteúdo está selecionado
                 if (contentActive && ['chart_sales_quarter', 'chart_device_flow', 'device_type_audience', 'corridor_flow'].includes(widget.id)) return null;
+                // Atributos (óculos/pelos/cabelo): só aparecem se o conteúdo tiver esses dados
+                if (contentActive && !contentHasAttrs && ['chart_vision', 'chart_facial_hair', 'chart_hair_type', 'chart_hair_color', 'attributes'].includes(widget.id)) return null;
                 const defaultSpanForSize = (size: WidgetType['size']) => {
                   if (size === 'full') return 12; if (size === 'third') return 4;
                   if (size === 'quarter') return 3; if (size === '2/3') return 8;
