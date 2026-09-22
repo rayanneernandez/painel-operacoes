@@ -913,7 +913,7 @@ export function ClientDashboard() {
   const [selectedContentMonth, setSelectedContentMonth] = useState<string>(''); // '' = todos os meses
   const [contentAgg, setContentAgg] = useState<null | {
     total: number; days: number; gMale: number; gFemale: number; gUnknown: number;
-    age: Record<string, number>; hour: number[]; weekday: number[]; sumAtt: number; cntAtt: number;
+    age: Record<string, number>; hour: number[]; weekday: number[]; perDay: Record<string, number>; sumAtt: number; cntAtt: number;
     glasses: Record<string, number>; facial: Record<string, number>; haircolor: Record<string, number>; hairtype: Record<string, number>;
   }>(null);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
@@ -3046,12 +3046,12 @@ export function ClientDashboard() {
       // filtra pelo mês selecionado (se houver)
       const rowsAll = (data || []) as any[];
       const rows = selectedContentMonth ? rowsAll.filter((r) => String(r.day || '').slice(0, 7) === selectedContentMonth) : rowsAll;
-      const agg = { total: 0, days: 0, gMale: 0, gFemale: 0, gUnknown: 0, age: {} as Record<string, number>, hour: new Array(24).fill(0) as number[], weekday: new Array(7).fill(0) as number[], sumAtt: 0, cntAtt: 0, glasses: {} as Record<string, number>, facial: {} as Record<string, number>, haircolor: {} as Record<string, number>, hairtype: {} as Record<string, number> };
+      const agg = { total: 0, days: 0, gMale: 0, gFemale: 0, gUnknown: 0, age: {} as Record<string, number>, hour: new Array(24).fill(0) as number[], weekday: new Array(7).fill(0) as number[], perDay: {} as Record<string, number>, sumAtt: 0, cntAtt: 0, glasses: {} as Record<string, number>, facial: {} as Record<string, number>, haircolor: {} as Record<string, number>, hairtype: {} as Record<string, number> };
       const mergeMap = (dst: Record<string, number>, src: any) => { const s = src || {}; for (const k of Object.keys(s)) dst[k] = (dst[k] || 0) + (Number(s[k]) || 0); };
       for (const r of rows) {
         agg.days += 1;
         const vis = Number(r.visitors) || 0;
-        if (r.day) { const gd = new Date(`${r.day}T12:00:00Z`).getUTCDay(); const wi = gd === 0 ? 6 : gd - 1; agg.weekday[wi] += vis; }
+        if (r.day) { const gd = new Date(`${r.day}T12:00:00Z`).getUTCDay(); const wi = gd === 0 ? 6 : gd - 1; agg.weekday[wi] += vis; agg.perDay[String(r.day)] = (agg.perDay[String(r.day)] || 0) + vis; }
         agg.total += vis;
         agg.gMale += Number(r.g_male) || 0;
         agg.gFemale += Number(r.g_female) || 0;
@@ -3814,9 +3814,15 @@ export function ClientDashboard() {
                   clientName,
                   lojaFilter: selectedStore?.name ?? null,
                   period: { start: selectedStartDate, end: selectedEndDate },
-                  kpis: { totalVisitors: displayTotalVisitors, avgVisitorsPerDay: displayAvgVisitorsPerDay, avgVisitSeconds, avgAttentionSeconds },
-                  dailyStats: periodSeries.values, dailyLabels: periodSeries.labels, hourlyStats, genderStats, ageStats, attributeStats,
-                  hairTypeData, hairColorData, visitorsPerDayMap, quarterBars, dashboardRef,
+                  contentFilter: contentActive ? selectedContents.join(', ') : null,
+                  contentNames: contentActive ? selectedContents : null,
+                  kpis: { totalVisitors: effTotalVisitors, avgVisitorsPerDay: effAvgVisitorsPerDay, avgVisitSeconds, avgAttentionSeconds: effAttentionSeconds },
+                  dailyStats: contentActive ? contentAgg!.weekday : periodSeries.values,
+                  dailyLabels: contentActive ? ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sab', 'Dom'] : periodSeries.labels,
+                  hourlyStats: effHourlyStats, genderStats: effGenderStats, ageStats: effAgeStats, attributeStats: effAttributeStats,
+                  hairTypeData: effHairTypeData, hairColorData: effHairColorData,
+                  visitorsPerDayMap: contentActive ? contentAgg!.perDay : visitorsPerDayMap,
+                  quarterBars, dashboardRef,
                 }}
               />
 

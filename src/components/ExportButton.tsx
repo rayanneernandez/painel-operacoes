@@ -11,6 +11,8 @@ type ExportData = {
   clientId: string;
   clientName: string;
   lojaFilter?: string | null;
+  contentFilter?: string | null;
+  contentNames?: string[] | null;
   period: { start: Date; end: Date };
   kpis: {
     totalVisitors: number;
@@ -70,7 +72,7 @@ const campaignStatusLabel = (row: any) => {
   return String(row?.status || '—');
 };
 
-async function fetchCampaignExportRows(clientId: string, lojaFilter?: string | null): Promise<CampaignExportRow[]> {
+async function fetchCampaignExportRows(clientId: string, lojaFilter?: string | null, contentNames?: string[] | null): Promise<CampaignExportRow[]> {
   const build = (table: 'campaigns_dashboard_vw' | 'campaigns') => {
     let q = supabase
       .from(table)
@@ -79,6 +81,7 @@ async function fetchCampaignExportRows(clientId: string, lojaFilter?: string | n
       .order('uploaded_at', { ascending: false })
       .limit(5000);
     if (lojaFilter) q = (q as any).ilike('loja', `%${lojaFilter}%`);
+    if (contentNames && contentNames.length > 0) q = (q as any).in('content_name', contentNames);
     return q;
   };
   let result: any = await build('campaigns_dashboard_vw');
@@ -148,7 +151,7 @@ function generateExcel(data: ExportData, campaigns: CampaignExportRow[]) {
   // ── Aba 1: Resumo ──────────────────────────────────────────────────────────
   const summaryRows: XLSX.CellObject[][] = [
     [cell(`RELATÓRIO DE ANÁLISE — ${data.clientName.toUpperCase()}`, STYLES.headerDark), blank(STYLES.headerDark), blank(STYLES.headerDark), blank(STYLES.headerDark)],
-    [cell(`Período: ${fmtDate(data.period.start)} até ${fmtDate(data.period.end)}`, { font: { italic: true, color: { rgb: '6B7280' } } }), blank(), blank(), blank()],
+    [cell(data.contentFilter ? `Conteúdo: ${data.contentFilter}` : `Período: ${fmtDate(data.period.start)} até ${fmtDate(data.period.end)}`, { font: { italic: true, color: { rgb: '6B7280' } } }), blank(), blank(), blank()],
     [cell(`Gerado em: ${new Date().toLocaleString('pt-BR')}`, { font: { italic: true, color: { rgb: '6B7280' } } }), blank(), blank(), blank()],
     [blank(), blank(), blank(), blank()],
 
@@ -355,7 +358,7 @@ export const ExportButton: React.FC<Props> = ({ data }) => {
   const handleExcel = async () => {
     setLoading('excel');
     try {
-      const campaigns = await fetchCampaignExportRows(data.clientId, data.lojaFilter);
+      const campaigns = await fetchCampaignExportRows(data.clientId, data.lojaFilter, data.contentNames);
       const wb = generateExcel(data, campaigns);
       const fileName = `Relatorio_${data.clientName.replace(/\s+/g, '_')}_${data.period.start.toISOString().slice(0, 10)}.xlsx`;
       XLSX.writeFile(wb, fileName);
@@ -394,7 +397,7 @@ export const ExportButton: React.FC<Props> = ({ data }) => {
       doc.setFontSize(9);
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(156, 163, 175);
-      doc.text(`Período: ${fmtDate(data.period.start)} até ${fmtDate(data.period.end)}   |   Gerado em: ${new Date().toLocaleString('pt-BR')}`, margin, 21);
+      doc.text(`${data.contentFilter ? `Conteúdo: ${data.contentFilter}` : `Período: ${fmtDate(data.period.start)} até ${fmtDate(data.period.end)}`}   |   Gerado em: ${new Date().toLocaleString('pt-BR')}`, margin, 21);
 
       y = 38;
 
@@ -488,7 +491,7 @@ export const ExportButton: React.FC<Props> = ({ data }) => {
         y += 6;
       }
 
-      const campaigns = await fetchCampaignExportRows(data.clientId, data.lojaFilter);
+      const campaigns = await fetchCampaignExportRows(data.clientId, data.lojaFilter, data.contentNames);
       if (campaigns.length) {
         section('ENGAJAMENTO EM CAMPANHAS');
         campaigns.forEach((c, i) => {
@@ -639,7 +642,9 @@ export const ExportButton: React.FC<Props> = ({ data }) => {
           <div className="px-4 pb-3">
             <div className="bg-gray-900 rounded-lg px-3 py-2 text-center">
               <p className="text-[10px] text-gray-500">
-                Período: <span className="text-gray-300 font-medium">{fmtDate(data.period.start)} → {fmtDate(data.period.end)}</span>
+                {data.contentFilter
+                  ? <>Conteúdo: <span className="text-gray-300 font-medium">{data.contentFilter}</span></>
+                  : <>Período: <span className="text-gray-300 font-medium">{fmtDate(data.period.start)} → {fmtDate(data.period.end)}</span></>}
               </p>
             </div>
           </div>
