@@ -113,10 +113,15 @@ function parseRowsExcel(sheet: XLSX.WorkSheet): any[] {
 function makeViewsAggregator() {
   let headers: string[] | null = null;
   let sep = ',';
-  const idx = { campaign: -1, content: -1, device: -1, visitor: -1, contactId: -1, contactDur: -1, start: -1, end: -1 };
+  const idx = { campaign: -1, content: -1, device: -1, visitor: -1, contactId: -1, contactDur: -1, start: -1, end: -1, gender: -1, age: -1 };
   const map = new Map<string, {
     visitors: Set<string>; contactIds: Map<string, number>;
     minStart: number; maxEnd: number; displayCount: number;
+  }>();
+  // Demografia por CONTEÚDO + dia (pra filtrar o dashboard por conteúdo)
+  const contentMap = new Map<string, {
+    visitors: Set<string>; display: number; gm: number; gf: number; gu: number;
+    age: Record<string, number>; hour: Record<string, number>; sumAtt: number; cntAtt: number;
   }>();
 
   const parseRow = (line: string) => {
@@ -155,6 +160,8 @@ function makeViewsAggregator() {
         idx.contactDur = find(headers, 'Contact Duration');
         idx.start = find(headers, 'Content View Start', 'Contact Start');
         idx.end = find(headers, 'Content View End', 'Contact End');
+        idx.gender = find(headers, 'Gender', 'Sexo', 'Sex');
+        idx.age = find(headers, 'Age', 'Idade');
         return;
       }
       // Sem cabeçalho: export "Views of visitors" da DisplayForce só com dados.
@@ -171,6 +178,8 @@ function makeViewsAggregator() {
         idx.end = 20;        // content view end
         idx.contactDur = 21; // duração da visualização (s)
         idx.device = 23;     // nome do dispositivo ("... - RS - Totem 1")
+        idx.gender = 5;      // gênero (female/male)
+        idx.age = 6;         // idade
         // NÃO retorna: processa esta linha como dados abaixo
       } else {
         return; // linha desconhecida
@@ -194,6 +203,53 @@ function makeViewsAggregator() {
     }
     if (idx.start >= 0 && row[idx.start]) { const t = new Date(row[idx.start]).getTime(); if (!isNaN(t) && t < agg.minStart) agg.minStart = t; }
     if (idx.end >= 0 && row[idx.end]) { const t = new Date(row[idx.end]).getTime(); if (!isNaN(t) && t > agg.maxEnd) agg.maxEnd = t; }
+
+    // ── Demografia por conteúdo + dia (pra o filtro de conteúdo no dashboard) ──
+    const startRaw = idx.start >= 0 ? String(row[idx.start] || '').trim() : '';
+    if (startRaw) {
+      const iso = startRaw.includes('T') ? startRaw : startRaw.replace(' ', 'T') + 'Z';
+      const dt = new Date(iso);
+      if (!isNaN(dt.getTime())) {
+        const day = _spDateFmt.format(dt);
+        const hour = String(parseInt(_spHourFmt.format(dt), 10));
+        const cKey = `${content || 'Sem conteúdo'}|||${day}`;
+        let c = contentMap.get(cKey);
+        if (!c) { c = { visitors: new Set(), display: 0, gm: 0, gf: 0, gu: 0, age: {}, hour: {}, sumAtt: 0, cntAtt: 0 }; contentMap.set(cKey, c); }
+        c.display += 1;
+        if (visId) c.visitors.add(visId);
+        const g = idx.gender >= 0 ? String(row[idx.gender] || '').trim().toLowerCase() : '';
+        if (g.startsWith('f') || g === '2') c.gf += 1; else if (g.startsWith('m') || g === '1') c.gm += 1; else c.gu += 1;
+        const ageN = idx.age >= 0 ? parseInt(row[idx.age], 10) : NaN;
+        // Mesmas faixas exibidas no dashboard: <18(=18-), 18-24, 25-34, 35-44, 45-54, 55-64, 65+
+        const ab = !Number.isFinite(ageN) ? ''
+          : ageN < 18 ? '18-'
+          : ageN <= 24 ? '18-24'
+          : ageN <= 34 ? '25-34'
+          : ageN <= 44 ? '35-44'
+          : ageN <= 54 ? '45-54'
+          : ageN <= 64 ? '55-64'
+          : '65+';
+        if (ab) c.age[ab] = (c.age[ab] || 0) + 1;
+        c.hour[hour] = (c.hour[hour] || 0) + 1;
+        const att = idx.contactDur >= 0 ? parseFloat(row[idx.contactDur]) : NaN;
+        if (Number.isFinite(att)) { c.sumAtt += att; c.cntAtt += 1; }
+      }
+    }
+  };
+
+  const contentResults = () => {
+    const out: any[] = [];
+    for (const [key, c] of contentMap) {
+      const sep = key.lastIndexOf('|||');
+      const content_name = key.slice(0, sep) || 'Sem conteúdo';
+      const day = key.slice(sep + 3);
+      out.push({
+        content_name, day, visitors: c.visitors.size, display_count: c.display,
+        g_male: c.gm, g_female: c.gf, g_unknown: c.gu, age_counts: c.age, hour_counts: c.hour,
+        sum_attention: Math.round(c.sumAtt), cnt_attention: c.cntAtt,
+      });
+    }
+    return out;
   };
 
   const results = () => {
@@ -221,12 +277,12 @@ function makeViewsAggregator() {
     return out;
   };
 
-  return { processLine, results, hasHeader: () => headers !== null };
+  return { processLine, results, contentResults, hasHeader: () => headers !== null };
 }
 
 // Lê só o "Views of visitors" de dentro do ZIP em streaming (aguenta 1,2 GB+).
 // Retorna null se não houver esse arquivo no ZIP (aí o chamador usa o caminho normal).
-function parseZipViewsStreaming(buf: ArrayBuffer): any[] | null {
+function parseZipViewsStreaming(buf: ArrayBuffer): { campaigns: any[]; content: any[] } | null {
   const agg = makeViewsAggregator();
   const decoder = new TextDecoder('utf-8');
   let textBuffer = '';
@@ -258,12 +314,12 @@ function parseZipViewsStreaming(buf: ArrayBuffer): any[] | null {
   };
   unzipper.push(new Uint8Array(buf), true);
 
-  return started ? agg.results() : null;
+  return started ? { campaigns: agg.results(), content: agg.contentResults() } : null;
 }
 
 // Lê um CSV solto em FLUXO (file.stream()), sem carregar o arquivo todo na memória.
 // Aguenta 1,2 GB+ e não congela a tela (assíncrono). Retorna null se não for "Views of visitors".
-async function parseCsvFileStreaming(file: File): Promise<any[] | null> {
+async function parseCsvFileStreaming(file: File): Promise<{ campaigns: any[]; content: any[] } | null> {
   const agg = makeViewsAggregator();
   const decoder = new TextDecoder('utf-8');
   let textBuffer = '';
@@ -285,7 +341,7 @@ async function parseCsvFileStreaming(file: File): Promise<any[] | null> {
   }
   textBuffer += decoder.decode();
   flush(true);
-  return agg.hasHeader() ? agg.results() : null;
+  return agg.hasHeader() ? { campaigns: agg.results(), content: agg.contentResults() } : null;
 }
 
 // ── Agregador do "Visitors" (visitantes ÚNICOS) por dia → visitor_daily ───────
@@ -758,6 +814,7 @@ export function CampaignUpload() {
     try {
       const lowerName = file.name.toLowerCase();
       let allRows: any[] = [];
+      let contentRows: any[] = []; // demografia por conteúdo (content_rollup)
 
       if (lowerName.endsWith('.csv')) {
         const kind = await detectCsvKind(file);
@@ -772,7 +829,8 @@ export function CampaignUpload() {
         setMessage('Lendo o CSV (arquivos grandes podem levar um tempo, não feche a aba)...');
         const streamed = await parseCsvFileStreaming(file);
         if (streamed !== null) {
-          allRows = streamed;
+          allRows = streamed.campaigns;
+          contentRows = streamed.content;
         } else {
           const buf = await file.arrayBuffer();
           allRows = processWorkbookBytes(buf);
@@ -781,14 +839,15 @@ export function CampaignUpload() {
         const buf = await file.arrayBuffer();
         setMessage('Processando o relatório (arquivos grandes podem levar alguns minutos, não feche a aba)...');
         await new Promise((r) => setTimeout(r, 60));
-        let streamed: any[] | null = null;
+        let streamed: { campaigns: any[]; content: any[] } | null = null;
         try {
           streamed = parseZipViewsStreaming(buf);
         } catch {
           streamed = null; // ZIP grande demais pra descompactar no navegador
         }
         if (streamed !== null) {
-          allRows = streamed;
+          allRows = streamed.campaigns;
+          contentRows = streamed.content;
         } else {
           // ZIP sem "Views" ou grande demais → caminho normal (arquivos pequenos)
           setMessage('Extraindo ZIP...');
@@ -830,6 +889,16 @@ export function CampaignUpload() {
       }));
 
       const saved = await saveCampaignRows(payload);
+
+      // Grava a demografia por conteúdo (pro filtro de conteúdo no dashboard)
+      if (contentRows.length > 0 && clientId) {
+        setMessage(`Salvando demografia por conteúdo (${contentRows.length})...`);
+        const crows = contentRows.map(r => ({ ...r, client_id: clientId }));
+        for (let i = 0; i < crows.length; i += 500) {
+          const { error } = await supabase.rpc('upsert_content_rollup', { p_rows: crows.slice(i, i + 500) });
+          if (error) console.warn('[content_rollup]', error.message);
+        }
+      }
 
       setUpserted(saved);
       setStatus('done');

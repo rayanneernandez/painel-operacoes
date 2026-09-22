@@ -904,6 +904,13 @@ export function ClientDashboard() {
   const [deviceFlowAudience, setDeviceFlowAudience] = useState<{ label: string; rawKey?: string; value: number; count?: number }[]>([]);
   const [deviceFlowStoreAudience, setDeviceFlowStoreAudience] = useState<{ label: string; rawKey?: string; value: number; count?: number }[]>([]);
   const [deviceFlowTracking, setDeviceFlowTracking] = useState<{ label: string; value: number; count?: number }[]>([]);
+  // Filtro por conteúdo (lê content_rollup, alimentado pelo import de Views)
+  const [contentOptions, setContentOptions] = useState<string[]>([]);
+  const [selectedContent, setSelectedContent] = useState<string>('');
+  const [contentAgg, setContentAgg] = useState<null | {
+    total: number; gMale: number; gFemale: number; gUnknown: number;
+    age: Record<string, number>; hour: number[]; sumAtt: number; cntAtt: number;
+  }>(null);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
 
@@ -3003,6 +3010,47 @@ export function ClientDashboard() {
   useEffect(() => { loadCompareData(); }, [loadCompareData]);
   useEffect(() => { refreshLastUpdate(); }, [refreshLastUpdate]);
 
+  // ── Filtro por conteúdo ─────────────────────────────────────────────────────
+  // Carrega a lista de conteúdos disponíveis (do content_rollup) para esta rede.
+  useEffect(() => {
+    if (!id) { setContentOptions([]); return; }
+    (async () => {
+      const { data } = await supabase.from('content_rollup')
+        .select('content_name').eq('client_id', id).limit(5000);
+      const set = new Set<string>();
+      for (const r of (data || []) as any[]) { const n = String(r.content_name || '').trim(); if (n) set.add(n); }
+      setContentOptions([...set].sort((a, b) => a.localeCompare(b, 'pt-BR')));
+    })();
+  }, [id]);
+
+  // Agrega o content_rollup do conteúdo selecionado dentro do período.
+  useEffect(() => {
+    if (!id || !selectedContent) { setContentAgg(null); return; }
+    let cancelled = false;
+    (async () => {
+      const startDay = formatLocalDateKey(selectedStartDate);
+      const endDay = formatLocalDateKey(selectedEndDate);
+      const { data } = await supabase.from('content_rollup')
+        .select('visitors, g_male, g_female, g_unknown, age_counts, hour_counts, sum_attention, cnt_attention, day')
+        .eq('client_id', id).eq('content_name', selectedContent)
+        .gte('day', startDay).lte('day', endDay);
+      if (cancelled) return;
+      const agg = { total: 0, gMale: 0, gFemale: 0, gUnknown: 0, age: {} as Record<string, number>, hour: new Array(24).fill(0) as number[], sumAtt: 0, cntAtt: 0 };
+      for (const r of (data || []) as any[]) {
+        agg.total += Number(r.visitors) || 0;
+        agg.gMale += Number(r.g_male) || 0;
+        agg.gFemale += Number(r.g_female) || 0;
+        agg.gUnknown += Number(r.g_unknown) || 0;
+        agg.sumAtt += Number(r.sum_attention) || 0;
+        agg.cntAtt += Number(r.cnt_attention) || 0;
+        const ac = r.age_counts || {}; for (const k of Object.keys(ac)) agg.age[k] = (agg.age[k] || 0) + (Number(ac[k]) || 0);
+        const hc = r.hour_counts || {}; for (const k of Object.keys(hc)) { const h = parseInt(k, 10); if (h >= 0 && h < 24) agg.hour[h] += Number(hc[k]) || 0; }
+      }
+      setContentAgg(agg);
+    })();
+    return () => { cancelled = true; };
+  }, [id, selectedContent, selectedStartDate, selectedEndDate]);
+
   // ── Total de Visitantes (Alcance) exato via API ─────────────────────────────
   // Uma chamada leve (count_only) devolve pagination.total do período — o mesmo
   // número que aparece na DisplayForce — sem baixar todas as páginas de visitor_id.
@@ -3462,6 +3510,38 @@ export function ClientDashboard() {
     ? Math.round(apiTotalVisitors / Math.max(1, countInclusiveUtcDays(selectedStartDate, selectedEndDate)))
     : avgVisitorsPerDay;
 
+  // Quando um CONTEÚDO está selecionado, os KPIs/gráficos refletem só aquele
+  // conteúdo (dados do content_rollup). Idade fica como está (formato difere).
+  const contentActive = !!selectedContent && !!contentAgg;
+  const effTotalVisitors = contentActive ? contentAgg!.total : displayTotalVisitors;
+  const effAvgVisitorsPerDay = contentActive
+    ? Math.round(contentAgg!.total / Math.max(1, countInclusiveUtcDays(selectedStartDate, selectedEndDate)))
+    : displayAvgVisitorsPerDay;
+  const effGenderStats = contentActive
+    ? [
+        { label: 'Masculino', value: contentAgg!.gMale },
+        { label: 'Feminino', value: contentAgg!.gFemale },
+        ...(contentAgg!.gUnknown > 0 ? [{ label: 'Indefinido', value: contentAgg!.gUnknown }] : []),
+      ]
+    : genderStats;
+  const effHourlyStats = contentActive ? contentAgg!.hour : hourlyStats;
+  const effAttentionSeconds = contentActive
+    ? (contentAgg!.cntAtt > 0 ? Math.round(contentAgg!.sumAtt / contentAgg!.cntAtt) : 0)
+    : avgAttentionSeconds;
+  // Idade por conteúdo: usa as mesmas faixas do dashboard; divide por gênero pela
+  // proporção do conteúdo (m/f), já que o resumo por conteúdo não separa idade×gênero.
+  const effAgeStats = contentActive
+    ? (() => {
+        const denom = (contentAgg!.gMale + contentAgg!.gFemale) || 1;
+        const mR = contentAgg!.gMale / denom;
+        return LEGACY_AGE_ORDER.map((age) => {
+          const cnt = Number(contentAgg!.age[age] || 0);
+          const m = Math.round(cnt * mR);
+          return { age, m, f: Math.max(0, cnt - m) };
+        });
+      })()
+    : ageStats;
+
   return (
     <div
       ref={dashboardRef}
@@ -3559,6 +3639,24 @@ export function ClientDashboard() {
               <Camera className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={14} />
               <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={13} />
             </div>
+
+            {/* Filtro por conteúdo (aparece quando há dados de conteúdo importados) */}
+            {contentOptions.length > 0 && (
+              <div className="relative min-w-0 shrink lg:w-[170px] xl:w-[210px]">
+                <select
+                  className="w-full min-w-0 bg-gray-900 border border-gray-800 text-white pl-3 pr-7 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-[11px] sm:text-sm"
+                  value={selectedContent}
+                  onChange={(e) => setSelectedContent(e.target.value)}
+                  title="Filtrar o dashboard por conteúdo"
+                >
+                  <option value="" style={selectOptionStyle}>Todos os conteúdos</option>
+                  {contentOptions.map((c) => (
+                    <option key={c} value={c} style={selectOptionStyle}>{c}</option>
+                  ))}
+                </select>
+                <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={13} />
+              </div>
+            )}
 
             {/* Botão para forçar atualização das lojas do DisplayForce */}
             <button
@@ -3709,7 +3807,7 @@ export function ClientDashboard() {
                   view: selectedCamera ? 'camera' : selectedStore ? 'store' : 'network'
                 };
                 if (widget.id === 'flow_trend')              { widgetProps.dailyData = flowTrendSeries.values; widgetProps.dailyLabels = flowTrendSeries.labels; widgetProps.genderData = genderStats; }
-                if (widget.id === 'hourly_flow')             { widgetProps.hourlyData = hourlyStats; widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'hourly_flow')             { widgetProps.hourlyData = effHourlyStats; widgetProps.genderData = effGenderStats; widgetProps.totalVisitors = effTotalVisitors; }
                 if (widget.id === 'chart_facial_expressions') {
                   widgetProps.startDate = selectedStartDate;
                   widgetProps.endDate = selectedEndDate;
@@ -3744,14 +3842,14 @@ export function ClientDashboard() {
                     label: resolveDeviceFlowLabel(String(e?.label ?? '')),
                   }));
                 }
-                if (widget.id === 'age_pyramid')             { widgetProps.ageData = ageStats; widgetProps.totalVisitors = totalVisitors; }
-                if (widget.id === 'gender_dist')             { widgetProps.genderData = genderStats; widgetProps.totalVisitors = totalVisitors; }
+                if (widget.id === 'age_pyramid')             { widgetProps.ageData = effAgeStats; widgetProps.totalVisitors = effTotalVisitors; }
+                if (widget.id === 'gender_dist')             { widgetProps.genderData = effGenderStats; widgetProps.totalVisitors = effTotalVisitors; }
                 if (widget.id === 'attributes')                widgetProps.attrData = attributeStats;
-                if (widget.id === 'kpi_total_visitors')        widgetProps.totalVisitors = displayTotalVisitors;
-                if (widget.id === 'kpi_avg_visitors_day')      widgetProps.avgVisitorsPerDay = displayAvgVisitorsPerDay;
+                if (widget.id === 'kpi_total_visitors')        widgetProps.totalVisitors = effTotalVisitors;
+                if (widget.id === 'kpi_avg_visitors_day')      widgetProps.avgVisitorsPerDay = effAvgVisitorsPerDay;
                 if (widget.id === 'kpi_avg_visit_time')        widgetProps.avgVisitSeconds = avgVisitSeconds;
-                if (widget.id === 'kpi_attention_time')        widgetProps.avgAttentionSeconds = avgAttentionSeconds;
-                if (widget.id === 'chart_age_ranges')          widgetProps.ageData = ageStats;
+                if (widget.id === 'kpi_attention_time')        widgetProps.avgAttentionSeconds = effAttentionSeconds;
+                if (widget.id === 'chart_age_ranges')          widgetProps.ageData = effAgeStats;
                 if (widget.id === 'chart_vision')              widgetProps.attrData = attributeStats;
                 if (widget.id === 'chart_facial_hair')         widgetProps.attrData = attributeStats;
                 if (widget.id === 'chart_hair_type')           widgetProps.hairTypeData = hairTypeData;
