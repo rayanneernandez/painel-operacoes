@@ -906,7 +906,8 @@ export function ClientDashboard() {
   const [deviceFlowTracking, setDeviceFlowTracking] = useState<{ label: string; value: number; count?: number }[]>([]);
   // Filtro por conteúdo (lê content_rollup, alimentado pelo import de Views)
   const [contentOptions, setContentOptions] = useState<string[]>([]);
-  const [selectedContent, setSelectedContent] = useState<string>('');
+  const [selectedContents, setSelectedContents] = useState<string[]>([]);
+  const [contentMenuOpen, setContentMenuOpen] = useState(false);
   const [contentMonths, setContentMonths] = useState<string[]>([]);       // meses (YYYY-MM) do conteúdo
   const [selectedContentMonth, setSelectedContentMonth] = useState<string>(''); // '' = todos os meses
   const [contentAgg, setContentAgg] = useState<null | {
@@ -3030,12 +3031,12 @@ export function ClientDashboard() {
   // conteúdo (não depende do período do dashboard), pra nunca vir vazio por
   // causa de data — o conteúdo tem as próprias datas.
   useEffect(() => {
-    if (!id || !selectedContent) { setContentAgg(null); return; }
+    if (!id || selectedContents.length === 0) { setContentAgg(null); return; }
     let cancelled = false;
     (async () => {
       const { data } = await supabase.from('content_rollup')
         .select('visitors, g_male, g_female, g_unknown, age_counts, hour_counts, sum_attention, cnt_attention, day, glasses_counts, facial_counts, haircolor_counts, hairtype_counts')
-        .eq('client_id', id).eq('content_name', selectedContent);
+        .eq('client_id', id).in('content_name', selectedContents);
       if (cancelled) return;
       // meses disponíveis desse conteúdo
       const monthsSet = new Set<string>();
@@ -3066,9 +3067,9 @@ export function ClientDashboard() {
       setContentAgg(agg);
     })();
     return () => { cancelled = true; };
-  }, [id, selectedContent, selectedContentMonth]);
+  }, [id, selectedContents.join('|'), selectedContentMonth]);
   // Ao trocar de conteúdo, volta o mês pra "todos"
-  useEffect(() => { setSelectedContentMonth(''); }, [selectedContent]);
+  useEffect(() => { setSelectedContentMonth(''); }, [selectedContents.join('|')]);
 
   // ── Total de Visitantes (Alcance) exato via API ─────────────────────────────
   // Uma chamada leve (count_only) devolve pagination.total do período — o mesmo
@@ -3531,7 +3532,7 @@ export function ClientDashboard() {
 
   // Quando um CONTEÚDO está selecionado, os KPIs/gráficos refletem só aquele
   // conteúdo (dados do content_rollup). Idade fica como está (formato difere).
-  const contentActive = !!selectedContent && !!contentAgg;
+  const contentActive = selectedContents.length > 0 && !!contentAgg;
   const contentHasAttrs = contentActive && Object.keys(contentAgg!.glasses || {}).length > 0;
   const effTotalVisitors = contentActive ? contentAgg!.total : displayTotalVisitors;
   const effAvgVisitorsPerDay = contentActive
@@ -3689,26 +3690,56 @@ export function ClientDashboard() {
               <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={13} />
             </div>
 
-            {/* Filtro por conteúdo (aparece quando há dados de conteúdo importados) */}
+            {/* Filtro por conteúdo — multi-seleção (1 ou mais; nenhum = dados da API) */}
             {contentOptions.length > 0 && (
-              <div className="relative min-w-0 shrink lg:w-[170px] xl:w-[210px]">
-                <select
-                  className="w-full min-w-0 bg-gray-900 border border-gray-800 text-white pl-3 pr-7 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-[11px] sm:text-sm"
-                  value={selectedContent}
-                  onChange={(e) => setSelectedContent(e.target.value)}
-                  title="Filtrar o dashboard por conteúdo"
+              <div className="relative min-w-0 shrink lg:w-[190px] xl:w-[230px]">
+                <button
+                  type="button"
+                  onClick={() => setContentMenuOpen((v) => !v)}
+                  title="Filtrar o dashboard por conteúdo (um ou mais)"
+                  className="w-full min-w-0 flex items-center justify-between bg-gray-900 border border-gray-800 text-white pl-3 pr-2 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 text-[11px] sm:text-sm"
                 >
-                  <option value="" style={selectOptionStyle}>Todos os conteúdos</option>
-                  {contentOptions.map((c) => (
-                    <option key={c} value={c} style={selectOptionStyle}>{c}</option>
-                  ))}
-                </select>
-                <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={13} />
+                  <span className="truncate">
+                    {selectedContents.length === 0
+                      ? 'Selecione conteúdo(s)'
+                      : selectedContents.length === 1
+                        ? selectedContents[0]
+                        : `${selectedContents.length} conteúdos`}
+                  </span>
+                  <ChevronDown className="text-gray-500 shrink-0" size={13} />
+                </button>
+                {contentMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-20" onClick={() => setContentMenuOpen(false)} />
+                    <div className="absolute right-0 mt-1 z-30 w-[260px] max-h-[340px] overflow-y-auto bg-gray-900 border border-gray-700 rounded-lg shadow-2xl p-1">
+                      <div className="flex items-center justify-between px-2 py-1.5 text-[11px] text-gray-400 border-b border-gray-800 mb-1">
+                        <span>{selectedContents.length} selecionado(s)</span>
+                        {selectedContents.length > 0 && (
+                          <button className="text-emerald-400 hover:text-emerald-300" onClick={() => setSelectedContents([])}>Limpar</button>
+                        )}
+                      </div>
+                      {contentOptions.map((c) => {
+                        const checked = selectedContents.includes(c);
+                        return (
+                          <label key={c} className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-800 cursor-pointer text-[12px] text-gray-200">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => setSelectedContents((prev) => checked ? prev.filter((x) => x !== c) : [...prev, c])}
+                              className="accent-emerald-500"
+                            />
+                            <span className="truncate" title={c}>{c}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
               </div>
             )}
 
-            {/* Seletor de mês do conteúdo (aparece com um conteúdo selecionado) */}
-            {selectedContent && contentMonths.length > 0 && (
+            {/* Seletor de mês do conteúdo (aparece com conteúdo(s) selecionado(s)) */}
+            {selectedContents.length > 0 && contentMonths.length > 0 && (
               <div className="relative min-w-0 shrink lg:w-[130px] xl:w-[150px]">
                 <select
                   className="w-full min-w-0 bg-gray-900 border border-gray-800 text-white pl-3 pr-7 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-[11px] sm:text-sm"
@@ -3777,7 +3808,7 @@ export function ClientDashboard() {
               />
 
               {/* Date Picker — escondido quando um conteúdo está selecionado (usa o seletor de mês) */}
-              <div className={`flex min-w-0 shrink flex-col items-end lg:w-[156px] xl:w-[188px] ${selectedContent ? 'hidden' : ''}`}>
+              <div className={`flex min-w-0 shrink flex-col items-end lg:w-[156px] xl:w-[188px] ${selectedContents.length > 0 ? 'hidden' : ''}`}>
                 <div className="relative w-full sm:w-auto sm:max-w-full">
                   <button
                     onClick={() => {

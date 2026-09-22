@@ -1150,6 +1150,33 @@ export const WidgetCampaigns = ({
     });
   }, [normalizedRows, campaignFilter, branchFilter, fromMonthNum, toMonthNum]);
 
+  // Exporta campanhas (CSV) — reutilizado pelo "Exportar" (filtrado) e "Exportar tudo".
+  const exportCampaignsCsv = (rows: any[], filename: string) => {
+    const parseGender = (b: any) => { const m=Number(b?.male)||0,f=Number(b?.female)||0,u=Number(b?.unknown)||0; const t=m+f+u; if(!t) return ['','','']; return [`${Math.round((m/t)*100)}%`,`${Math.round((f/t)*100)}%`,`${Math.round((u/t)*100)}%`]; };
+    const parseAge = (b: any) => { if(!b) return ['','','']; const order=['0-17','18-24','25-34','35-44','45-54','55+']; const entries=order.map(k=>[k,Number(b[k])||0] as [string,number]).filter(([,v])=>v>0); const total=entries.reduce((s,[,v])=>s+v,0)||1; const top=entries.slice(0,3).map(([l,v])=>`${l}a (${Math.round((v/total)*100)}%)`); while(top.length<3) top.push(''); return top; };
+    const fmtImpHoraCsv = (dc: number, s?: string|null, e?: string|null) => { if(!s||!e||!dc) return ''; const h=(new Date(e).getTime()-new Date(s).getTime())/3_600_000; if(h<=0) return ''; const r=dc/h; return r>=10?`${Math.round(r)}/h`:`${r.toFixed(1)}/h`; };
+    const fmtSecCsv = (t: number) => { const s=Math.max(0,Math.floor(t||0)); const m=Math.floor(s/60); const r=s%60; return s>3600?`${Math.floor(s/3600)}:${String(m%60).padStart(2,'0')}:${String(r).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`; };
+    const headers = ['Conteudo','Loja','Tipo Midia','Tempo Total','Vezes no Periodo','Impr./Hora','Total Visualizado','Visitantes','Genero (M%)','Genero (F%)','Genero (N/I%)','Idade 1','Idade 2','Idade 3','Inicio','Fim','Status'];
+    const csvRows = rows.map((r: any) => {
+      const [gm,gf,gu]=parseGender(r.gender_breakdown);
+      const [a1,a2,a3]=parseAge(r.age_breakdown);
+      return [
+        r._campaignLabel || r.content_name || r.name || '', r.loja || '', r.tipo_midia || '',
+        fmtSecCsv(Number(r.total_play_seconds||0)), Number(r.display_count||0),
+        fmtImpHoraCsv(Number(r.display_count||0), r.start_date, r.end_date), Number(r.visitors||0), Number(r.visitors||0),
+        gm, gf, gu, a1, a2, a3,
+        r.start_date ? new Date(r.start_date).toLocaleDateString('pt-BR') : '',
+        r.end_date ? new Date(r.end_date).toLocaleDateString('pt-BR') : '',
+        r._status?.label || '',
+      ];
+    });
+    const SEP=';'; const escape=(v:any)=>{const s=String(v??''); return s.includes(SEP)||s.includes('"')||s.includes('\n')?`"${s.replace(/"/g,'""')}"`:s;};
+    const csv=[headers,...csvRows].map(row=>row.map(escape).join(SEP)).join('\r\n');
+    const blob=new Blob(['﻿'+csv],{type:'text/csv;charset=utf-8;'}); const url=URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.href=url; a.download=`${filename}_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+
   const totalVisitantes = filteredRows.reduce((acc, row) => acc + (Number(row.visitors) || 0), 0);
   const totalExibicoes = filteredRows.reduce((acc, row) => acc + (Number(row.display_count) || 0), 0);
   const totalTempoExibido = filteredRows.reduce((acc, row) => acc + (Number(row.total_play_seconds) || 0), 0);
@@ -1171,72 +1198,19 @@ export const WidgetCampaigns = ({
         </h3>
         <div className="flex items-center gap-2">
           <button
-            onClick={() => {
-              const summarizeGenderCsv = (b: any) => {
-                const m = Number(b?.male)||0, f = Number(b?.female)||0, u = Number(b?.unknown)||0;
-                const t = m+f+u; if (!t) return '';
-                const parts: string[] = [];
-                if (m > 0) parts.push(`M ${Math.round((m/t)*100)}%`);
-                if (f > 0) parts.push(`F ${Math.round((f/t)*100)}%`);
-                if (u > 0 && u/t >= 0.05) parts.push(`N/I ${Math.round((u/t)*100)}%`);
-                return parts.join(' / ');
-              };
-              const summarizeAgeCsv = (b: any) => {
-                if (!b) return '';
-                const order = ['0-17','18-24','25-34','35-44','45-54','55+'];
-                const entries = order.map(k => [k, Number(b[k])||0] as [string,number]).filter(([,v])=>v>0);
-                if (!entries.length) return '';
-                const total = entries.reduce((s,[,v])=>s+v,0);
-                return entries.slice(0,3).map(([l,v])=>`${l}a (${Math.round((v/total)*100)}%)`).join(' / ');
-              };
-              const fmtImpHoraCsv = (dc: number, s?: string|null, e?: string|null) => {
-                if (!s||!e||!dc) return '';
-                const h = (new Date(e).getTime()-new Date(s).getTime())/3_600_000;
-                if (h<=0) return '';
-                const r = dc/h; return r>=10?`${Math.round(r)}/h`:`${r.toFixed(1)}/h`;
-              };
-              const fmtSecCsv = (t: number) => { const s=Math.max(0,Math.floor(t||0));const m=Math.floor(s/60);const r=s%60;return s>3600?`${Math.floor(s/3600)}:${String(m%60).padStart(2,'0')}:${String(r).padStart(2,'0')}`:`${String(m).padStart(2,'0')}:${String(r).padStart(2,'0')}`; };
-              const headers = ['Conteudo','Loja','Tempo Total','Vezes no Periodo','Impr./Hora','Total Visualizado','Genero (M%)','Genero (F%)','Genero (N/I%)','Idade 1','Idade 2','Idade 3','Status'];
-              const parseGender = (b: any) => {
-                const m=Number(b?.male)||0, f=Number(b?.female)||0, u=Number(b?.unknown)||0;
-                const t=m+f+u; if(!t) return ['','',''];
-                return [`${Math.round((m/t)*100)}%`, `${Math.round((f/t)*100)}%`, `${Math.round((u/t)*100)}%`];
-              };
-              const parseAge = (b: any) => {
-                if(!b) return ['','',''];
-                const order=['0-17','18-24','25-34','35-44','45-54','55+'];
-                const entries=order.map(k=>[k,Number(b[k])||0] as [string,number]).filter(([,v])=>v>0);
-                const total=entries.reduce((s,[,v])=>s+v,0);
-                const top=entries.slice(0,3).map(([l,v])=>`${l}a (${Math.round((v/total)*100)}%)`);
-                while(top.length<3) top.push('');
-                return top;
-              };
-              const csvRows = filteredRows.map((r: any) => {
-                const [gm,gf,gu]=parseGender(r.gender_breakdown);
-                const [a1,a2,a3]=parseAge(r.age_breakdown);
-                return [
-                  r._campaignLabel || r.content_name || r.name || '',
-                  r.loja || '',
-                  fmtSecCsv(Number(r.total_play_seconds||0)),
-                  Number(r.display_count||0),
-                  fmtImpHoraCsv(Number(r.display_count||0), r.start_date, r.end_date),
-                  Number(r.visitors||0),
-                  gm, gf, gu, a1, a2, a3,
-                  r._status?.label || '',
-                ];
-              });
-              const SEP = ';';
-              const escape = (v: any) => { const s=String(v??''); return s.includes(SEP)||s.includes('"')||s.includes('\n')?`"${s.replace(/"/g,'""')}"`:s; };
-              const csv = [headers, ...csvRows].map(row => row.map(escape).join(SEP)).join('\r\n');
-              const blob = new Blob(['﻿'+csv], { type: 'text/csv;charset=utf-8;' });
-              const url = URL.createObjectURL(blob);
-              const a = document.createElement('a');
-              a.href = url; a.download = `campanhas_${new Date().toISOString().slice(0,10)}.csv`;
-              document.body.appendChild(a); a.click();
-              document.body.removeChild(a); URL.revokeObjectURL(url);
-            }}
+            onClick={() => exportCampaignsCsv(normalizedRows, 'campanhas_tudo')}
+            className="inline-flex items-center gap-1 rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-[10px] text-gray-300 hover:text-blue-300 hover:border-blue-500/40 transition-colors"
+            title="Exportar TUDO da campanha (todos os conteúdos, lojas e dados, sem filtro)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+            </svg>
+            Exportar tudo
+          </button>
+          <button
+            onClick={() => exportCampaignsCsv(filteredRows, 'campanhas')}
             className="inline-flex items-center gap-1 rounded-md border border-gray-800 bg-gray-950 px-2 py-1 text-[10px] text-gray-300 hover:text-emerald-300 hover:border-emerald-500/40 transition-colors"
-            title="Exportar tabela para Excel (CSV)"
+            title="Exportar a tabela filtrada (CSV)"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
