@@ -907,9 +907,12 @@ export function ClientDashboard() {
   // Filtro por conteúdo (lê content_rollup, alimentado pelo import de Views)
   const [contentOptions, setContentOptions] = useState<string[]>([]);
   const [selectedContent, setSelectedContent] = useState<string>('');
+  const [contentMonths, setContentMonths] = useState<string[]>([]);       // meses (YYYY-MM) do conteúdo
+  const [selectedContentMonth, setSelectedContentMonth] = useState<string>(''); // '' = todos os meses
   const [contentAgg, setContentAgg] = useState<null | {
-    total: number; gMale: number; gFemale: number; gUnknown: number;
-    age: Record<string, number>; hour: number[]; sumAtt: number; cntAtt: number;
+    total: number; days: number; gMale: number; gFemale: number; gUnknown: number;
+    age: Record<string, number>; hour: number[]; weekday: number[]; sumAtt: number; cntAtt: number;
+    glasses: Record<string, number>; facial: Record<string, number>; haircolor: Record<string, number>; hairtype: Record<string, number>;
   }>(null);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
@@ -3023,21 +3026,31 @@ export function ClientDashboard() {
     })();
   }, [id]);
 
-  // Agrega o content_rollup do conteúdo selecionado dentro do período.
+  // Agrega o content_rollup do conteúdo selecionado. Usa TODAS as datas do
+  // conteúdo (não depende do período do dashboard), pra nunca vir vazio por
+  // causa de data — o conteúdo tem as próprias datas.
   useEffect(() => {
     if (!id || !selectedContent) { setContentAgg(null); return; }
     let cancelled = false;
     (async () => {
-      const startDay = formatLocalDateKey(selectedStartDate);
-      const endDay = formatLocalDateKey(selectedEndDate);
       const { data } = await supabase.from('content_rollup')
-        .select('visitors, g_male, g_female, g_unknown, age_counts, hour_counts, sum_attention, cnt_attention, day')
-        .eq('client_id', id).eq('content_name', selectedContent)
-        .gte('day', startDay).lte('day', endDay);
+        .select('visitors, g_male, g_female, g_unknown, age_counts, hour_counts, sum_attention, cnt_attention, day, glasses_counts, facial_counts, haircolor_counts, hairtype_counts')
+        .eq('client_id', id).eq('content_name', selectedContent);
       if (cancelled) return;
-      const agg = { total: 0, gMale: 0, gFemale: 0, gUnknown: 0, age: {} as Record<string, number>, hour: new Array(24).fill(0) as number[], sumAtt: 0, cntAtt: 0 };
-      for (const r of (data || []) as any[]) {
-        agg.total += Number(r.visitors) || 0;
+      // meses disponíveis desse conteúdo
+      const monthsSet = new Set<string>();
+      for (const r of (data || []) as any[]) { const d = String(r.day || ''); if (d.length >= 7) monthsSet.add(d.slice(0, 7)); }
+      setContentMonths([...monthsSet].sort((a, b) => b.localeCompare(a)));
+      // filtra pelo mês selecionado (se houver)
+      const rowsAll = (data || []) as any[];
+      const rows = selectedContentMonth ? rowsAll.filter((r) => String(r.day || '').slice(0, 7) === selectedContentMonth) : rowsAll;
+      const agg = { total: 0, days: 0, gMale: 0, gFemale: 0, gUnknown: 0, age: {} as Record<string, number>, hour: new Array(24).fill(0) as number[], weekday: new Array(7).fill(0) as number[], sumAtt: 0, cntAtt: 0, glasses: {} as Record<string, number>, facial: {} as Record<string, number>, haircolor: {} as Record<string, number>, hairtype: {} as Record<string, number> };
+      const mergeMap = (dst: Record<string, number>, src: any) => { const s = src || {}; for (const k of Object.keys(s)) dst[k] = (dst[k] || 0) + (Number(s[k]) || 0); };
+      for (const r of rows) {
+        agg.days += 1;
+        const vis = Number(r.visitors) || 0;
+        if (r.day) { const gd = new Date(`${r.day}T12:00:00Z`).getUTCDay(); const wi = gd === 0 ? 6 : gd - 1; agg.weekday[wi] += vis; }
+        agg.total += vis;
         agg.gMale += Number(r.g_male) || 0;
         agg.gFemale += Number(r.g_female) || 0;
         agg.gUnknown += Number(r.g_unknown) || 0;
@@ -3045,11 +3058,17 @@ export function ClientDashboard() {
         agg.cntAtt += Number(r.cnt_attention) || 0;
         const ac = r.age_counts || {}; for (const k of Object.keys(ac)) agg.age[k] = (agg.age[k] || 0) + (Number(ac[k]) || 0);
         const hc = r.hour_counts || {}; for (const k of Object.keys(hc)) { const h = parseInt(k, 10); if (h >= 0 && h < 24) agg.hour[h] += Number(hc[k]) || 0; }
+        mergeMap(agg.glasses, r.glasses_counts);
+        mergeMap(agg.facial, r.facial_counts);
+        mergeMap(agg.haircolor, r.haircolor_counts);
+        mergeMap(agg.hairtype, r.hairtype_counts);
       }
       setContentAgg(agg);
     })();
     return () => { cancelled = true; };
-  }, [id, selectedContent, selectedStartDate, selectedEndDate]);
+  }, [id, selectedContent, selectedContentMonth]);
+  // Ao trocar de conteúdo, volta o mês pra "todos"
+  useEffect(() => { setSelectedContentMonth(''); }, [selectedContent]);
 
   // ── Total de Visitantes (Alcance) exato via API ─────────────────────────────
   // Uma chamada leve (count_only) devolve pagination.total do período — o mesmo
@@ -3515,7 +3534,7 @@ export function ClientDashboard() {
   const contentActive = !!selectedContent && !!contentAgg;
   const effTotalVisitors = contentActive ? contentAgg!.total : displayTotalVisitors;
   const effAvgVisitorsPerDay = contentActive
-    ? Math.round(contentAgg!.total / Math.max(1, countInclusiveUtcDays(selectedStartDate, selectedEndDate)))
+    ? Math.round(contentAgg!.total / Math.max(1, contentAgg!.days))
     : displayAvgVisitorsPerDay;
   const effGenderStats = contentActive
     ? [
@@ -3541,6 +3560,31 @@ export function ClientDashboard() {
         });
       })()
     : ageStats;
+
+  // Atributos por conteúdo (óculos, pelos faciais, tipo/cor de cabelo).
+  const pctEntries = (m: Record<string, number>) => {
+    const tot = Object.values(m || {}).reduce((a, b) => a + (Number(b) || 0), 0) || 1;
+    return Object.entries(m || {}).filter(([, v]) => Number(v) > 0)
+      .map(([label, v]) => ({ label, value: Number(((Number(v) / tot) * 100).toFixed(1)) }))
+      .sort((a, b) => b.value - a.value);
+  };
+  const effAttributeStats = contentActive
+    ? (() => {
+        const gl = pctEntries(contentAgg!.glasses);   // usual/dark/none
+        const fa = pctEntries(contentAgg!.facial);    // shaved/beard/...
+        const glassesTotal = Math.round(gl.filter((x) => x.label === 'usual' || x.label === 'dark').reduce((a, x) => a + x.value, 0));
+        const facialTotal = Math.round(fa.filter((x) => x.label !== 'shaved').reduce((a, x) => a + x.value, 0));
+        return [
+          { label: 'Óculos', value: glassesTotal },
+          { label: 'Barba', value: facialTotal },
+          { label: 'Chapéu/Boné', value: 0 },
+          ...gl.map((d) => ({ label: `_glasses_${d.label}`, value: d.value })),
+          ...fa.map((d) => ({ label: `_facial_${d.label}`, value: d.value })),
+        ];
+      })()
+    : attributeStats;
+  const effHairTypeData = contentActive ? pctEntries(contentAgg!.hairtype).slice(0, 6) : hairTypeData;
+  const effHairColorData = contentActive ? pctEntries(contentAgg!.haircolor).slice(0, 6) : hairColorData;
 
   return (
     <div
@@ -3653,6 +3697,26 @@ export function ClientDashboard() {
                   {contentOptions.map((c) => (
                     <option key={c} value={c} style={selectOptionStyle}>{c}</option>
                   ))}
+                </select>
+                <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={13} />
+              </div>
+            )}
+
+            {/* Seletor de mês do conteúdo (aparece com um conteúdo selecionado) */}
+            {selectedContent && contentMonths.length > 0 && (
+              <div className="relative min-w-0 shrink lg:w-[130px] xl:w-[150px]">
+                <select
+                  className="w-full min-w-0 bg-gray-900 border border-gray-800 text-white pl-3 pr-7 py-2 rounded-lg focus:outline-none focus:ring-1 focus:ring-emerald-500 appearance-none cursor-pointer text-[11px] sm:text-sm"
+                  value={selectedContentMonth}
+                  onChange={(e) => setSelectedContentMonth(e.target.value)}
+                  title="Mês do conteúdo"
+                >
+                  <option value="" style={selectOptionStyle}>Todos os meses</option>
+                  {contentMonths.map((m) => {
+                    const [y, mo] = m.split('-');
+                    const nome = ['jan', 'fev', 'mar', 'abr', 'mai', 'jun', 'jul', 'ago', 'set', 'out', 'nov', 'dez'][Number(mo) - 1] || mo;
+                    return <option key={m} value={m} style={selectOptionStyle}>{nome}/{y}</option>;
+                  })}
                 </select>
                 <ChevronDown className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 pointer-events-none" size={13} />
               </div>
@@ -3790,6 +3854,8 @@ export function ClientDashboard() {
               activeWidgets.map((widget, widgetIndex) => {
                 const Component = WIDGET_MAP[widget.id];
                 if (!Component) return null;
+                // Widgets sem recorte por conteúdo: escondidos quando um conteúdo está selecionado
+                if (contentActive && ['chart_sales_quarter', 'chart_device_flow', 'device_type_audience', 'corridor_flow'].includes(widget.id)) return null;
                 const defaultSpanForSize = (size: WidgetType['size']) => {
                   if (size === 'full') return 12; if (size === 'third') return 4;
                   if (size === 'quarter') return 3; if (size === '2/3') return 8;
@@ -3806,7 +3872,7 @@ export function ClientDashboard() {
                 const widgetProps: any = {
                   view: selectedCamera ? 'camera' : selectedStore ? 'store' : 'network'
                 };
-                if (widget.id === 'flow_trend')              { widgetProps.dailyData = flowTrendSeries.values; widgetProps.dailyLabels = flowTrendSeries.labels; widgetProps.genderData = genderStats; }
+                if (widget.id === 'flow_trend')              { widgetProps.dailyData = contentActive ? contentAgg!.weekday : flowTrendSeries.values; widgetProps.dailyLabels = flowTrendSeries.labels; widgetProps.genderData = effGenderStats; }
                 if (widget.id === 'hourly_flow')             { widgetProps.hourlyData = effHourlyStats; widgetProps.genderData = effGenderStats; widgetProps.totalVisitors = effTotalVisitors; }
                 if (widget.id === 'chart_facial_expressions') {
                   widgetProps.startDate = selectedStartDate;
@@ -3844,16 +3910,16 @@ export function ClientDashboard() {
                 }
                 if (widget.id === 'age_pyramid')             { widgetProps.ageData = effAgeStats; widgetProps.totalVisitors = effTotalVisitors; }
                 if (widget.id === 'gender_dist')             { widgetProps.genderData = effGenderStats; widgetProps.totalVisitors = effTotalVisitors; }
-                if (widget.id === 'attributes')                widgetProps.attrData = attributeStats;
+                if (widget.id === 'attributes')                widgetProps.attrData = effAttributeStats;
                 if (widget.id === 'kpi_total_visitors')        widgetProps.totalVisitors = effTotalVisitors;
                 if (widget.id === 'kpi_avg_visitors_day')      widgetProps.avgVisitorsPerDay = effAvgVisitorsPerDay;
                 if (widget.id === 'kpi_avg_visit_time')        widgetProps.avgVisitSeconds = avgVisitSeconds;
                 if (widget.id === 'kpi_attention_time')        widgetProps.avgAttentionSeconds = effAttentionSeconds;
                 if (widget.id === 'chart_age_ranges')          widgetProps.ageData = effAgeStats;
-                if (widget.id === 'chart_vision')              widgetProps.attrData = attributeStats;
-                if (widget.id === 'chart_facial_hair')         widgetProps.attrData = attributeStats;
-                if (widget.id === 'chart_hair_type')           widgetProps.hairTypeData = hairTypeData;
-                if (widget.id === 'chart_hair_color')          widgetProps.hairColorData = hairColorData;
+                if (widget.id === 'chart_vision')              widgetProps.attrData = effAttributeStats;
+                if (widget.id === 'chart_facial_hair')         widgetProps.attrData = effAttributeStats;
+                if (widget.id === 'chart_hair_type')           widgetProps.hairTypeData = effHairTypeData;
+                if (widget.id === 'chart_hair_color')          widgetProps.hairColorData = effHairColorData;
                 if (widget.id === 'kpi_store_quarter')       { widgetProps.visitors = quarterVisitorsTotal; widgetProps.sales = quarterSalesTotal; widgetProps.loading = isLoadingQuarter; }
                 if (widget.id === 'chart_sales_quarter')     { widgetProps.quarterData = quarterBars; widgetProps.loading = isLoadingQuarter; }
                 if (widget.id === 'kpi_store_period')        { widgetProps.visitors = totalVisitors; widgetProps.sales = 0; widgetProps.loading = isLoadingData; }

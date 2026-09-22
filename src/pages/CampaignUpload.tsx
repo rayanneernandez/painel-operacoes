@@ -113,7 +113,7 @@ function parseRowsExcel(sheet: XLSX.WorkSheet): any[] {
 function makeViewsAggregator() {
   let headers: string[] | null = null;
   let sep = ',';
-  const idx = { campaign: -1, content: -1, device: -1, visitor: -1, contactId: -1, contactDur: -1, start: -1, end: -1, gender: -1, age: -1 };
+  const idx = { campaign: -1, content: -1, device: -1, visitor: -1, contactId: -1, contactDur: -1, start: -1, end: -1, gender: -1, age: -1, glasses: -1, facial: -1, haircolor: -1, hairtype: -1 };
   const map = new Map<string, {
     visitors: Set<string>; contactIds: Map<string, number>;
     minStart: number; maxEnd: number; displayCount: number;
@@ -122,6 +122,7 @@ function makeViewsAggregator() {
   const contentMap = new Map<string, {
     visitors: Set<string>; display: number; gm: number; gf: number; gu: number;
     age: Record<string, number>; hour: Record<string, number>; sumAtt: number; cntAtt: number;
+    glasses: Record<string, number>; facial: Record<string, number>; haircolor: Record<string, number>; hairtype: Record<string, number>;
   }>();
 
   const parseRow = (line: string) => {
@@ -162,6 +163,10 @@ function makeViewsAggregator() {
         idx.end = find(headers, 'Content View End', 'Contact End');
         idx.gender = find(headers, 'Gender', 'Sexo', 'Sex');
         idx.age = find(headers, 'Age', 'Idade');
+        idx.glasses = find(headers, 'Glasses', 'Óculos', 'Oculos');
+        idx.facial = find(headers, 'Facial hair', 'Facial', 'Beard', 'Barba');
+        idx.haircolor = find(headers, 'Hair color', 'Hair colour', 'Cor do cabelo', 'Cor de cabelo');
+        idx.hairtype = find(headers, 'Hair type', 'Tipo de cabelo', 'Tipo do cabelo');
         return;
       }
       // Sem cabeçalho: export "Views of visitors" da DisplayForce só com dados.
@@ -180,6 +185,10 @@ function makeViewsAggregator() {
         idx.device = 23;     // nome do dispositivo ("... - RS - Totem 1")
         idx.gender = 5;      // gênero (female/male)
         idx.age = 6;         // idade
+        idx.glasses = 9;     // óculos (usual/dark/none)
+        idx.facial = 10;     // pelos faciais (shaved/beard/...)
+        idx.haircolor = 11;  // cor do cabelo
+        idx.hairtype = 12;   // tipo de cabelo
         // NÃO retorna: processa esta linha como dados abaixo
       } else {
         return; // linha desconhecida
@@ -214,7 +223,7 @@ function makeViewsAggregator() {
         const hour = String(parseInt(_spHourFmt.format(dt), 10));
         const cKey = `${content || 'Sem conteúdo'}|||${day}`;
         let c = contentMap.get(cKey);
-        if (!c) { c = { visitors: new Set(), display: 0, gm: 0, gf: 0, gu: 0, age: {}, hour: {}, sumAtt: 0, cntAtt: 0 }; contentMap.set(cKey, c); }
+        if (!c) { c = { visitors: new Set(), display: 0, gm: 0, gf: 0, gu: 0, age: {}, hour: {}, sumAtt: 0, cntAtt: 0, glasses: {}, facial: {}, haircolor: {}, hairtype: {} }; contentMap.set(cKey, c); }
         c.display += 1;
         if (visId) c.visitors.add(visId);
         const g = idx.gender >= 0 ? String(row[idx.gender] || '').trim().toLowerCase() : '';
@@ -233,6 +242,12 @@ function makeViewsAggregator() {
         c.hour[hour] = (c.hour[hour] || 0) + 1;
         const att = idx.contactDur >= 0 ? parseFloat(row[idx.contactDur]) : NaN;
         if (Number.isFinite(att)) { c.sumAtt += att; c.cntAtt += 1; }
+        // Atributos por conteúdo (categorias cruas)
+        const addCat = (m: Record<string, number>, i: number) => { if (i < 0) return; const v = String(row[i] || '').trim().toLowerCase(); if (v) m[v] = (m[v] || 0) + 1; };
+        addCat(c.glasses, idx.glasses);
+        addCat(c.facial, idx.facial);
+        addCat(c.haircolor, idx.haircolor);
+        addCat(c.hairtype, idx.hairtype);
       }
     }
   };
@@ -247,6 +262,7 @@ function makeViewsAggregator() {
         content_name, day, visitors: c.visitors.size, display_count: c.display,
         g_male: c.gm, g_female: c.gf, g_unknown: c.gu, age_counts: c.age, hour_counts: c.hour,
         sum_attention: Math.round(c.sumAtt), cnt_attention: c.cntAtt,
+        glasses_counts: c.glasses, facial_counts: c.facial, haircolor_counts: c.haircolor, hairtype_counts: c.hairtype,
       });
     }
     return out;
@@ -796,6 +812,11 @@ export function CampaignUpload() {
     const d = new Date(iso);
     return isNaN(d.getTime()) ? null : d.toLocaleDateString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric' });
   };
+  const fmtDateTime = (iso: string | null) => {
+    if (!iso) return null;
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d.toLocaleString('pt-BR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  };
 
   const handleFile = async (file: File) => {
     setStatus('parsing');
@@ -985,7 +1006,7 @@ export function CampaignUpload() {
               <tbody>
                 {pageRows.map((b, i) => (
                   <tr key={i} className={`border-t border-gray-800/60 ${page === 0 && i === 0 ? 'text-emerald-300' : 'text-gray-300'}`}>
-                    <td className="px-4 py-1.5">{fmtDate(b.uploadedAt) || '—'}{page === 0 && i === 0 && <span className="text-gray-500"> (última)</span>}</td>
+                    <td className="px-4 py-1.5">{fmtDateTime(b.uploadedAt) || '—'}{page === 0 && i === 0 && <span className="text-gray-500"> (última)</span>}</td>
                     <td className="px-4 py-1.5">{b.periodStart ? fmtDate(b.periodStart) : '—'} a {b.periodEnd ? fmtDate(b.periodEnd) : '—'}</td>
                     <td className="px-4 py-1.5 text-right">{b.count}</td>
                   </tr>
