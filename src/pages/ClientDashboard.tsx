@@ -1286,8 +1286,9 @@ export function ClientDashboard() {
     const facialRaw  = ap.facial_hair ?? {};
     const glassesHasCats = Object.keys(glassesRaw).some(k => ['usual','dark','none'].includes(k));
     const facialHasCats  = Object.keys(facialRaw).some(k  => ['shaved','beard','goatee','stubble','mustache'].includes(k));
+    // "Óculos escuros" = só o "dark" (o "usual" é o estado normal, não conta como óculos)
     const glassesWithPct = glassesHasCats
-      ? Number(glassesRaw.usual ?? 0) + Number(glassesRaw.dark ?? 0)
+      ? Number(glassesRaw.dark ?? 0)
       : Number(glassesRaw.true ?? 0);
     const glassesTotal = Math.round(glassesWithPct);
     const facialTotal = facialHasCats
@@ -1303,7 +1304,7 @@ export function ClientDashboard() {
     setHairColorData(pctMapToTopData(ap.hair_color));
     const headwearPct = Math.round(Number(ap.headwear?.true ?? 0));
     setAttributeStats([
-      { label: 'Óculos',      value: glassesTotal },
+      { label: 'Óculos escuros', value: glassesTotal },
       { label: 'Barba',       value: facialTotal },
       { label: 'Chapéu/Boné', value: headwearPct },
       ...glassesData.map(d => ({ label: `_glasses_${d.label}`, value: d.value })),
@@ -1785,7 +1786,7 @@ export function ClientDashboard() {
                 if (g && g !== 'unknown') {
                   glassesKnown++;
                   glassesC[g] = (glassesC[g] ?? 0) + 1;
-                  if (isWithGlasses(g)) glassesWith++;
+                  if (g === 'dark' || g === 'sunglasses') glassesWith++; // só óculos escuros
                 }
 
                 const f = String(attrs.facial_hair ?? attrs.beard ?? attrs.facial_hair_category ?? '').toLowerCase().trim();
@@ -1813,7 +1814,7 @@ export function ClientDashboard() {
                 const facialPct  = facialKnown  > 0 ? Math.round(facialWith  / facialKnown  * 100) : 0;
 
                 const attrStats: { label: string; value: number }[] = [
-                  { label: 'Óculos',      value: glassesPct },
+                  { label: 'Óculos escuros', value: glassesPct },
                   { label: 'Barba',       value: facialPct  },
                   { label: 'Chapéu/Boné', value: 0 },
                   // Entradas categóricas com prefixo (_glasses_ / _facial_) para os widgets
@@ -3579,12 +3580,12 @@ export function ClientDashboard() {
     ? (() => {
         const gl = pctEntries(contentAgg!.glasses);   // usual/dark/none
         const fa = pctEntries(contentAgg!.facial);    // shaved/beard/...
-        const glassesTotal = Math.round(gl.filter((x) => x.label === 'usual' || x.label === 'dark').reduce((a, x) => a + x.value, 0));
+        // "Óculos escuros" = só o dark (não soma o "usual", que é o estado normal)
+        const darkPct = Math.round(gl.filter((x) => x.label === 'dark').reduce((a, x) => a + x.value, 0));
         const facialTotal = Math.round(fa.filter((x) => x.label !== 'shaved').reduce((a, x) => a + x.value, 0));
         return [
-          { label: 'Óculos', value: glassesTotal },
+          { label: 'Óculos escuros', value: darkPct },
           { label: 'Barba', value: facialTotal },
-          { label: 'Chapéu/Boné', value: 0 },
           ...gl.map((d) => ({ label: `_glasses_${d.label}`, value: d.value })),
           ...fa.map((d) => ({ label: `_facial_${d.label}`, value: d.value })),
         ];
@@ -3972,7 +3973,7 @@ export function ClientDashboard() {
                 if (widget.id === 'kpi_avg_visitors_day')      widgetProps.avgVisitorsPerDay = effAvgVisitorsPerDay;
                 if (widget.id === 'kpi_avg_visit_time')        widgetProps.avgVisitSeconds = avgVisitSeconds;
                 if (widget.id === 'kpi_attention_time')        widgetProps.avgAttentionSeconds = effAttentionSeconds;
-                if (widget.id === 'chart_age_ranges')          widgetProps.ageData = effAgeStats;
+                if (widget.id === 'chart_age_ranges')        { widgetProps.ageData = effAgeStats; widgetProps.totalVisitors = effTotalVisitors; }
                 if (widget.id === 'chart_vision')              widgetProps.attrData = effAttributeStats;
                 if (widget.id === 'chart_facial_hair')         widgetProps.attrData = effAttributeStats;
                 if (widget.id === 'chart_hair_type')           widgetProps.hairTypeData = effHairTypeData;

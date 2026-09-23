@@ -1061,7 +1061,7 @@ export function CampaignUpload() {
           <p>1. Baixe o <code className="bg-blue-900/40 px-1 rounded">attachments.zip</code> da DisplayForce</p>
           <p>2. <strong>Se o relatório for grande</strong> (mês inteiro): extraia o ZIP e suba <strong>só o arquivo <code className="bg-blue-900/40 px-1 rounded">Views of visitors ....csv</code></strong> — o navegador lê ele em fluxo, sem travar.</p>
           <p>3. Se for pequeno, pode arrastar o ZIP inteiro (não precisa extrair).</p>
-          <p>4. Os dados aparecem automaticamente no widget "Engajamento em Campanhas".</p>
+          <p>4. Os dados aparecem automaticamente no widget "Engajamento de Mídia".</p>
         </div>
       )}
 

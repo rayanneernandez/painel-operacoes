@@ -152,8 +152,8 @@ const FACIAL_HAIR_MAP: Record<string, { label: string; color: string }> = {
 const GLASSES_MAP: Record<string, { label: string; color: string }> = {
   // Sem óculos
   'sem óculos': { label: 'Sem Óculos', color: '#4b5563' }, none: { label: 'Sem Óculos', color: '#4b5563' }, 'false': { label: 'Sem Óculos', color: '#4b5563' }, '0': { label: 'Sem Óculos', color: '#4b5563' },
-  // Óculos normais (valor "usual" vem do normalizador em sync-analytics)
-  'óculos normais': { label: 'Óculos Normais', color: '#93c5fd' }, usual: { label: 'Óculos Normais', color: '#93c5fd' }, normal: { label: 'Óculos Normais', color: '#93c5fd' }, regular: { label: 'Óculos Normais', color: '#93c5fd' }, 'true': { label: 'Óculos Normais', color: '#93c5fd' }, '1': { label: 'Óculos Normais', color: '#93c5fd' },
+  // "usual" = estado normal (SEM óculos de sol). NÃO significa "usando óculos".
+  'óculos normais': { label: 'Normal', color: '#93c5fd' }, usual: { label: 'Normal', color: '#93c5fd' }, normal: { label: 'Normal', color: '#93c5fd' }, regular: { label: 'Normal', color: '#93c5fd' }, 'true': { label: 'Normal', color: '#93c5fd' }, '1': { label: 'Normal', color: '#93c5fd' },
   // Óculos escuros (3º tipo)
   'óculos escuros': { label: 'Óculos Escuros', color: '#1e3a5f' }, dark: { label: 'Óculos Escuros', color: '#1e3a5f' }, sunglasses: { label: 'Óculos Escuros', color: '#1e3a5f' }, 'dark glasses': { label: 'Óculos Escuros', color: '#1e3a5f' }, 'sun glasses': { label: 'Óculos Escuros', color: '#1e3a5f' },
 };
@@ -204,7 +204,7 @@ export const AVAILABLE_WIDGETS: WidgetType[] = [
   { id: 'chart_facial_hair',   title: 'Atributo: Pelos Faciais',        type: 'chart', size: 'third', description: 'Barba e pelos faciais' },
   { id: 'chart_hair_type',     title: 'Atributo: Tipo de Cabelo',       type: 'chart', size: 'third', description: 'Normal, Entradas, Careca' },
   { id: 'chart_hair_color',    title: 'Atributo: Cor de Cabelo',        type: 'chart', size: 'third', description: 'Preto, Castanho, Loiro, etc.' },
-  { id: 'campaigns',           title: 'Engajamento em Campanhas',       type: 'table', size: 'full',  description: 'Tabela de performance de campanhas' },
+  { id: 'campaigns',           title: 'Engajamento de Mídia',       type: 'table', size: 'full',  description: 'Tabela de performance de campanhas' },
   { id: 'heatmap',             title: 'Mapa de Calor (Loja)',           type: 'chart', size: 'full',  description: 'Visualização térmica da planta baixa' },
 ];
 
@@ -372,7 +372,7 @@ export const WidgetAgePyramid = ({ ageData, totalVisitors }: { view?: string; ag
 };
 
 // ── WidgetAgeRanges ──────────────────────────────────────────────────────────
-export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: number; f: number }[] }) => {
+export const WidgetAgeRanges = ({ ageData, totalVisitors }: { ageData?: { age: string; m: number; f: number }[]; totalVisitors?: number }) => {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   const displayforceOrder = ['1-19', '20-29', '30-45', '46-100'];
   const legacyOrder = ['18-','18-24','25-34','35-44','45-54','55-64','65+'];
@@ -383,7 +383,9 @@ export const WidgetAgeRanges = ({ ageData }: { ageData?: { age: string; m: numbe
     '18-':'<18','18-24':'18-24','25-34':'25-34','35-44':'35-44','45-54':'45-54','55-64':'55-64','65+':'65+'
   };
   const byAge  = new Map((ageData||[]).map((d) => [String(d.age), d]));
-  const vals   = order.map((age) => { const d = byAge.get(age); return (Number(d?.m)||0)+(Number(d?.f)||0); });
+  // m/f vêm em % — converte pra número inteiro de visitantes usando o total.
+  const totalBase = typeof totalVisitors === 'number' && totalVisitors > 0 ? totalVisitors : 0;
+  const vals   = order.map((age) => { const d = byAge.get(age); const pct=(Number(d?.m)||0)+(Number(d?.f)||0); return totalBase>0?Math.round((pct/100)*totalBase):Math.round(pct); });
 
   useChartJs(canvasRef, () => ({
     type: 'bar',
@@ -616,8 +618,8 @@ function DonutLikeGender({
 
 // ── WidgetAttributes ─────────────────────────────────────────────────────────
 export const WidgetAttributes = ({ attrData }: { view?: string; attrData?: { label: string; value: number }[] }) => {
-  const data = (attrData || []).filter(a => !a.label.startsWith('_')).filter(a => ['Óculos','Barba'].includes(a.label));
-  const display = data.length > 0 ? data : [{ label:'Óculos', value:0 },{ label:'Barba', value:0 }];
+  const data = (attrData || []).filter(a => !a.label.startsWith('_')).filter(a => ['Óculos escuros','Barba'].includes(a.label));
+  const display = data.length > 0 ? data : [{ label:'Óculos escuros', value:0 },{ label:'Barba', value:0 }];
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-xl p-4 h-full flex flex-col min-h-0 overflow-hidden">
       <h3 className="font-bold text-white mb-3 flex items-center gap-2 uppercase text-xs tracking-wider flex-none"><Users size={14} className="text-orange-500" />Atributos</h3>
@@ -1189,7 +1191,7 @@ export const WidgetCampaigns = ({
       <div className="flex items-center justify-between mb-3 flex-shrink-0">
         <h3 className="font-bold text-white flex items-center gap-2 uppercase text-xs tracking-wider">
           <Activity size={14} className="text-emerald-500" />
-          Engajamento em Campanhas
+          Engajamento de Mídia
           {normalizedRows.length > 0 && (
             <span className="text-[10px] font-normal text-gray-500 normal-case tracking-normal">
               ({filteredRows.length} {filteredRows.length === 1 ? 'registro' : 'registros'})
