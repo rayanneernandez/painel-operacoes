@@ -360,7 +360,7 @@ function buildFacialExpressionSeriesFromRows(rows: any[]) {
   for (const row of rows || []) {
     const timestamp = typeof row?.timestamp === 'string' ? row.timestamp : null;
     if (!timestamp) continue;
-    const index = new Date(timestamp).getHours();
+    const index = new Date(timestamp).getUTCHours();
     if (!Number.isFinite(index) || index < 0 || index > 23) continue;
 
     // Tenta detectar expressão; se não conseguir, usa "neutral" como padrão.
@@ -412,7 +412,7 @@ function buildFacialExpressionSeriesFromRollups(rollups: any[], rangeStart: stri
   }
 
   for (const [hourKey, normalizedCounts] of bestHourCounts.entries()) {
-    const index = new Date(`${hourKey}:00:00.000Z`).getHours();
+    const index = new Date(`${hourKey}:00:00.000Z`).getUTCHours();
     if (!Number.isFinite(index) || index < 0 || index > 23) continue;
 
     for (const { key } of FACIAL_EXPRESSION_SERIES) {
@@ -490,7 +490,7 @@ function buildLatestFacialExpressionSeriesFromRollups(rollups: any[]) {
   const valuesByKey = new Map<string, number[]>(FACIAL_EXPRESSION_SERIES.map(({ key }, index) => [key, series[index].values]));
 
   for (const [hourKey, normalizedCounts] of bestCandidate.hours) {
-    const index = new Date(`${hourKey}:00:00.000Z`).getHours();
+    const index = new Date(`${hourKey}:00:00.000Z`).getUTCHours();
     if (!Number.isFinite(index) || index < 0 || index > 23) continue;
 
     for (const { key } of FACIAL_EXPRESSION_SERIES) {
@@ -956,6 +956,21 @@ export function ClientDashboard() {
     return selectedCamera;
   }, [stores, resolvedSelectedStore, selectedCamera]);
 
+  // Todos os devices cadastrados do cliente (i.e., os da(s) pasta(s) filtrada(s)).
+  // Usado como filtro padrão no modo "Rede Global" para NUNCA contar visitas de
+  // devices que não pertencem à pasta do cliente (dados históricos poluídos).
+  const MAX_DEFAULT_DEVICE_FILTER = 300; // acima disso, mantém comportamento antigo (client_id) p/ não pesar em clientes grandes
+  const allClientDeviceIds = useMemo(() => {
+    const ids: number[] = [];
+    for (const store of stores) {
+      for (const c of (store.cameras || [])) {
+        const n = Number((c as any).macAddress);
+        if (Number.isFinite(n)) ids.push(n);
+      }
+    }
+    return [...new Set(ids)];
+  }, [stores]);
+
   const deviceIdsCacheRef = useRef<{ key: string; value: number[] }>({ key: '', value: [] });
   const deviceIds = useMemo(() => {
     const computed: number[] = [];
@@ -969,12 +984,18 @@ export function ClientDashboard() {
         if (Number.isFinite(n)) computed.push(n);
       }
     }
+    // Rede Global (sem loja/câmera selecionada): escopar aos devices do cliente
+    // para excluir visitas de devices fora da pasta. Só quando a lista é pequena
+    // o bastante (clientes de pasta, ex.: POC JEEP com ~8 devices).
+    if (computed.length === 0 && allClientDeviceIds.length > 0 && allClientDeviceIds.length <= MAX_DEFAULT_DEVICE_FILTER) {
+      computed.push(...allClientDeviceIds);
+    }
     const key = stableNumberListKey(computed);
     if (deviceIdsCacheRef.current.key === key) return deviceIdsCacheRef.current.value;
     const next = key ? key.split(',').map((v) => Number(v)).filter((v) => Number.isFinite(v)) : [];
     deviceIdsCacheRef.current = { key, value: next };
     return next;
-  }, [resolvedSelectedStore, resolvedSelectedCamera]);
+  }, [resolvedSelectedStore, resolvedSelectedCamera, allClientDeviceIds]);
 
   const deviceOptions = useMemo(() => {
     const sourceStores = selectedStore
@@ -1147,6 +1168,13 @@ export function ClientDashboard() {
 
     const originDeviceCounts = new Map<string, number>();
     const deviceCounts = new Map<string, number>();
+    // Semeia todos os devices do escopo atual (os da pasta/loja) com 0, para que
+    // os dispositivos SEM audiência também apareçam na lista, com 0%.
+    for (const dId of deviceIds) {
+      const k = String(dId);
+      deviceCounts.set(k, 0);
+      originDeviceCounts.set(k, 0);
+    }
     for (const row of safeRows) {
       const deviceKeys = getDeviceKeys(row);
       const originDeviceKey = String(row?.device_id ?? '').trim() || deviceKeys[0] || '';
@@ -1242,7 +1270,7 @@ export function ClientDashboard() {
       storeAudience: storeAudience.length > 0 ? storeAudience : fallbackStoreAudience,
       trackingData: trackingData.length > 0 ? trackingData : fallbackTracking,
     };
-  }, [resolveDeviceFlowLabel]);
+  }, [resolveDeviceFlowLabel, deviceIds]);
 
   useEffect(() => {
     activeFilterKeyRef.current = [
@@ -1710,7 +1738,7 @@ export function ClientDashboard() {
               allRows.forEach(r => {
                 const ts = new Date(r.timestamp);
                 if (!isNaN(ts.getTime())) {
-                  perHourTotal[ts.getHours()]++;
+                  perHourTotal[ts.getUTCHours()]++;
                   const dk = formatLocalDateKey(ts);
                   perDay[dk] = (perDay[dk] ?? 0) + 1;
                 }
@@ -2714,7 +2742,7 @@ export function ClientDashboard() {
       for (const row of data) {
         const ts = row?.timestamp ? new Date(row.timestamp) : null;
         if (!ts || Number.isNaN(ts.getTime())) continue;
-        totals[ts.getHours()] += 1;
+        totals[ts.getUTCHours()] += 1;
       }
 
       if (data.length < pageSize) {

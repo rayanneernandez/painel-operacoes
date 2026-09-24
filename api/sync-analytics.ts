@@ -1052,7 +1052,13 @@ function extractTimes(visit: any) {
     startTs, endTs,
     visitTimeSeconds: safeNumber(visit.tracks_duration) ?? safeNumber(visit.visit_time_seconds) ?? safeNumber(visit.visit_time) ?? safeNumber(visit.duration_seconds) ?? safeNumber(visit.duration) ?? durationFromStartEnd ?? null,
     dwellTimeSeconds: safeNumber(visit.dwell_time_seconds) ?? safeNumber(visit.dwell_time) ?? safeNumber(visit.time_in_frame_seconds) ?? null,
-    contactTimeSeconds: safeNumber(visit.content_view_duration) ?? safeNumber(visit.contact_time_seconds) ?? safeNumber(visit.contact_time) ?? null,
+    contactTimeSeconds:
+      safeNumber(visit.content_view_duration) ?? safeNumber(visit.contact_time_seconds) ?? safeNumber(visit.contact_time)
+      // Fallbacks p/ variações de nome do "tempo de atenção" da DisplayForce.
+      ?? safeNumber(visit.attention_duration) ?? safeNumber(visit.attention_time) ?? safeNumber(visit.attention_seconds)
+      ?? safeNumber(visit.view_duration) ?? safeNumber(visit.watch_duration) ?? safeNumber(visit.content_view_time)
+      ?? safeNumber(visit?.raw_data?.content_view_duration) ?? safeNumber(visit?.stats?.content_view_duration)
+      ?? null,
   };
 }
 
