@@ -915,6 +915,7 @@ export function ClientDashboard() {
     total: number; days: number; gMale: number; gFemale: number; gUnknown: number;
     age: Record<string, number>; hour: number[]; weekday: number[]; perDay: Record<string, number>; sumAtt: number; cntAtt: number;
     glasses: Record<string, number>; facial: Record<string, number>; haircolor: Record<string, number>; hairtype: Record<string, number>;
+    expr: Record<string, number>;
   }>(null);
   const [isLoadingCompare, setIsLoadingCompare] = useState(false);
   const [comparePrevVisitorsPerDay, setComparePrevVisitorsPerDay] = useState<Record<string, number>>({});
@@ -3037,7 +3038,7 @@ export function ClientDashboard() {
     let cancelled = false;
     (async () => {
       const { data } = await supabase.from('content_rollup')
-        .select('visitors, g_male, g_female, g_unknown, age_counts, hour_counts, sum_attention, cnt_attention, day, glasses_counts, facial_counts, haircolor_counts, hairtype_counts')
+        .select('visitors, g_male, g_female, g_unknown, age_counts, hour_counts, sum_attention, cnt_attention, day, glasses_counts, facial_counts, haircolor_counts, hairtype_counts, expr_hour_counts')
         .eq('client_id', id).in('content_name', selectedContents);
       if (cancelled) return;
       // meses disponíveis desse conteúdo
@@ -3047,7 +3048,7 @@ export function ClientDashboard() {
       // filtra pelo mês selecionado (se houver)
       const rowsAll = (data || []) as any[];
       const rows = selectedContentMonth ? rowsAll.filter((r) => String(r.day || '').slice(0, 7) === selectedContentMonth) : rowsAll;
-      const agg = { total: 0, days: 0, gMale: 0, gFemale: 0, gUnknown: 0, age: {} as Record<string, number>, hour: new Array(24).fill(0) as number[], weekday: new Array(7).fill(0) as number[], perDay: {} as Record<string, number>, sumAtt: 0, cntAtt: 0, glasses: {} as Record<string, number>, facial: {} as Record<string, number>, haircolor: {} as Record<string, number>, hairtype: {} as Record<string, number> };
+      const agg = { total: 0, days: 0, gMale: 0, gFemale: 0, gUnknown: 0, age: {} as Record<string, number>, hour: new Array(24).fill(0) as number[], weekday: new Array(7).fill(0) as number[], perDay: {} as Record<string, number>, sumAtt: 0, cntAtt: 0, glasses: {} as Record<string, number>, facial: {} as Record<string, number>, haircolor: {} as Record<string, number>, hairtype: {} as Record<string, number>, expr: {} as Record<string, number> };
       const mergeMap = (dst: Record<string, number>, src: any) => { const s = src || {}; for (const k of Object.keys(s)) dst[k] = (dst[k] || 0) + (Number(s[k]) || 0); };
       for (const r of rows) {
         agg.days += 1;
@@ -3065,6 +3066,7 @@ export function ClientDashboard() {
         mergeMap(agg.facial, r.facial_counts);
         mergeMap(agg.haircolor, r.haircolor_counts);
         mergeMap(agg.hairtype, r.hairtype_counts);
+        mergeMap(agg.expr, r.expr_hour_counts);
       }
       setContentAgg(agg);
     })();
@@ -3593,6 +3595,20 @@ export function ClientDashboard() {
     : attributeStats;
   const effHairTypeData = contentActive ? pctEntries(contentAgg!.hairtype).slice(0, 6) : hairTypeData;
   const effHairColorData = contentActive ? pctEntries(contentAgg!.haircolor).slice(0, 6) : hairColorData;
+  // Expressões faciais por conteúdo: expr = { "hora:expressao": count }.
+  const contentHasExpr = contentActive && Object.keys(contentAgg!.expr || {}).length > 0;
+  const effFacialExpressionSeries = contentActive
+    ? FACIAL_EXPRESSION_SERIES.map(({ key, label }) => {
+        const values = new Array(24).fill(0) as number[];
+        for (const [k, v] of Object.entries(contentAgg!.expr || {})) {
+          const [hStr, exprKey] = String(k).split(':');
+          if (exprKey !== key) continue;
+          const h = parseInt(hStr, 10);
+          if (h >= 0 && h < 24) values[h] += Number(v) || 0;
+        }
+        return { label, values };
+      })
+    : facialExpressionSeries;
 
   return (
     <div
@@ -3914,6 +3930,8 @@ export function ClientDashboard() {
                 if (contentActive && ['chart_sales_quarter', 'chart_device_flow', 'device_type_audience', 'corridor_flow'].includes(widget.id)) return null;
                 // Atributos (óculos/pelos/cabelo): só aparecem se o conteúdo tiver esses dados
                 if (contentActive && !contentHasAttrs && ['chart_vision', 'chart_facial_hair', 'chart_hair_type', 'chart_hair_color', 'attributes'].includes(widget.id)) return null;
+                // Expressões faciais: só aparece se o conteúdo tiver esses dados (import com coluna History)
+                if (contentActive && !contentHasExpr && widget.id === 'chart_facial_expressions') return null;
                 const defaultSpanForSize = (size: WidgetType['size']) => {
                   if (size === 'full') return 12; if (size === 'third') return 4;
                   if (size === 'quarter') return 3; if (size === '2/3') return 8;
@@ -3935,8 +3953,10 @@ export function ClientDashboard() {
                 if (widget.id === 'chart_facial_expressions') {
                   widgetProps.startDate = selectedStartDate;
                   widgetProps.endDate = selectedEndDate;
-                  widgetProps.labels = facialExpressionLabels;
-                  widgetProps.series = facialExpressionSeries;
+                  widgetProps.labels = contentActive
+                    ? Array.from({ length: 24 }, (_, h) => `${h}h`)
+                    : facialExpressionLabels;
+                  widgetProps.series = effFacialExpressionSeries;
                 }
                 if (widget.id === 'chart_device_flow')       {
                   widgetProps.visitors  = totalVisitors;

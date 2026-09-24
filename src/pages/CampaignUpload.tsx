@@ -113,7 +113,7 @@ function parseRowsExcel(sheet: XLSX.WorkSheet): any[] {
 function makeViewsAggregator() {
   let headers: string[] | null = null;
   let sep = ',';
-  const idx = { campaign: -1, content: -1, device: -1, visitor: -1, contactId: -1, contactDur: -1, start: -1, end: -1, gender: -1, age: -1, glasses: -1, facial: -1, haircolor: -1, hairtype: -1 };
+  const idx = { campaign: -1, content: -1, device: -1, visitor: -1, contactId: -1, contactDur: -1, start: -1, end: -1, gender: -1, age: -1, glasses: -1, facial: -1, haircolor: -1, hairtype: -1, history: -1 };
   const map = new Map<string, {
     visitors: Set<string>; contactIds: Map<string, number>;
     minStart: number; maxEnd: number; displayCount: number;
@@ -123,7 +123,28 @@ function makeViewsAggregator() {
     visitors: Set<string>; display: number; gm: number; gf: number; gu: number;
     age: Record<string, number>; hour: Record<string, number>; sumAtt: number; cntAtt: number;
     glasses: Record<string, number>; facial: Record<string, number>; haircolor: Record<string, number>; hairtype: Record<string, number>;
+    expr: Record<string, number>;
   }>();
+
+  // Expressão facial dominante de uma visualização, a partir da coluna
+  // "History face attributes" (JSON com FacialExpression/Smile por momento).
+  // Como o parser de CSV remove as aspas, trabalhamos por regex no texto cru.
+  // Só distinguimos neutro/felicidade (as duas séries mostradas no gráfico).
+  const domExpr = (raw: string): 'neutral' | 'happiness' => {
+    let hap = 0, neu = 0;
+    const re = /facialexpression\s*[:=]\s*([a-z]+)/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(raw))) {
+      const v = m[1].toLowerCase();
+      if (['happiness', 'happy', 'joy', 'smile', 'smiling', 'alegria', 'felicidade'].includes(v)) hap += 1;
+      else if (['neutral', 'neutro', 'calm', 'normal', 'none'].includes(v)) neu += 1;
+    }
+    if (hap === 0 && neu === 0) {
+      // Sem expressão explícita: usa o Smile como pista (yes = felicidade).
+      return /smile\s*[:=]\s*(yes|true|1|sim)/i.test(raw) ? 'happiness' : 'neutral';
+    }
+    return hap > 0 ? 'happiness' : 'neutral';
+  };
 
   const parseRow = (line: string) => {
     const parts: string[] = []; let cur = ''; let inQ = false;
@@ -167,6 +188,7 @@ function makeViewsAggregator() {
         idx.facial = find(headers, 'Facial hair', 'Facial', 'Beard', 'Barba');
         idx.haircolor = find(headers, 'Hair color', 'Hair colour', 'Cor do cabelo', 'Cor de cabelo');
         idx.hairtype = find(headers, 'Hair type', 'Tipo de cabelo', 'Tipo do cabelo');
+        idx.history = find(headers, 'History face attributes', 'Face attributes history', 'History');
         return;
       }
       // Sem cabeçalho: export "Views of visitors" da DisplayForce só com dados.
@@ -189,6 +211,7 @@ function makeViewsAggregator() {
         idx.facial = 10;     // pelos faciais (shaved/beard/...)
         idx.haircolor = 11;  // cor do cabelo
         idx.hairtype = 12;   // tipo de cabelo
+        idx.history = 24;    // History face attributes (JSON de expressões por momento)
         // NÃO retorna: processa esta linha como dados abaixo
       } else {
         return; // linha desconhecida
@@ -223,7 +246,7 @@ function makeViewsAggregator() {
         const hour = String(parseInt(_spHourFmt.format(dt), 10));
         const cKey = `${content || 'Sem conteúdo'}|||${day}`;
         let c = contentMap.get(cKey);
-        if (!c) { c = { visitors: new Set(), display: 0, gm: 0, gf: 0, gu: 0, age: {}, hour: {}, sumAtt: 0, cntAtt: 0, glasses: {}, facial: {}, haircolor: {}, hairtype: {} }; contentMap.set(cKey, c); }
+        if (!c) { c = { visitors: new Set(), display: 0, gm: 0, gf: 0, gu: 0, age: {}, hour: {}, sumAtt: 0, cntAtt: 0, glasses: {}, facial: {}, haircolor: {}, hairtype: {}, expr: {} }; contentMap.set(cKey, c); }
         c.display += 1;
         if (visId) c.visitors.add(visId);
         const g = idx.gender >= 0 ? String(row[idx.gender] || '').trim().toLowerCase() : '';
@@ -248,6 +271,12 @@ function makeViewsAggregator() {
         addCat(c.facial, idx.facial);
         addCat(c.haircolor, idx.haircolor);
         addCat(c.hairtype, idx.hairtype);
+        // Expressão facial dominante desta visualização, na hora da visita.
+        // Chave "hora:expressao" (ex.: "14:happiness") pra somar no dashboard.
+        if (idx.history >= 0) {
+          const hist = String(row[idx.history] || '');
+          if (hist) { const e = domExpr(hist); const ek = `${hour}:${e}`; c.expr[ek] = (c.expr[ek] || 0) + 1; }
+        }
       }
     }
   };
@@ -263,6 +292,7 @@ function makeViewsAggregator() {
         g_male: c.gm, g_female: c.gf, g_unknown: c.gu, age_counts: c.age, hour_counts: c.hour,
         sum_attention: Math.round(c.sumAtt), cnt_attention: c.cntAtt,
         glasses_counts: c.glasses, facial_counts: c.facial, haircolor_counts: c.haircolor, hairtype_counts: c.hairtype,
+        expr_hour_counts: c.expr,
       });
     }
     return out;
