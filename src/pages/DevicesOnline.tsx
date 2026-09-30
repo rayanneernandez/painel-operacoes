@@ -387,6 +387,13 @@ function writeDisplaySyncMeta(clientId: string, meta: DisplaySyncMeta) {
 // Retorna apenas a última parte do nome após o último " - "
 function shortDeviceName(fullName: string): string {
   if (!fullName) return '';
+  // Prioriza o texto após o último ":" — ex.: "POC JEEP - THE LED : Atendimento"
+  // vira "Atendimento" (câmera/ponto). Cai no " - " quando não há ":".
+  const colonIdx = fullName.lastIndexOf(':');
+  if (colonIdx >= 0) {
+    const after = fullName.slice(colonIdx + 1).trim();
+    if (after) return after;
+  }
   const idx = fullName.lastIndexOf(' - ');
   return idx >= 0 ? fullName.slice(idx + 3).trim() : fullName;
 }

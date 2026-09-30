@@ -1048,9 +1048,25 @@ function extractTimes(visit: any) {
     if (Number.isFinite(s) && Number.isFinite(e) && e >= s)
       durationFromStartEnd = Math.round((e - s) / 1000);
   }
+  // "Duração da visita" da DisplayForce costuma vir em `tracks_duration`; quando
+  // não vem no topo, tentamos somar as durações do array `tracks` (tracks=true).
+  const tracksArr = Array.isArray(visit.tracks) ? visit.tracks : [];
+  let tracksDurSum = 0;
+  for (const t of tracksArr) {
+    tracksDurSum += safeNumber(t?.duration) ?? safeNumber(t?.tracks_duration) ?? safeNumber(t?.duration_seconds) ?? safeNumber(t?.length) ?? 0;
+  }
+  const tracksDurFromArray = tracksDurSum > 0 ? Math.round(tracksDurSum) : null;
+  let contentViewSum = 0;
+  for (const t of tracksArr) {
+    contentViewSum += safeNumber(t?.content_view_duration) ?? safeNumber(t?.attention_duration) ?? safeNumber(t?.view_duration) ?? 0;
+  }
+  const contentViewFromArray = contentViewSum > 0 ? Math.round(contentViewSum) : null;
   return {
     startTs, endTs,
-    visitTimeSeconds: safeNumber(visit.tracks_duration) ?? safeNumber(visit.visit_time_seconds) ?? safeNumber(visit.visit_time) ?? safeNumber(visit.duration_seconds) ?? safeNumber(visit.duration) ?? durationFromStartEnd ?? null,
+    visitTimeSeconds:
+      safeNumber(visit.tracks_duration) ?? safeNumber(visit.visit_time_seconds) ?? safeNumber(visit.visit_time)
+      ?? safeNumber(visit.duration_seconds) ?? safeNumber(visit.duration) ?? safeNumber(visit.total_duration)
+      ?? safeNumber(visit?.raw_data?.tracks_duration) ?? tracksDurFromArray ?? durationFromStartEnd ?? null,
     dwellTimeSeconds: safeNumber(visit.dwell_time_seconds) ?? safeNumber(visit.dwell_time) ?? safeNumber(visit.time_in_frame_seconds) ?? null,
     contactTimeSeconds:
       safeNumber(visit.content_view_duration) ?? safeNumber(visit.contact_time_seconds) ?? safeNumber(visit.contact_time)
@@ -1058,6 +1074,7 @@ function extractTimes(visit: any) {
       ?? safeNumber(visit.attention_duration) ?? safeNumber(visit.attention_time) ?? safeNumber(visit.attention_seconds)
       ?? safeNumber(visit.view_duration) ?? safeNumber(visit.watch_duration) ?? safeNumber(visit.content_view_time)
       ?? safeNumber(visit?.raw_data?.content_view_duration) ?? safeNumber(visit?.stats?.content_view_duration)
+      ?? contentViewFromArray
       ?? null,
   };
 }

@@ -676,6 +676,11 @@ export function ClientDashboard() {
   const [avgVisitorsPerDay, setAvgVisitorsPerDay] = useState(0);
   const [avgVisitSeconds, setAvgVisitSeconds] = useState(0);
   const [avgAttentionSeconds, setAvgAttentionSeconds] = useState(0);
+  // Médias recalculadas EXCLUSIVAMENTE do período filtrado (fonte da verdade do
+  // KPI). Guardadas à parte para o applyRollup (valor global) não sobrescrever
+  // por corrida assíncrona. null = ainda não recalculado.
+  const [periodAvgVisitSeconds, setPeriodAvgVisitSeconds] = useState<number | null>(null);
+  const [periodAvgAttentionSeconds, setPeriodAvgAttentionSeconds] = useState<number | null>(null);
   const [genderStats, setGenderStats] = useState<{ label: string; value: number }[]>([]);
   const [attributeStats, setAttributeStats] = useState<{ label: string; value: number }[]>([]);
   const [ageStats, setAgeStats] = useState<{ age: string; m: number; f: number }[]>([]);
@@ -1059,6 +1064,19 @@ export function ClientDashboard() {
     });
   }, [deviceNameByMac]);
 
+  // Rótulo da Audiência por Device: resolve o nome e, quando o nome do device tem
+  // ":" (padrão do cliente Stellantis/JEEP, ex.: "POC JEEP - THE LED : Café"),
+  // mostra só o que vem depois do ":" → "Café". Nomes sem ":" ficam inalterados.
+  const deviceAudienceLabel = useCallback((label: string) => {
+    const resolved = resolveDeviceFlowLabel(String(label ?? ''));
+    const i = resolved.lastIndexOf(':');
+    if (i >= 0) {
+      const after = resolved.slice(i + 1).trim();
+      if (after) return after;
+    }
+    return resolved;
+  }, [resolveDeviceFlowLabel]);
+
   // O widget de fluxo agora usa apenas visitantes filtrados como base de cálculo.
 
   // Índice rápido: prefixo numérico do nome da loja → store.name completo
@@ -1198,7 +1216,10 @@ export function ClientDashboard() {
       }))
       .sort((a, b) => b.count - a.count || b.value - a.value);
 
-    const deviceAudience = buildAudienceRows(deviceCounts);
+    // Usa o device de ORIGEM (1 por visita) para a audiência por device, de modo
+    // que a soma feche em 100% (uma visita captada em vários devices não conta
+    // em cada um — senão a % passa de 100%, ex.: "LED 100,8%").
+    const deviceAudience = buildAudienceRows(originDeviceCounts);
     const storeAudience = buildAudienceRows(originDeviceCounts);
 
     const formatJourneyWord = (word: string) => {
@@ -2759,6 +2780,61 @@ export function ClientDashboard() {
     return totals.map((value) => Math.round(value / filteredDayCount));
   }, [id, deviceIds]);
 
+  // ── Tempo médio de visita e atenção EXATOS do período filtrado ───────────
+  // O KPI vinha do rollup global (fixo para qualquer data). Aqui recalculamos a
+  // média direto das linhas do período (e devices), sobrepondo o valor global.
+  const loadAvgTimesFromDb = useCallback(async () => {
+    if (!id) return;
+    if (selectedStore && deviceIds.length === 0) return;
+    try {
+      const startIso = alignUtcStartOfDay(selectedStartDate).toISOString();
+      const endIso = alignUtcEndOfDay(selectedEndDate).toISOString();
+      let sumVisit = 0, cntVisit = 0, sumContact = 0, cntContact = 0;
+      let from = 0;
+      const page = 5000;
+      while (true) {
+        let q = supabase
+          .from('visitor_analytics')
+          .select('visit_time_seconds,contact_time_seconds,timestamp,end_timestamp,raw_data')
+          .eq('client_id', id)
+          .gte('timestamp', startIso)
+          .lte('timestamp', endIso)
+          .order('timestamp', { ascending: true });
+        if (deviceIds.length > 0) q = q.in('device_id', deviceIds);
+        const { data, error } = await withTimeout(
+          q.range(from, from + page - 1) as any, 10000, 'visitor_analytics tempos médios',
+        ) as any;
+        if (error || !Array.isArray(data) || data.length === 0) break;
+        const numOrNull = (x: any) => { const n = Number(x); return Number.isFinite(n) && n > 0 ? n : null; };
+        for (const r of data) {
+          const raw = (r && typeof r.raw_data === 'object' && r.raw_data) ? r.raw_data : {};
+          const tracksArr = Array.isArray(raw.tracks) ? raw.tracks : [];
+          const tracksDurSum = tracksArr.reduce((acc: number, t: any) => acc + (numOrNull(t?.duration) ?? numOrNull(t?.tracks_duration) ?? numOrNull(t?.duration_seconds) ?? 0), 0);
+          const contentViewSum = tracksArr.reduce((acc: number, t: any) => acc + (numOrNull(t?.content_view_duration) ?? numOrNull(t?.attention_duration) ?? 0), 0);
+          // Duração da visita: prefere tracks_duration real (raw_data) à coluna
+          // (que pode ter sido gravada como início→fim ~2s).
+          let v = numOrNull(raw.tracks_duration) ?? (tracksDurSum > 0 ? tracksDurSum : null) ?? numOrNull(r.visit_time_seconds);
+          if (v == null) {
+            const s = Date.parse(r.timestamp), e = Date.parse(r.end_timestamp);
+            if (Number.isFinite(s) && Number.isFinite(e) && e >= s) v = Math.round((e - s) / 1000);
+          }
+          if (v != null && v > 0) { sumVisit += v; cntVisit++; }
+          // Tempo de atenção: coluna, senão content_view_duration do raw_data.
+          const c = numOrNull(r.contact_time_seconds) ?? numOrNull(raw.content_view_duration) ?? numOrNull(raw.attention_duration) ?? (contentViewSum > 0 ? contentViewSum : null);
+          if (c != null && c > 0) { sumContact += c; cntContact++; }
+        }
+        if (data.length < page) break;
+        from += page;
+        if (from > 250000) break;
+      }
+      setPeriodAvgVisitSeconds(cntVisit > 0 ? Math.round(sumVisit / cntVisit) : 0);
+      // Atenção: só sobrepõe quando há dado; sem dado = 0 (KPI mostra "—").
+      setPeriodAvgAttentionSeconds(cntContact > 0 ? Math.round(sumContact / cntContact) : 0);
+    } catch (error) {
+      console.warn('[Dashboard] Erro ao recalcular tempos médios:', error);
+    }
+  }, [id, deviceIds, selectedStore, selectedStartDate, selectedEndDate]);
+
   const loadQuarterData = useCallback(async () => {
     if (!id) return;
     // Race condition guard: se loja selecionada mas cameras ainda não carregadas,
@@ -3041,6 +3117,7 @@ export function ClientDashboard() {
 
   useEffect(() => { loadWeekFlowData(); }, [loadWeekFlowData]);
   useEffect(() => { loadHourlyFlowData(); }, [loadHourlyFlowData]);
+  useEffect(() => { loadAvgTimesFromDb(); }, [loadAvgTimesFromDb]);
   useEffect(() => { loadQuarterData(); }, [loadQuarterData]);
   useEffect(() => { loadCompareData(); }, [loadCompareData]);
   useEffect(() => { refreshLastUpdate(); }, [refreshLastUpdate]);
@@ -3581,9 +3658,14 @@ export function ClientDashboard() {
       })()
     : genderStats;
   const effHourlyStats = contentActive ? contentAgg!.hour : hourlyStats;
+  // Tempo médio de VISITA: prefere o valor recalculado do período filtrado
+  // (não fica travado no valor global do rollup).
+  const effAvgVisitSeconds = contentActive
+    ? avgVisitSeconds
+    : (periodAvgVisitSeconds != null ? periodAvgVisitSeconds : avgVisitSeconds);
   const effAttentionSeconds = contentActive
     ? (contentAgg!.cntAtt > 0 ? Math.round(contentAgg!.sumAtt / contentAgg!.cntAtt) : 0)
-    : avgAttentionSeconds;
+    : (periodAvgAttentionSeconds != null ? periodAvgAttentionSeconds : avgAttentionSeconds);
   // Idade por conteúdo: usa as mesmas faixas do dashboard; divide por gênero pela
   // proporção do conteúdo (m/f), já que o resumo por conteúdo não separa idade×gênero.
   const effAgeStats = contentActive
@@ -3992,10 +4074,10 @@ export function ClientDashboard() {
                   widgetProps.deviceAudience = isNetworkView
                     // Rede Global: useMemo deviceFlowAudienceByStore (reage a stores E audience)
                     ? deviceFlowAudienceByStore
-                    // Loja selecionada: por device com label resolvido
+                    // Loja selecionada: por device, mostrando só o nome após ":"
                     : deviceFlowAudience.map(e => ({
                         ...e,
-                        label: resolveDeviceFlowLabel(String(e?.label ?? '')),
+                        label: deviceAudienceLabel(String(e?.label ?? '')),
                       }));
                   widgetProps.trackingData = [];
                 }
@@ -4019,7 +4101,7 @@ export function ClientDashboard() {
                 if (widget.id === 'attributes')                widgetProps.attrData = effAttributeStats;
                 if (widget.id === 'kpi_total_visitors')        widgetProps.totalVisitors = effTotalVisitors;
                 if (widget.id === 'kpi_avg_visitors_day')      widgetProps.avgVisitorsPerDay = effAvgVisitorsPerDay;
-                if (widget.id === 'kpi_avg_visit_time')        widgetProps.avgVisitSeconds = avgVisitSeconds;
+                if (widget.id === 'kpi_avg_visit_time')        widgetProps.avgVisitSeconds = effAvgVisitSeconds;
                 if (widget.id === 'kpi_attention_time')        widgetProps.avgAttentionSeconds = effAttentionSeconds;
                 if (widget.id === 'chart_age_ranges')        { widgetProps.ageData = effAgeStats; widgetProps.totalVisitors = effTotalVisitors; }
                 if (widget.id === 'chart_vision')              widgetProps.attrData = effAttributeStats;
