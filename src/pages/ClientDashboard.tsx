@@ -670,7 +670,7 @@ export function ClientDashboard() {
   const [totalVisitors, setTotalVisitors] = useState(0);
   // Total exato do período direto da API (pagination.total = Alcance da DisplayForce).
   // Quando disponível, é a fonte da verdade do KPI "Total de Visitantes".
-  const [apiTotalVisitors, setApiTotalVisitors] = useState<number | null>(null);
+  // apiTotalVisitors removido: o total/trimestre agora vêm do banco (fonte única).
   const [dailyStats, setDailyStats] = useState<number[]>([0, 0, 0, 0, 0, 0, 0]);
   const [hourlyStats, setHourlyStats] = useState<number[]>(new Array(24).fill(0));
   const [avgVisitorsPerDay, setAvgVisitorsPerDay] = useState(0);
@@ -2854,19 +2854,11 @@ export function ClientDashboard() {
           Math.min(Date.parse(month.endIso), Date.parse(quarterEnd))
         ).toISOString();
         let visitors = 0;
-        // Fonte da verdade: total exato da API (Alcance), servido do cache do banco
-        // (visitor_total_cache) — instantâneo. Mesmo número da DisplayForce.
+        // Fonte única: contagem no BANCO (visitor_analytics), para o trimestre
+        // refletir os mesmos dados do restante do dashboard (inclui seed fictício).
         try {
-          const apiJson = await fetchJsonWithTimeout('/api/sync-analytics', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              client_id: id, count_only: true, start: month.startIso, end: monthEndIso, auth: 'painel@2026*',
-              ...(deviceIds.length > 0 ? { devices: deviceIds } : {}),
-            }),
-          }, 25000, 'count_only (trimestre)');
-          const at = Number(apiJson?.total);
-          if (Number.isFinite(at) && at > 0) visitors = at;
-        } catch (_) { /* sem API → cai nos caminhos abaixo */ }
+          visitors = await fetchVisitorsFromDb(month.startIso, monthEndIso);
+        } catch (_) { /* cai nos caminhos abaixo */ }
 
         // Fallback (rede global): resumo diário; ou contagem no banco com filtro de device.
         if (visitors <= 0 && deviceIds.length === 0) {
@@ -3180,39 +3172,7 @@ export function ClientDashboard() {
   // Ao trocar de conteúdo, volta o mês pra "todos"
   useEffect(() => { setSelectedContentMonth(''); }, [selectedContents.join('|')]);
 
-  // ── Total de Visitantes (Alcance) exato via API ─────────────────────────────
-  // Uma chamada leve (count_only) devolve pagination.total do período — o mesmo
-  // número que aparece na DisplayForce — sem baixar todas as páginas de visitor_id.
-  const apiTotalSeqRef = useRef(0);
-  useEffect(() => {
-    if (!id) return;
-    const seq = ++apiTotalSeqRef.current;
-    const startIso = alignUtcStartOfDay(selectedStartDate).toISOString();
-    const endIso = alignUtcEndOfDay(selectedEndDate).toISOString();
-    const devs = Array.isArray(deviceIds) ? deviceIds : [];
-    (async () => {
-      try {
-        const json = await fetchJsonWithTimeout('/api/sync-analytics', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            client_id: id,
-            count_only: true,
-            start: startIso,
-            end: endIso,
-            auth: 'painel@2026*',
-            ...(devs.length > 0 ? { devices: devs } : {}),
-          }),
-        }, 20000, 'count_only (total API)');
-        if (seq !== apiTotalSeqRef.current) return;
-        const t = Number(json?.total);
-        setApiTotalVisitors(Number.isFinite(t) && t > 0 ? t : null);
-      } catch (_) {
-        if (seq !== apiTotalSeqRef.current) return;
-        setApiTotalVisitors(null); // sem API → cai no total do rollup
-      }
-    })();
-  }, [id, selectedStartDate, selectedEndDate, deviceIds]);
+  // (removido) Total via API count_only — o total/trimestre agora vêm do banco.
 
   const refreshClientAndStores = useCallback(async () => {
     if (!id) return;
@@ -3632,12 +3592,11 @@ export function ClientDashboard() {
     return <ClientDashboardLED />;
   }
 
-  // Total exibido no KPI: prioriza o total exato da API (Alcance DisplayForce);
-  // se indisponível, usa o do rollup. A média/dia acompanha a mesma base.
-  const displayTotalVisitors = apiTotalVisitors != null ? apiTotalVisitors : totalVisitors;
-  const displayAvgVisitorsPerDay = apiTotalVisitors != null
-    ? Math.round(apiTotalVisitors / Math.max(1, countInclusiveUtcDays(selectedStartDate, selectedEndDate)))
-    : avgVisitorsPerDay;
+  // Total exibido no KPI: usa o total do BANCO (visitor_analytics) como fonte única,
+  // para todo o dashboard refletir os mesmos dados (inclui dados fictícios/seed).
+  // Para dados reais, o banco já bate com a DisplayForce após o sync por sessão.
+  const displayTotalVisitors = totalVisitors;
+  const displayAvgVisitorsPerDay = avgVisitorsPerDay;
 
   // Quando um CONTEÚDO está selecionado, os KPIs/gráficos refletem só aquele
   // conteúdo (dados do content_rollup). Idade fica como está (formato difere).
