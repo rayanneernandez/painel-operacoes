@@ -1161,7 +1161,20 @@ function buildAndDeduplicateRows(combined: any[], client_id: string) {
     }
     const { startTs, endTs, visitTimeSeconds, dwellTimeSeconds, contactTimeSeconds } = extractTimes(visit);
     const dominantExpression = getDominantFacialExpression(visit);
-    const visit_uid = sha256(JSON.stringify({ client_id, device_id: deviceId, visitor_id: visit.visitor_id ?? null, start: startTs ?? null }));
+    // Id único da sessão vindo da DisplayForce. Sem isso, quando `visitor_id` vem
+    // nulo, duas visitas no mesmo device/segundo geravam o MESMO uid e colapsavam
+    // (ex.: banco com 151 em vez das 168 que a DF reporta). Com o id da sessão,
+    // cada sessão distinta é preservada; a mesma sessão re-baixada ainda deduplica.
+    const sessionKey =
+      visit.id ?? visit.session_id ?? visit.uuid ?? visit.visit_id ?? visit.track_id ?? visit.camera_slot_id ?? null;
+    const visit_uid = sha256(JSON.stringify({
+      client_id,
+      device_id: deviceId,
+      session: sessionKey,
+      visitor_id: visit.visitor_id ?? null,
+      start: startTs ?? null,
+      end: endTs ?? null,
+    }));
     dedupMap.set(visit_uid, {
       visit_uid, client_id, device_id: deviceId,
       timestamp: startTs, end_timestamp: endTs,

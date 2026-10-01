@@ -4069,7 +4069,9 @@ export function ClientDashboard() {
                   widgetProps.series = effFacialExpressionSeries;
                 }
                 if (widget.id === 'chart_device_flow')       {
-                  widgetProps.visitors  = totalVisitors;
+                  // Usa o MESMO total do KPI (Alcance da DisplayForce) para a base do
+                  // Fluxo bater com "TOTAL VISITANTES" lá em cima (ex.: 168 = 168).
+                  widgetProps.visitors  = effTotalVisitors;
                   const isNetworkView   = !selectedStore && deviceIds.length === 0;
                   widgetProps.deviceAudience = isNetworkView
                     // Rede Global: useMemo deviceFlowAudienceByStore (reage a stores E audience)
