@@ -4028,18 +4028,29 @@ export function ClientDashboard() {
                   widgetProps.series = effFacialExpressionSeries;
                 }
                 if (widget.id === 'chart_device_flow')       {
-                  // Usa o MESMO total do KPI (Alcance da DisplayForce) para a base do
-                  // Fluxo bater com "TOTAL VISITANTES" lá em cima (ex.: 168 = 168).
+                  // Usa o MESMO total do KPI para a base do Fluxo bater com "TOTAL VISITANTES".
                   widgetProps.visitors  = effTotalVisitors;
                   const isNetworkView   = !selectedStore && deviceIds.length === 0;
-                  widgetProps.deviceAudience = isNetworkView
-                    // Rede Global: useMemo deviceFlowAudienceByStore (reage a stores E audience)
-                    ? deviceFlowAudienceByStore
-                    // Loja selecionada: por device, mostrando só o nome após ":"
-                    : deviceFlowAudience.map(e => ({
-                        ...e,
-                        label: deviceAudienceLabel(String(e?.label ?? '')),
-                      }));
+                  if (isNetworkView) {
+                    widgetProps.deviceAudience = deviceFlowAudienceByStore;
+                  } else {
+                    // Por device, nome só após ":". Garante que TODOS os devices do
+                    // escopo apareçam — os sem visita entram com 0% (completa no render,
+                    // de forma determinística, independente do carregamento).
+                    const baseList = deviceFlowAudience.map(e => ({
+                      ...e,
+                      label: deviceAudienceLabel(String(e?.label ?? '')),
+                    }));
+                    const presentKeys = new Set(baseList.map(e => String((e as any).rawKey ?? '')));
+                    const scopeCams = resolvedSelectedStore
+                      ? (resolvedSelectedStore.cameras || [])
+                      : stores.flatMap(s => s.cameras || []);
+                    const missing = scopeCams
+                      .map(c => ({ key: String(Number((c as any).macAddress)), name: String(c?.name ?? '') }))
+                      .filter(c => c.key && c.key !== 'NaN' && !presentKeys.has(c.key))
+                      .map(c => ({ label: deviceAudienceLabel(c.name), rawKey: c.key, value: 0, count: 0 }));
+                    widgetProps.deviceAudience = [...baseList, ...missing];
+                  }
                   widgetProps.trackingData = [];
                 }
                 if (widget.id === 'device_type_audience') {
