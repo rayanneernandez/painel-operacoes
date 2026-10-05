@@ -4049,7 +4049,11 @@ export function ClientDashboard() {
                       .map(c => ({ key: String(Number((c as any).macAddress)), name: String(c?.name ?? '') }))
                       .filter(c => c.key && c.key !== 'NaN' && !presentKeys.has(c.key))
                       .map(c => ({ label: deviceAudienceLabel(c.name), rawKey: c.key, value: 0, count: 0 }));
-                    widgetProps.deviceAudience = [...baseList, ...missing];
+                    // Stellantis: ocultar Café e Entradas da audiência por device (só este cliente).
+                    const hideAudience = id === '8b32886d-9cda-4423-b075-62c868254526'
+                      ? (lbl: string) => /^(caf[eé]|entrada)\b/i.test(String(lbl ?? '').trim())
+                      : (_lbl: string) => false;
+                    widgetProps.deviceAudience = [...baseList, ...missing].filter(e => !hideAudience(String(e?.label ?? '')));
                   }
                   widgetProps.trackingData = [];
                 }
