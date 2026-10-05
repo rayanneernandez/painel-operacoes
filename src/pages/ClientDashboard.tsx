@@ -1489,7 +1489,7 @@ export function ClientDashboard() {
     const currentHour = new Date().getHours();
     const rowsHaveCurrentHour = allRows.some(r => new Date(r.timestamp).getHours() === currentHour);
 
-    if (touchesToday && !rowsHaveCurrentHour) {
+    if (touchesToday && !rowsHaveCurrentHour && clientId !== '8b32886d-9cda-4423-b075-62c868254526') {
       fetch('/api/sync-analytics', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1602,7 +1602,8 @@ export function ClientDashboard() {
       if (!isCurrent()) return;
       applyDeviceFlowState(rebuilt);
 
-      if (!Array.isArray(rebuilt?.trackingData) || rebuilt.trackingData.length === 0) {
+      if ((!Array.isArray(rebuilt?.trackingData) || rebuilt.trackingData.length === 0)
+          && clientId !== '8b32886d-9cda-4423-b075-62c868254526') {
         try {
           const liveFlowResult = await fetchJsonWithTimeout('/api/sync-analytics', {
             method: 'POST',
@@ -1901,18 +1902,20 @@ export function ClientDashboard() {
               console.log('[loadData] visitor_analytics vazio para os devices:', deviceIds, '— acionando sync em background');
               // Dispara sync em background para popular visitor_analytics com dados do Displayforce
               // (os devices podem ter sido adicionados ao banco pelo sync_stores recente)
-              fetch('/api/sync-analytics', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                  client_id: id,
-                  background_sync: true,
-                  force_full_sync: false,
-                  devices: deviceIds,
-                  start: startIso,
-                  end: endIso,
-                }),
-              }).catch(() => {}); // fire-and-forget
+              if (id !== '8b32886d-9cda-4423-b075-62c868254526') {
+                fetch('/api/sync-analytics', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    client_id: id,
+                    background_sync: true,
+                    force_full_sync: false,
+                    devices: deviceIds,
+                    start: startIso,
+                    end: endIso,
+                  }),
+                }).catch(() => {}); // fire-and-forget
+              }
               if (isCurrent()) zeroAll();
             }
           }
@@ -2477,6 +2480,8 @@ export function ClientDashboard() {
 
   const triggerBackgroundSync = useCallback(async (force = false) => {
     if (!id || syncingRef.current) return;
+    // Stellantis é um cliente de dados fictícios (seed): não sincroniza com a API real.
+    if (id === '8b32886d-9cda-4423-b075-62c868254526') return;
     const hasScopedFilter = Boolean(selectedStore?.id || selectedCamera?.id || deviceIds.length > 0);
     if (!force && hasScopedFilter) return;
     if (!force && !shouldSync(id)) return;
@@ -3249,6 +3254,8 @@ export function ClientDashboard() {
 
   const syncStoresFromServer = useCallback(async (force = false) => {
     if (!id) return;
+    // Stellantis (dados fictícios): não re-sincroniza lojas/devices da API real.
+    if (id === '8b32886d-9cda-4423-b075-62c868254526') return;
     // Verifica se deve sincronizar: sempre na primeira vez, ou se forçado,
     // ou se a última sync foi há mais de 5 minutos
     const SYNC_TTL_MS = 5 * 60 * 1000;

@@ -1,15 +1,13 @@
--- SEED Stellantis — seg-SAB 08-18h (so domingo fecha), 1 dia de delay,
--- visita 20-30min, atencao 60-70% da visita, deterministico por data.
-delete from visitor_analytics        where client_id='8b32886d-9cda-4423-b075-62c868254526';
-delete from visitor_analytics_rollups where client_id='8b32886d-9cda-4423-b075-62c868254526';
-delete from visitor_total_cache       where client_id='8b32886d-9cda-4423-b075-62c868254526';
-do $$
+-- 1) pg_cron
+create extension if not exists pg_cron;
+
+-- 2) funcao do seed (seg-SAB 08-18h, 1 dia de delay, 20-30min, deterministico)
+create or replace function public.seed_stellantis() returns void language plpgsql as $fn$
 declare
   v_client uuid := '8b32886d-9cda-4423-b075-62c868254526';
   v_pool bigint[] := array[]::bigint[]; v_dev bigint;
   v_av bigint; v_re bigint; v_co bigint; v_cm bigint;
-  hw numeric[] := array[0,0,0,0,0,0,0,0,4.0,7.3,8.2,8.4,9.1,9.4,10.3,11.0,9.8,8.2,5.4,0,0,0,0,0];
-  hwtot numeric := 0;
+  hw numeric[] := array[0,0,0,0,0,0,0,0,4.0,7.3,8.2,8.4,9.1,9.4,10.3,11.0,9.8,8.2,5.4,0,0,0,0,0]; hwtot numeric := 0;
   v_today date := (now() at time zone 'America/Sao_Paulo')::date;
   v_dates date[]:=array['2026-09-22'::date,'2026-09-23'::date,'2026-09-24'::date,'2026-09-25'::date,'2026-09-26'::date,'2026-09-28'::date,'2026-09-29'::date,'2026-09-30'::date,'2026-10-01'::date,'2026-10-02'::date,'2026-10-03'::date,'2026-10-05'::date,'2026-10-06'::date,'2026-10-07'::date,'2026-10-08'::date,'2026-10-09'::date,'2026-10-10'::date,'2026-10-12'::date,'2026-10-13'::date,'2026-10-14'::date,'2026-10-15'::date,'2026-10-16'::date,'2026-10-17'::date,'2026-10-19'::date,'2026-10-20'::date,'2026-10-21'::date,'2026-10-22'::date];
   v_max int[]:=array[63,42,55,62,113,42,66,45,58,65,116,46,70,49,62,69,120,43,67,46,59,66,117,36,60,39,52];
@@ -19,6 +17,9 @@ declare
   d int; i int; k int; n int; males int; g int; ag int; r numeric; acc numeric;
   hr int; mn int; sc int; dur int; att int; ts timestamptz; te timestamptz; lo int; hi int;
 begin
+  delete from visitor_analytics        where client_id=v_client;
+  delete from visitor_analytics_rollups where client_id=v_client;
+  delete from visitor_total_cache       where client_id=v_client;
   select external_id into v_av from devices d join stores s on s.id=d.store_id where s.client_id=v_client and d.name ilike '%avenger%' limit 1;
   select external_id into v_re from devices d join stores s on s.id=d.store_id where s.client_id=v_client and d.name ilike '%renegade%' limit 1;
   select external_id into v_co from devices d join stores s on s.id=d.store_id where s.client_id=v_client and d.name ilike '%compass%' limit 1;
@@ -30,11 +31,11 @@ begin
   if array_length(v_pool,1) is null then
     select array_agg(external_id) into v_pool from devices d join stores s on s.id=d.store_id where s.client_id=v_client and external_id is not null;
   end if;
+  if array_length(v_pool,1) is null then return; end if;
   for k in 1..24 loop hwtot := hwtot + hw[k]; end loop;
-
   for d in 1..array_length(v_dates,1) loop
-    if v_dates[d] >= v_today then continue; end if;                  -- 1 dia de delay
-    if extract(dow from v_dates[d]) = 0 then continue; end if;       -- exclui so domingo
+    if v_dates[d] >= v_today then continue; end if;
+    if extract(dow from v_dates[d]) = 0 then continue; end if;
     perform setseed( (('x'||substr(md5(v_dates[d]::text),1,8))::bit(32)::int)/2147483648.0 );
     n := v_max[d]; males := round(n*v_masc[d]);
     for i in 1..n loop
@@ -68,8 +69,17 @@ begin
           'end',   to_char(te at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"')));
     end loop;
   end loop;
-end $$;
+end;
+$fn$;
+
+-- 3) roda agora
+select public.seed_stellantis();
+
+-- 4) agenda diaria 03:10 UTC (00:10 BRT). Remove job antigo antes, se existir.
+select cron.unschedule('seed_stellantis_daily') where exists (select 1 from cron.job where jobname='seed_stellantis_daily');
+select cron.schedule('seed_stellantis_daily','10 3 * * *', $$select public.seed_stellantis();$$);
+
+-- 5) conferencia
 select count(*) total, min(timestamp) primeira, max(timestamp) ultima,
-  round(avg(visit_time_seconds)/60.0,1) visita_min, round(avg(contact_time_seconds)/60.0,1) atencao_min,
-  round((100.0*sum((gender=1)::int)/count(*))::numeric,1) pct_masc
+  round((avg(visit_time_seconds)/60.0)::numeric,1) visita_min, round((avg(contact_time_seconds)/60.0)::numeric,1) atencao_min
 from visitor_analytics where client_id='8b32886d-9cda-4423-b075-62c868254526';
