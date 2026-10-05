@@ -4051,9 +4051,20 @@ export function ClientDashboard() {
                       .map(c => ({ label: deviceAudienceLabel(c.name), rawKey: c.key, value: 0, count: 0 }));
                     // Stellantis: ocultar Café e Entradas da audiência por device (só este cliente).
                     const hideAudience = id === '8b32886d-9cda-4423-b075-62c868254526'
-                      ? (lbl: string) => /^(caf[eé]|entrada)\b/i.test(String(lbl ?? '').trim())
+                      ? (lbl: string) => /^(caf|entrada)/i.test(String(lbl ?? '').trim())
                       : (_lbl: string) => false;
-                    widgetProps.deviceAudience = [...baseList, ...missing].filter(e => !hideAudience(String(e?.label ?? '')));
+                    // Deduplica por device (evita triplicar quando há lojas repetidas em `stores`).
+                    const seenDev = new Set<string>();
+                    const mergedDev: any[] = [];
+                    for (const e of [...baseList, ...missing]) {
+                      const lbl = String(e?.label ?? '');
+                      if (hideAudience(lbl)) continue;
+                      const key = String((e as any).rawKey ?? lbl);
+                      if (seenDev.has(key)) continue;
+                      seenDev.add(key);
+                      mergedDev.push(e);
+                    }
+                    widgetProps.deviceAudience = mergedDev;
                   }
                   widgetProps.trackingData = [];
                 }
