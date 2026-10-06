@@ -572,6 +572,10 @@ const LEGACY_AGE_ORDER = ['18-', '18-24', '25-34', '35-44', '45-54', '55-64', '6
 
 export function ClientDashboard() {
   const { id } = useParams();
+  // Stellantis é cliente de dados fictícios com 1 dia de delay: o dashboard abre
+  // em "ontem" (dia mais recente com dados), não em "hoje" (que fica zerado).
+  const isSeedClient = id === '8b32886d-9cda-4423-b075-62c868254526';
+  const defaultAnchorDate = () => isSeedClient ? new Date(Date.now() - 86400000) : new Date();
   const navigate = useNavigate();
   const location = useLocation();
   const { user: authUser } = useAuth();
@@ -585,17 +589,17 @@ export function ClientDashboard() {
   const [apiConfig, setApiConfig] = useState<ClientApiConfig | null>(null);
 
   const [selectedStartDate, setSelectedStartDate] = useState<Date>(() => {
-    return alignUtcStartOfDay(new Date());
+    return alignUtcStartOfDay(defaultAnchorDate());
   });
   const [selectedEndDate, setSelectedEndDate] = useState<Date>(() => {
-    return alignUtcEndOfDay(new Date());
+    return alignUtcEndOfDay(defaultAnchorDate());
   });
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [draftStartDate, setDraftStartDate] = useState<Date>(() => {
-    return alignUtcStartOfDay(new Date());
+    return alignUtcStartOfDay(defaultAnchorDate());
   });
   const [draftEndDate, setDraftEndDate] = useState<Date>(() => {
-    return alignUtcEndOfDay(new Date());
+    return alignUtcEndOfDay(defaultAnchorDate());
   });
   const autoTodayRef = useRef(true);
   const didApplyD1DefaultRef = useRef(false);
@@ -646,8 +650,8 @@ export function ClientDashboard() {
   useEffect(() => {
     const tick = () => {
       if (!autoTodayRef.current) return;
-      const s = alignUtcStartOfDay(new Date());
-      const e = alignUtcEndOfDay(new Date());
+      const s = alignUtcStartOfDay(defaultAnchorDate());
+      const e = alignUtcEndOfDay(defaultAnchorDate());
       if (selectedStartDate.getTime() !== s.getTime()) setSelectedStartDate(s);
       if (selectedEndDate.getTime() !== e.getTime()) setSelectedEndDate(e);
       setDraftStartDate(s);

@@ -422,6 +422,10 @@ function applyV5ExpressionOverlay(
 // ── Sync de um cliente ────────────────────────────────────────────────────────
 async function syncClient(client_id: string, cfg: any, overrideSyncStart?: string, overrideSyncEnd?: string): Promise<{ synced: number; error?: string }> {
   try {
+    // Stellantis usa dados ficticios (seed via pg_cron). Nao sincroniza com a DisplayForce.
+    if (client_id === '8b32886d-9cda-4423-b075-62c868254526') {
+      return { synced: 0 };
+    }
     const now = new Date();
     const syncEnd    = overrideSyncEnd   ?? now.toISOString();
     const todayEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59, 999)).toISOString();

@@ -1640,6 +1640,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const providedAuth = typeof authHeader === "string" && authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : auth;
     if (providedAuth && providedAuth !== "painel@2026*") return bad(res, 401, { error: "Não autorizado" });
 
+    // Stellantis usa dados ficticios (seed via pg_cron). Bloqueia qualquer operacao
+    // que busque/grave dados reais da DisplayForce para este cliente.
+    if (client_id === '8b32886d-9cda-4423-b075-62c868254526'
+        && (background_sync === true || sync_stores === true || live_facial_expressions === true || live_device_flow === true)) {
+      return ok(res, { message: "cliente ficticio: sync real desabilitado", synced: 0 });
+    }
+
     // ── list_clients ─────────────────────────────────────────────────────────
     // Lista as redes que têm API configurada (pra scripts sincronizarem todas de
     // uma vez, sem precisar hardcodar client_id). Requer Bearer.
