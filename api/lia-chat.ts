@@ -21,16 +21,20 @@ Nao retorne JSON nem dados brutos. Interprete os numeros e escreva frases comple
 
 Hoje e ${today} (${weekday}). O ano das datas citadas sem ano e o ano de hoje.
 
-DADOS ATUALMENTE EXIBIDOS NO DASHBOARD (periodo selecionado na tela):
-${JSON.stringify(context?.data || {}, null, 2)}
+${hasTool
+    ? `CONTEXTO DA TELA (use apenas para saber cliente, loja e periodo selecionados; NAO use numeros da tela):
+${JSON.stringify({ cliente: context?.data?.cliente, loja: context?.data?.loja, periodo: context?.data?.periodo }, null, 2)}`
+    : `DADOS ATUALMENTE EXIBIDOS NO DASHBOARD (periodo selecionado na tela):
+${JSON.stringify(context?.data || {}, null, 2)}`}
 
 ${hasTool
     ? `Voce tem a ferramenta consultar_periodo, que busca no banco os dados de QUALQUER periodo (totais, visitantes por dia, fluxo por hora, genero, idade, tempo medio de visita e atencao, e areas/dispositivos mais acessados).
-- Se a pergunta for sobre um periodo diferente do exibido na tela (ex.: "semana passada", "28/09 a 03/10", "dia anterior", "esse mes"), CHAME a ferramenta antes de responder. Nunca diga que nao tem acesso a outros periodos sem tentar a ferramenta.
+- SEMPRE consulte a ferramenta antes de responder qualquer pergunta sobre dados, inclusive sobre o periodo exibido na tela. Toda resposta com numeros deve vir do banco, nunca da tela. Se a pergunta nao citar datas, use o periodo selecionado na tela. Nunca diga que nao tem acesso a outros periodos.
 - Para comparar periodos, chame a ferramenta uma vez para cada periodo.
 - Horarios estao no fuso de Sao Paulo. "Area" corresponde aos dispositivos/pontos de captura (por_area).
 - Se a pergunta for vaga (ex.: "anterior", "semana passada") sem datas, consulte os 7 dias que antecedem o inicio do periodo exibido na tela.
 - Use sempre o campo dia_da_semana fornecido pela ferramenta; nunca calcule o dia da semana por conta propria.
+- Para "media por dia", prefira media_por_dia_com_dados (considera so os dias em que houve visitantes; media_por_dia divide pelo periodo todo, incluindo dias sem expediente).
 - O fluxo por hora do dia de maior movimento esta em dia_de_maior_movimento.fluxo_por_hora; fluxo_medio_por_hora e a media do periodo todo.
 - Se a ferramenta retornar zero visitantes, use dados_disponiveis (primeiro e ultimo dia com dados) para tentar um periodo valido ou explicar que nao ha dados.`
     : "Use apenas os dados fornecidos. Se faltar informacao, diga isso de forma objetiva."}`;
@@ -204,6 +208,8 @@ async function consultarPeriodo(clientId: string, dataInicio: string, dataFim: s
     periodo: { inicio: dataInicio, fim: dataFim },
     total_visitantes: total,
     media_por_dia: r.avg_visitors_per_day,
+    dias_com_dados: Object.keys(porDia).length,
+    media_por_dia_com_dados: Object.keys(porDia).length ? Math.round((total / Object.keys(porDia).length) * 10) / 10 : null,
     visitantes_por_dia: Object.entries(porDia)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([dia, visitantes]) => ({ dia, dia_da_semana: weekdayPt(dia), visitantes })),
@@ -258,7 +264,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     if (openaiKey) {
-      const clientId = typeof context?.clientId === "string" ? context.clientId : "";
+      let clientId = typeof context?.clientId === "string" ? context.clientId : "";
+      if (!clientId && typeof context?.data?.cliente === "string" && context.data.cliente.trim()) {
+        // Versao antiga do site nao envia clientId: identifica o cliente pelo nome exibido.
+        const sbLookup = getSupabase();
+        const { data: found } = sbLookup
+          ? await sbLookup.from("clients").select("id").eq("name", context.data.cliente.trim()).limit(1)
+          : { data: null };
+        clientId = (found as any)?.[0]?.id ? String((found as any)[0].id) : "";
+      }
+      const lastUser = [...cleanMessages].reverse().find((m: any) => m.role === "user")?.content?.trim() || "";
+      const isSmallTalk = lastUser.length < 25 && /^(oi|ola|olá|bom dia|boa tarde|boa noite|obrigad|valeu|ok|certo|entendi|tudo bem)/i.test(lastUser);
       const convo: any[] = [{ role: "system", content: buildSystemPrompt(context, Boolean(clientId)) }, ...cleanMessages];
 
       for (let step = 0; step < 5; step++) {
@@ -267,7 +283,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           max_completion_tokens: 1200,
           messages: convo,
         };
-        if (clientId) body.tools = OPENAI_TOOLS;
+        if (clientId) {
+          body.tools = OPENAI_TOOLS;
+          // Na primeira rodada, obriga a consultar o banco (exceto cumprimentos).
+          if (step === 0 && !isSmallTalk) body.tool_choice = { type: "function", function: { name: "consultar_periodo" } };
+        }
 
         const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
           method: "POST",
