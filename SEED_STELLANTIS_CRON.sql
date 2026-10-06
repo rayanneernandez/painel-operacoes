@@ -18,7 +18,7 @@ declare
   hr int; mn int; sc int; dur int; att int; ts timestamptz; te timestamptz; lo int; hi int;
 begin
   delete from visitor_analytics        where client_id=v_client;
-  delete from visitor_analytics_rollups where client_id=v_client;
+  delete from visitor_analytics_rollups where client_id=v_client::text;
   delete from visitor_total_cache       where client_id=v_client;
   select external_id into v_av from devices d join stores s on s.id=d.store_id where s.client_id=v_client and d.name ilike '%avenger%' limit 1;
   select external_id into v_re from devices d join stores s on s.id=d.store_id where s.client_id=v_client and d.name ilike '%renegade%' limit 1;
@@ -51,7 +51,7 @@ begin
       r := random()*hwtot; acc:=0; hr:=12;
       for k in 1..24 loop acc:=acc+hw[k]; if hw[k]>0 and r<=acc then hr:=k-1; exit; end if; end loop;
       mn := floor(random()*60); sc := floor(random()*60);
-      ts := (v_dates[d]::timestamp + make_interval(hours=>hr, mins=>mn, secs=>sc)) at time zone 'UTC';
+      ts := (v_dates[d]::timestamp + make_interval(hours=>hr, mins=>mn, secs=>sc)) at time zone 'America/Sao_Paulo';
       dur := 1200 + floor(random()*601);
       att := round(dur * (0.60 + random()*0.10));
       te := ts + make_interval(secs=>dur);

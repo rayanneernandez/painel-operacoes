@@ -131,6 +131,18 @@ function formatLocalDateKey(value: Date | string) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+const SAO_PAULO_HOUR_FORMATTER = new Intl.DateTimeFormat('en-US', {
+  timeZone: 'America/Sao_Paulo',
+  hour: '2-digit',
+  hourCycle: 'h23',
+});
+
+// Mesma regra do rollup salvo (api/sync-analytics.ts): hora de funcionamento = horario de Sao Paulo.
+function getSaoPauloHour(value: Date | string) {
+  const hour = Number(SAO_PAULO_HOUR_FORMATTER.format(value instanceof Date ? value : new Date(value)));
+  return Number.isFinite(hour) ? hour % 24 : 0;
+}
+
 function formatDateInputValue(value: Date | string) {
   return formatLocalDateKey(value);
 }
@@ -1764,7 +1776,7 @@ export function ClientDashboard() {
               allRows.forEach(r => {
                 const ts = new Date(r.timestamp);
                 if (!isNaN(ts.getTime())) {
-                  perHourTotal[ts.getUTCHours()]++;
+                  perHourTotal[getSaoPauloHour(ts)]++;
                   const dk = formatLocalDateKey(ts);
                   perDay[dk] = (perDay[dk] ?? 0) + 1;
                 }
@@ -1973,7 +1985,7 @@ export function ClientDashboard() {
             allRows.forEach(r => {
               const ts = new Date(r.timestamp);
               if (!isNaN(ts.getTime())) {
-                perHourTotal[ts.getUTCHours()]++;
+                perHourTotal[getSaoPauloHour(ts)]++;
                 const dk = formatLocalDateKey(ts);
                 perDay[dk] = (perDay[dk] ?? 0) + 1;
               }
@@ -2772,7 +2784,7 @@ export function ClientDashboard() {
       for (const row of data) {
         const ts = row?.timestamp ? new Date(row.timestamp) : null;
         if (!ts || Number.isNaN(ts.getTime())) continue;
-        totals[ts.getUTCHours()] += 1;
+        totals[getSaoPauloHour(ts)] += 1;
       }
 
       if (data.length < pageSize) {
