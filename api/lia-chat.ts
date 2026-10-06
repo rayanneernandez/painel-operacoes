@@ -51,8 +51,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method === "OPTIONS") return res.status(204).end();
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
-  const apiKey = localEnvValue("ANTHROPIC_API_KEY", "VITE_ANTHROPIC_API_KEY");
-  if (!apiKey) return res.status(500).json({ error: "ANTHROPIC_API_KEY ausente no ambiente" });
+  const openaiKey = localEnvValue("OPENAI_API_KEY");
+  const anthropicKey = openaiKey ? "" : localEnvValue("ANTHROPIC_API_KEY", "VITE_ANTHROPIC_API_KEY");
+  if (!openaiKey && !anthropicKey) {
+    return res.status(500).json({ error: "OPENAI_API_KEY (ou ANTHROPIC_API_KEY) ausente no ambiente" });
+  }
 
   const { context, messages } = req.body || {};
   const cleanMessages = Array.isArray(messages)
@@ -66,7 +69,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   try {
-    const anthropic = new Anthropic({ apiKey });
+    if (openaiKey) {
+      const openaiRes = await fetch("https://api.openai.com/v1/chat/completions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${openaiKey}` },
+        body: JSON.stringify({
+          model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+          max_tokens: 900,
+          messages: [{ role: "system", content: buildSystemPrompt(context) }, ...cleanMessages],
+        }),
+      });
+      const openaiJson: any = await openaiRes.json().catch(() => ({}));
+      if (!openaiRes.ok) {
+        const details = openaiJson?.error?.message || `HTTP ${openaiRes.status}`;
+        console.error("[lia-chat][openai]", details);
+        return res.status(502).json({ error: "Erro ao conectar com a Lia", details });
+      }
+      const openaiText = String(openaiJson?.choices?.[0]?.message?.content ?? "").trim();
+      return res.status(200).json({ text: openaiText || "Nao consegui gerar uma resposta agora." });
+    }
+
+    const anthropic = new Anthropic({ apiKey: anthropicKey });
     const message = await anthropic.messages.create({
       model: process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5",
       max_tokens: 900,

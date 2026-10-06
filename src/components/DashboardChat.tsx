@@ -94,7 +94,7 @@ export function DashboardChat({ context }: { context: ChatContext; queryFn?: Que
     } catch (error) {
       console.error('[Lia]', error);
       const msg = error instanceof Error ? error.message : String(error);
-      setAssistant(assistId, `Erro ao conectar com a Lia: ${msg}. Verifique a chave da Anthropic no ambiente e tente novamente.`, false);
+      setAssistant(assistId, `Erro ao conectar com a Lia: ${msg}. Verifique a chave da IA (OPENAI_API_KEY) no ambiente e tente novamente.`, false);
     } finally {
       setLoading(false);
     }
