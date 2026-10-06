@@ -4194,6 +4194,7 @@ export function ClientDashboard() {
 
       <DashboardChat context={{
         dashboardName: `${clientData?.name ?? 'Dashboard'} — Analytics`,
+        clientId: id,
         data: {
           cliente: clientData?.name,
           loja: selectedStore?.name ?? 'Rede completa',

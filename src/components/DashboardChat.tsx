@@ -3,6 +3,7 @@ import { X, Send, Loader2, User, ChevronDown } from 'lucide-react';
 
 export type ChatContext = {
   dashboardName: string;
+  clientId?: string;
   data: Record<string, unknown>;
 };
 
