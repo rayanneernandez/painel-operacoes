@@ -1973,7 +1973,7 @@ export function ClientDashboard() {
             allRows.forEach(r => {
               const ts = new Date(r.timestamp);
               if (!isNaN(ts.getTime())) {
-                perHourTotal[ts.getHours()]++;
+                perHourTotal[ts.getUTCHours()]++;
                 const dk = formatLocalDateKey(ts);
                 perDay[dk] = (perDay[dk] ?? 0) + 1;
               }
